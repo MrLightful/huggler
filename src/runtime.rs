@@ -44,6 +44,8 @@ pub(crate) struct Shared {
     workers: Mutex<Option<JoinSet<()>>>,
     db: Mutex<Option<Database>>,
     run_stops: Mutex<HashMap<RunId, watch::Sender<bool>>>,
+    child_interrupts:
+        Mutex<HashMap<(ThreadId, RunId), mpsc::UnboundedSender<codex::ChildInterrupt>>>,
     decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
@@ -188,28 +190,31 @@ impl Shared {
 
     async fn work(self: Arc<Self>, thread: ThreadId, run: RunId, stopped: watch::Receiver<bool>) {
         let result = self.execute(&thread, &run, stopped).await;
+        self.run_stops.lock().unwrap().remove(&run);
+        if let Err(error) = self.advance(|db| db.finish(&thread, &run, result)) {
+            *self.fault.lock().unwrap() = Some(error.to_string());
+            self.changed.send_replace(());
+        }
+    }
+
+    fn advance(self: &Arc<Self>, finish: impl FnOnce(&mut Database) -> Result<()>) -> Result<()> {
         let mut gate = self.workers.lock().unwrap();
         let mut guard = self.db.lock().unwrap();
         let db = guard
             .as_mut()
             .expect("close joins workers before releasing storage");
-        self.run_stops.lock().unwrap().remove(&run);
-        let finished = db.finish(&thread, &run, result).and_then(|()| {
-            if let Some(workers) = gate.as_mut() {
-                for (thread, run) in db.ready_jobs()? {
-                    self.spawn(workers, thread, run);
-                }
+        finish(db)?;
+        if let Some(workers) = gate.as_mut() {
+            for (thread, run) in db.ready_jobs()? {
+                self.spawn(workers, thread, run);
             }
-            Ok(())
-        });
-        if let Err(error) = finished {
-            *self.fault.lock().unwrap() = Some(error.to_string());
         }
         self.changed.send_replace(());
+        Ok(())
     }
 
     async fn execute(
-        &self,
+        self: &Arc<Self>,
         thread: &ThreadId,
         run: &RunId,
         stopped: watch::Receiver<bool>,
@@ -225,6 +230,9 @@ impl Shared {
             Ok(turn)
         })?;
         let update = |change| {
+            if matches!(change, crate::providers::Update::ForegroundComplete) {
+                return self.advance(|db| db.update(thread, run, change));
+            }
             self.access(|db| db.update(thread, run, change))?;
             self.changed.send_replace(());
             Ok(())
@@ -242,14 +250,23 @@ impl Shared {
         };
         let result = match turn.provider {
             Provider::Codex => {
-                codex::execute(
+                let (tx, interrupts) = mpsc::unbounded_channel();
+                let owner = (thread.clone(), run.clone());
+                self.child_interrupts
+                    .lock()
+                    .unwrap()
+                    .insert(owner.clone(), tx);
+                let result = codex::execute(
                     self.options.codex.clone(),
                     turn,
                     stopped,
                     update,
                     permissions,
+                    interrupts,
                 )
-                .await
+                .await;
+                self.child_interrupts.lock().unwrap().remove(&owner);
+                result
             }
             Provider::ClaudeAgent => {
                 claude_agent::execute(
@@ -294,6 +311,7 @@ impl Huggler {
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
             run_stops: Mutex::default(),
+            child_interrupts: Mutex::default(),
             fault: Mutex::default(),
             changed: watch::channel(()).0,
             stop: watch::channel(false).0,
@@ -407,6 +425,31 @@ impl Huggler {
     /// Read the original delivery receipt, including after the sender settles.
     pub fn peer_receipt(&self, sender: &ThreadId, key: &str) -> Result<Option<PeerReceipt>> {
         self.shared.access(|db| db.peer_receipt(sender, key))
+    }
+
+    /// Ask the owning Codex process to interrupt this exact native turn.
+    /// Success acknowledges the request. Observe the child for its terminal status.
+    pub async fn interrupt_native_child(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        child: &NativeThreadId,
+        turn: &NativeTurnId,
+    ) -> Result<()> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.shared
+            .child_interrupts
+            .lock()
+            .unwrap()
+            .get(&(thread.clone(), run.clone()))
+            .ok_or_else(|| Error::NotFound("live native child session".into()))?
+            .send(codex::ChildInterrupt {
+                thread: child.clone(),
+                turn: turn.clone(),
+                reply,
+            })
+            .map_err(|_| Error::Closed)?;
+        response.await.map_err(|_| Error::Closed)?
     }
 
     /// Withdraw a live run's ability to call agent tools.

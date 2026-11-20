@@ -181,6 +181,8 @@ impl Database {
             if tx.execute(
                 "UPDATE delegated_task SET delivery='disposed',cancelled=(result_run IS NULL AND
                     (EXISTS (SELECT 1 FROM run WHERE thread_id=child_thread AND status IN ('starting','running','queued'))
+                    OR EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
+                               WHERE c.active AND r.thread_id=child_thread)
                      OR EXISTS (SELECT 1 FROM delegated_task d WHERE d.parent_thread=delegated_task.child_thread
                                 AND (d.result_run IS NULL OR d.delivery='pending'))))
                  WHERE id=? AND delivery='pending'",
@@ -189,7 +191,8 @@ impl Database {
             {
                 publish(&tx, &owner, &subtask)?;
             }
-            let runs = tx.prepare("SELECT id,status FROM run WHERE thread_id=? AND status IN ('starting','running','queued')")?
+            let runs = tx.prepare("SELECT id,status FROM run WHERE thread_id=? AND
+                (status IN ('starting','running','queued') OR id IN (SELECT run_id FROM native_child WHERE active))")?
                 .query_map([&child.0],|r|Ok((RunId(r.get(0)?),r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for (run, status) in runs {
                 tx.execute("UPDATE run SET stop_requested=1 WHERE id=?", [&run.0])?;
@@ -214,6 +217,8 @@ pub(super) fn reconcile(tx: &Transaction, jobs: &mut Vec<(ThreadId, RunId)>) -> 
             SELECT id FROM run WHERE thread_id=t.child_thread ORDER BY ordinal DESC LIMIT 1)
             WHERE result_run IS NULL AND NOT EXISTS (
                 SELECT 1 FROM run WHERE thread_id=t.child_thread AND status IN ('starting','running','waiting','queued'))
+            AND NOT EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
+                WHERE c.active AND r.thread_id=t.child_thread)
             AND NOT EXISTS (SELECT 1 FROM delegated_task d WHERE d.parent_thread=t.child_thread
                 AND (d.result_run IS NULL OR d.delivery='pending'))
             RETURNING id,parent_thread")?.query_map([],|r|Ok((TaskId(r.get(0)?),ThreadId(r.get(1)?))))?

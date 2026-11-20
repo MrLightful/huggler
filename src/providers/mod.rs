@@ -23,6 +23,9 @@ pub(crate) enum Update {
     Bound(NativeThreadId),
     Started(Option<NativeTurnId>),
     Finalizing(String),
+    /// The foreground has returned its answer and this worker has background children.
+    ForegroundComplete,
+    NativeChild(crate::NativeChild),
 }
 
 pub(crate) struct Permissions<F> {

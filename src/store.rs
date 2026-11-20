@@ -1,3 +1,4 @@
+mod native_children;
 mod tasks;
 use crate::{
     contracts::*,
@@ -163,6 +164,7 @@ impl Database {
             include_str!("../migrations/003.sql"),
             include_str!("../migrations/004.sql"),
             include_str!("../migrations/005.sql"),
+            include_str!("../migrations/006.sql"),
         ];
         if !(0..=migrations.len() as i64).contains(&version) {
             return Err(Error::SchemaVersion(version));
@@ -195,6 +197,7 @@ impl Database {
                 Err(Error::Provider("runtime exited during turn".into())),
             )?;
         }
+        native_children::disconnect(&tx, None)?;
         tx.commit()?;
         Ok(Self { db, _lock: lock })
     }
@@ -363,6 +366,11 @@ impl Database {
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::NativeChild(child) => native_children::record(&tx, thread, child)?,
+            Update::ForegroundComplete => {
+                Self::finish_tx(&tx, thread, id, Ok(()))?;
+                tx.execute("DELETE FROM agent_grant WHERE run_id=?", [&id.0])?;
+            }
             Update::Bound(native_thread) => {
                 let changed = tx.execute(
                     "UPDATE thread SET native_thread=? WHERE id=? AND native_thread IS NULL",
@@ -475,7 +483,16 @@ impl Database {
 
     pub fn finish(&mut self, thread: &ThreadId, id: &RunId, result: Result<()>) -> Result<()> {
         let tx = self.db.transaction()?;
-        Self::finish_tx(&tx, thread, id, result)?;
+        native_children::disconnect(&tx, Some(id))?;
+        // A foreground turn may have already completed while its native children continued.
+        let unfinished: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turn_effect WHERE run_id=?)",
+            [&id.0],
+            |r| r.get(0),
+        )?;
+        if unfinished {
+            Self::finish_tx(&tx, thread, id, result)?;
+        }
         tx.execute("DELETE FROM agent_grant WHERE run_id=?", [&id.0])?;
         Ok(tx.commit()?)
     }
@@ -645,6 +662,7 @@ impl Database {
                 [&id.0],
                 |r| {
                     Ok(Thread {
+                        native_children: vec![],
                         tasks: vec![],
                         provider: Provider::from_key(&r.get::<_, String>(4)?)?,
                         permissions: vec![],
@@ -662,6 +680,7 @@ impl Database {
             .optional()?
             .ok_or_else(|| Error::NotFound(id.to_string()))?;
         thread.tasks = tasks::for_parent(&self.db, id)?;
+        thread.native_children = native_children::for_thread(&self.db, id)?;
         thread.runs = self
             .db
             .prepare(&format!(

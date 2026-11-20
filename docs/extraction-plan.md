@@ -16,9 +16,11 @@ Live Codex CLI 0.170.0 over app-server stdio and a scripted ACP reviewer over st
 
 With the scripted ACP peer, a follow-up queued before settlement supplied the task's final result and woke the parent once. Cancelling the owned subtree interrupted active descendants and queued work, including work started after the original task settled. A retry with the same cancellation key after reopening preserved later work. Run `cargo test --locked --test delegation` for both regressions. Upstream also tracks owner-sent follow-ups as individual tasks with separate results. That case remains open. [Delegation tests](../tests/delegation.rs)
 
-**Next action.** Replay the recorded three-level Codex subagent tree. Check each child's native parent, owning application run and result, then exercise a child that outlives its root turn and a targeted child interrupt. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+Codex app-server 0.156.1 replayed the pinned three-level subagent tree over stdio. The Rust snapshot and event stream preserve each child's native parent thread and turn, owning application run and final answer across reopen. Scripted variants complete the root first, then finish the child, interrupt its exact turn, or close the provider while the child is running. The root keeps its answer in all three cases. Run `cargo test --locked --test native_children`. [Rust tests](../tests/native_children.rs) · [Upstream recording and assertions](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/testkit/fixtures/subagent_v2_nested)
 
-**Branch recommendation.** Commit and continue Stage 3 on this branch. Native-child replay and live collaboration with a second authenticated provider remain open.
+**Next action.** Replay the Codex grandchild command approval. Verify the host sees the request on the owning run, its decision reaches the grandchild, and both child results survive reopening. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+
+**Branch recommendation.** Commit and continue Stage 3 on this branch. Recorded Codex cases and scripted ACP cases can proceed with the current setup. Live collaboration with a second authenticated provider remains open.
 
 ### Maintaining the handoff
 

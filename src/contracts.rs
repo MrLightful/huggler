@@ -203,8 +203,36 @@ pub struct DelegatedTask {
     pub wake_run_id: Option<RunId>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeChildStatus {
+    Starting,
+    Running,
+    Completed,
+    Interrupted,
+    Failed,
+    /// The owning provider process closed before reporting an outcome.
+    Disconnected,
+}
+
+/// Provider-owned work observed during an application run. Native addresses are
+/// scoped to that run's provider session. The parent may itself be a child.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeChild {
+    pub run_id: RunId,
+    pub parent_thread_id: NativeThreadId,
+    pub parent_turn_id: NativeTurnId,
+    pub thread_id: NativeThreadId,
+    pub turn_id: Option<NativeTurnId>,
+    pub path: String,
+    pub status: NativeChildStatus,
+    pub result: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Thread {
+    #[serde(default)]
+    pub native_children: Vec<NativeChild>,
     #[serde(default)]
     pub tasks: Vec<DelegatedTask>,
     pub provider: Provider,
@@ -221,6 +249,9 @@ pub struct Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    NativeChild {
+        child: NativeChild,
+    },
     Task {
         task: DelegatedTask,
     },

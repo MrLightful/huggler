@@ -1,4 +1,5 @@
 //! Codex app-server over newline-delimited JSON-RPC on a managed child's stdio.
+mod children;
 use super::{
     Permissions, Turn, Update,
     rpc::{Rpc, protocol},
@@ -6,12 +7,19 @@ use super::{
 use crate::{
     Error, NativeThreadId, NativeTurnId, PermissionOption, PermissionRequest, RequestId, Result,
 };
+use children::Children;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
+
+pub(crate) struct ChildInterrupt {
+    pub thread: NativeThreadId,
+    pub turn: NativeTurnId,
+    pub reply: oneshot::Sender<Result<()>>,
+}
 
 #[derive(Clone, Debug)]
 pub struct CodexOptions {
@@ -87,7 +95,9 @@ impl Client {
                 && matches!(
                     frame["method"].as_str(),
                     Some(
-                        "item/completed"
+                        "item/started"
+                            | "item/completed"
+                            | "turn/started"
                             | "turn/completed"
                             | "item/commandExecution/requestApproval"
                             | "item/permissions/requestApproval"
@@ -106,6 +116,7 @@ impl Client {
         update: impl Fn(Update) -> Result<()>,
         request_approvals: bool,
         mut permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
+        mut interrupts: mpsc::UnboundedReceiver<ChildInterrupt>,
     ) -> Result<()> {
         self.request("initialize", json!({
             "clientInfo":{"name":"huggler","title":"Huggler","version":env!("CARGO_PKG_VERSION")},
@@ -175,11 +186,31 @@ impl Client {
         update(Update::Started(Some(NativeTurnId(id.to_owned()))))?;
         let mut answer = None;
         let mut pending = HashMap::new();
+        let mut children = Children::default();
+        let mut foreground_complete = false;
+        let mut interrupt_replies = HashMap::<u64, oneshot::Sender<Result<()>>>::new();
         loop {
+            if foreground_complete && !children.active() && interrupt_replies.is_empty() {
+                return Ok(());
+            }
             let frame = match self.early.pop_front() {
                 Some(frame) => frame,
                 None => tokio::select! {
                     frame = self.read() => frame?,
+                    request = interrupts.recv() => {
+                        let request = request.ok_or(Error::Closed)?;
+                        if !children.running(&request.thread.0, &request.turn.0) {
+                            let _ = request.reply.send(Err(Error::NotFound("running native child turn".into())));
+                            continue;
+                        }
+                        let rpc_id = self.next_id;
+                        self.next_id += 1;
+                        self.rpc.write(json!({"id":rpc_id,"method":"turn/interrupt","params":{
+                            "threadId":request.thread,"turnId":request.turn
+                        }})).await?;
+                        interrupt_replies.insert(rpc_id, request.reply);
+                        continue;
+                    }
                     decision = permissions.decisions.recv() => {
                         let (request,option) = decision.ok_or(Error::Closed)?;
                         let (wire_id, approval) = pending.remove(&request).ok_or_else(||protocol("expired approval"))?;
@@ -195,7 +226,27 @@ impl Client {
             };
             let p = &frame["params"];
             if let Some(wire_id) = frame.get("id") {
-                if !request_approvals || p["threadId"] != thread || p["turnId"] != id {
+                if frame.get("method").is_none() {
+                    if let Some(reply) = wire_id
+                        .as_u64()
+                        .and_then(|id| interrupt_replies.remove(&id))
+                    {
+                        let result = if let Some(error) = frame.get("error") {
+                            Err(protocol(format!("turn/interrupt: {error}")))
+                        } else if frame.get("result").is_some() {
+                            Ok(())
+                        } else {
+                            Err(protocol("missing turn/interrupt result"))
+                        };
+                        let _ = reply.send(result);
+                    }
+                    continue;
+                }
+                if foreground_complete
+                    || !request_approvals
+                    || p["threadId"] != thread
+                    || p["turnId"] != id
+                {
                     self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"No matching interactive run"}})).await?;
                     continue;
                 }
@@ -252,7 +303,10 @@ impl Client {
                 })?;
                 continue;
             }
-            if p["threadId"] != thread {
+            if let Some(child) = children.observe(thread, id, &permissions.run, &frame) {
+                update(Update::NativeChild(child))?;
+            }
+            if foreground_complete || p["threadId"] != thread {
                 continue;
             }
             match frame["method"].as_str() {
@@ -273,9 +327,15 @@ impl Client {
                             p["turn"]["status"], p["turn"]["error"]
                         )));
                     }
-                    let text =
-                        answer.ok_or_else(|| protocol("completed turn has no final answer"))?;
-                    return update(Update::Finalizing(text));
+                    let text = answer
+                        .take()
+                        .ok_or_else(|| protocol("completed turn has no final answer"))?;
+                    update(Update::Finalizing(text))?;
+                    if !children.active() && interrupt_replies.is_empty() {
+                        return Ok(());
+                    }
+                    update(Update::ForegroundComplete)?;
+                    foreground_complete = true;
                 }
                 _ => {}
             }
@@ -289,6 +349,7 @@ pub(crate) async fn execute(
     mut stop: watch::Receiver<bool>,
     update: impl Fn(Update) -> Result<()>,
     permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
+    interrupts: mpsc::UnboundedReceiver<ChildInterrupt>,
 ) -> Result<()> {
     if *stop.borrow() {
         return Err(Error::Closed);
@@ -301,7 +362,7 @@ pub(crate) async fn execute(
     let result = tokio::select! {
         biased;
         _ = stop.wait_for(|v| *v) => Err(Error::Closed),
-        answer = client.converse(turn, update,options.request_approvals,permissions) => answer,
+        answer = client.converse(turn, update,options.request_approvals,permissions,interrupts) => answer,
     };
     client.rpc.shutdown().await?;
     result

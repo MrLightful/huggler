@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import sys
+import time
 
 here = Path(__file__).resolve().parent
 case = json.loads((here / "case.json").read_text())
@@ -28,6 +29,13 @@ while True:
     if entry["type"] == "runtime_exit":
         (here / "cursor").write_text(str(index))
         break
+    if entry["type"] == "await_release":
+        deadline = time.monotonic() + 10
+        while not (here / "release").exists():
+            assert time.monotonic() < deadline, "test did not release replay"
+            time.sleep(0.01)
+        index += 1
+        continue
     frame = substitute(entry["frame"])
     if entry["type"] == "expect_outbound":
         actual = json.loads(sys.stdin.readline())
@@ -44,6 +52,10 @@ while True:
         if frame["method"] == "turn/start":
             # This consumer explicitly runs read-only turns.
             frame["params"]["sandboxPolicy"] = {"type": "readOnly"}
+        if frame["method"] == "thread/start":
+            # The recorder raised this limit to capture a three-level spawn.
+            for key in records[0].get("metadata", {}).get("recorderThreadConfigKeys", []):
+                del frame["params"]["config"][key]
         assert actual == frame, (index, actual, frame)
     else:
         assert entry["type"] == "emit_inbound"
