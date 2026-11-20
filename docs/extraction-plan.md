@@ -1,5 +1,7 @@
 # Building and qualifying the Huggler crate
 
+These stages establish the Rust crate that future language bindings will expose to other hosts. Tauri is its first consumer. [Crate proposal](sdk-proposal.md)
+
 Start with a Rust consumer that resumes a Codex conversation after reopening its state. Then exercise the same flow in an installed Tauri app and qualify a second provider through a live approval and cross-provider collaboration. Use T3 Code as the behavioral reference across the broader capability inventory. The Rust crate can use its own API, schema and transports. Record whether each workflow is supported directly, through a documented fallback, or unavailable for the selected provider or host. [Crate proposal](sdk-proposal.md) · [Upstream architecture](upstream-orchestration.md) · [Capability inventory](parity-inventory.md)
 
 ## Stage handoff

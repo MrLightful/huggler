@@ -1,6 +1,6 @@
 # Huggler Rust crate proposal
 
-Huggler is a proposed async Rust library for durable agent orchestration. Its first host is a Tauri desktop app. The Tauri backend opens the crate in-process and owns its lifecycle. Huggler stores state in SQLite and talks to separately installed provider executables or servers. The base desktop app requires no Node.js runtime for Huggler. A provider can have its own runtime or optional bridge requirements. Use Cargo for Rust distribution. A native Tauri integration needs no language bindings.
+Huggler is an async Rust library for durable agent orchestration. The Rust crate is the shared implementation. Deliver it through Cargo first, then build bindings so applications in other languages can use the same runtime. The first host is a Tauri desktop app whose Rust backend opens the crate in-process and owns its lifecycle. Provider-specific runtime or bridge dependencies belong to their adapters. The base desktop app runs without Node.js.
 
 T3 Code supplies reference scenarios for user-visible behavior. Huggler can define its own Rust types, storage schema and transport payloads. Provider-native operations depend on the selected harness and version. [T3 Code behavior inventory](parity-inventory.md)
 

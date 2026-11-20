@@ -2,7 +2,9 @@
 
 **Design proposal** based on T3 Code [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9), reviewed 20 November 2026.
 
-Huggler is a proposed Rust library crate that a Tauri backend embeds directly. It gives agents persistent conversations, runs them on different coding harnesses, and lets them message peers or delegate work. SQLite stores Huggler state. Provider adapters talk to local executables or external servers. The base desktop app needs no Node.js runtime for Huggler.
+Huggler’s goal is one agent orchestration runtime that applications written in different programming languages can embed. Build and distribute the Rust crate through Cargo first, then expose that same runtime through language bindings. The Tauri desktop app is the first host and calls the crate directly from Rust.
+
+The core gives agents persistent conversations, runs them on different coding harnesses, and lets them message peers or delegate work. SQLite stores Huggler state. Provider adapters talk to local executables or external servers. The base desktop app needs no Node.js runtime for Huggler.
 
 Use T3 Code to identify capabilities and regression scenarios. Huggler can choose its own API, persistence schema and provider transports as long as the intended workflow is covered. Some outcomes depend on provider-native features, and some require a host integration. Record those prerequisites alongside the evidence. [Orchestrator][src-1] · [Server composition][src-2] · [Agent tool service][src-3]
 
