@@ -1,127 +1,91 @@
-use huggler::{
-    Command, Event, Huggler, HugglerOptions, Project, Receipt, RequestId, RunId, Thread, ThreadId,
-    ThreadSummary,
-};
-use serde::Serialize;
-use std::{path::PathBuf, sync::Mutex};
-use tauri::{AppHandle, Manager, RunEvent, State, ipc::Channel};
+mod conversation;
+#[cfg(all(feature = "qualification", target_os = "macos"))]
+mod qualification;
 
-struct Host {
-    runtime: Huggler,
-    subscription: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-}
+use anyhow::{Context as _, Result};
+use conversation::Desktop;
+use gpui::{prelude::*, *};
+use gpui_component::Root;
+use huggler::{Huggler, HugglerOptions};
+use std::{path::PathBuf, sync::Arc};
 
-#[derive(Serialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
-enum Frame {
-    Snapshot(Thread),
-    Event(Event),
-}
+const APP_ID: &str = "dev.huggler.stage2";
+actions!(huggler_desktop, [Quit]);
 
-#[tauri::command]
-async fn open_project(host: State<'_, Host>, root: PathBuf) -> huggler::Result<Project> {
-    host.runtime.open_project(root)
-}
+fn main() -> Result<()> {
+    let state = std::env::var_os("HUGGLER_STATE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::data_dir().map(|path| path.join(APP_ID)))
+        .context("cannot locate Huggler app data")?;
+    #[cfg(all(feature = "qualification", target_os = "macos"))]
+    let driver = qualification::load()?;
 
-#[tauri::command]
-async fn threads(host: State<'_, Host>) -> huggler::Result<Vec<ThreadSummary>> {
-    host.runtime.threads()
-}
+    #[cfg(all(feature = "qualification", target_os = "macos"))]
+    let interactive = driver.is_none();
+    #[cfg(not(all(feature = "qualification", target_os = "macos")))]
+    let interactive = true;
 
-#[tauri::command]
-async fn dispatch(host: State<'_, Host>, command: Command) -> huggler::Result<Receipt> {
-    host.runtime.dispatch(command)
-}
-
-#[tauri::command]
-fn respond_to_permission(
-    host: State<'_, Host>,
-    thread: ThreadId,
-    run: RunId,
-    request: RequestId,
-    option: String,
-) -> huggler::Result<()> {
-    host.runtime
-        .respond_to_permission(&thread, &run, &request, option)
-}
-
-#[tauri::command]
-fn unsubscribe(host: State<'_, Host>) {
-    if let Some(task) = host.subscription.lock().unwrap().take() {
-        task.abort();
+    let mut options = HugglerOptions::new(&state);
+    options.codex.request_approvals = true;
+    if let Some(path) = std::env::var_os("HUGGLER_CODEX") {
+        options.codex.executable = path.into();
     }
-}
-
-#[tauri::command]
-fn subscribe(
-    host: State<'_, Host>,
-    thread: ThreadId,
-    channel: Channel<Frame>,
-) -> Result<(), String> {
-    let mut active = host.subscription.lock().unwrap();
-    if let Some(task) = active.take() {
-        task.abort();
+    if let Some(path) = std::env::var_os("HUGGLER_CLAUDE_ACP") {
+        options.claude_agent.executable = path.into();
     }
-    let (snapshot, mut stream) = host
-        .runtime
-        .subscribe(&thread, None)
-        .map_err(|e| e.to_string())?;
-    channel
-        .send(Frame::Snapshot(snapshot))
-        .map_err(|e| e.to_string())?;
-    *active = Some(tauri::async_runtime::spawn(async move {
-        while let Ok(event) = stream.next().await {
-            if channel.send(Frame::Event(event)).is_err() {
-                break;
-            }
-        }
-    }));
-    Ok(())
-}
+    let executor = tokio::runtime::Runtime::new()?;
+    let runtime = Arc::new(executor.block_on(Huggler::open(options))?);
 
-#[tauri::command]
-fn quit(app: AppHandle) {
-    app.exit(0);
-}
+    Application::new().run(move |cx| {
+        gpui_component::init(cx);
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
+        cx.set_menus(vec![Menu {
+            name: "Huggler".into(),
+            items: vec![MenuItem::action("Quit Huggler", Quit)],
+        }]);
 
-fn main() {
-    tauri::Builder::default()
-        .setup(|app| {
-            let mut options = HugglerOptions::new(app.path().app_data_dir()?);
-            options.codex.request_approvals = true;
-            if let Some(path) = std::env::var_os("HUGGLER_CODEX") {
-                options.codex.executable = path.into();
+        let owner = runtime.clone();
+        cx.on_app_quit(move |_| {
+            // GPUI bounds the time it will poll a quit future. Join provider workers
+            // here while the Tokio executor is still running, including on macOS Quit.
+            if let Err(error) = executor.block_on(owner.close()) {
+                eprintln!("Could not close Huggler: {error}");
             }
-            if let Some(path) = std::env::var_os("HUGGLER_CLAUDE_ACP") {
-                options.claude_agent.executable = path.into();
-            }
-            let runtime = tauri::async_runtime::block_on(Huggler::open(options))?;
-            app.manage(Host {
-                runtime,
-                subscription: Mutex::default(),
-            });
-            Ok(())
+            std::future::ready(())
         })
-        .invoke_handler(tauri::generate_handler![
-            open_project,
-            threads,
-            dispatch,
-            respond_to_permission,
-            subscribe,
-            unsubscribe,
-            quit
-        ])
-        .build(tauri::generate_context!())
-        .expect("initialize Huggler desktop")
-        .run(|app, event| {
-            if let RunEvent::Exit = event {
-                let host = app.state::<Host>();
-                if let Some(task) = host.subscription.lock().unwrap().take() {
-                    task.abort();
-                }
-                if let Err(e) = tauri::async_runtime::block_on(host.runtime.close()) {
-                    eprintln!("close: {e}");
-                }
+        .detach();
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
             }
-        });
+        })
+        .detach();
+
+        let bounds = Bounds::centered(None, size(px(900.), px(660.)), cx);
+        let _window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(640.), px(440.))),
+                    focus: interactive,
+                    app_id: Some(APP_ID.into()),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    window.set_window_title("Huggler");
+                    let view = cx.new(|cx| Desktop::new(runtime, state, window, cx));
+                    cx.new(|cx| Root::new(view, window, cx))
+                },
+            )
+            .expect("open Huggler window");
+        if interactive {
+            cx.activate(true);
+        }
+        #[cfg(all(feature = "qualification", target_os = "macos"))]
+        if let Some(driver) = driver {
+            qualification::run(driver, _window.into(), cx);
+        }
+    });
+    Ok(())
 }

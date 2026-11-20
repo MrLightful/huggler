@@ -1,6 +1,6 @@
 # T3 Code capability inventory for Huggler
 
-Use this inventory to plan and verify the workflows Huggler should cover. The counts describe the pinned T3 Code implementation. Huggler maps those workflows to Rust APIs, Tauri commands, agent tools or optional host integrations. For each selected workflow, record the observable outcome, provider and host prerequisites, a passing scenario, and any fallback or limitation. The names, counts and wire shapes below identify upstream evidence. [Crate proposal](sdk-proposal.md) · [Qualification plan](extraction-plan.md)
+Use this inventory to plan and verify the workflows Huggler should cover. The counts describe the pinned T3 Code implementation. Huggler maps those workflows to Rust APIs, native desktop controls, agent tools or optional host integrations. For each selected workflow, record the observable outcome, provider and host prerequisites, a passing scenario, and any fallback or limitation. The names, counts and wire shapes below identify upstream evidence. [Crate proposal](sdk-proposal.md) · [Qualification plan](extraction-plan.md)
 
 Stage 1 exercised selected command, projection, provider and agent-tool paths in four upstream suites. The run record maps the tested scenarios to the rows below. Other entries currently have source evidence. [Stage 1 coverage](reference/codex-resume/README.md#what-the-four-suites-exercised)
 
@@ -132,7 +132,7 @@ MCP is the agent’s interface to orchestration. For deferred discovery, the dir
 
 **Three acceptance checks for Huggler callers.** A dashboard can inspect thread/child projections without acknowledging delivery. A live parent that calls `task_status` on its completed task can acknowledge its result. An agent can answer an eligible user question through `pending_request`. A human decision on provider permissions goes through an authorized responder. Exercise positive and denied cases through the real handlers. [Orchestrator handlers][src-41] · [Thread handlers][src-42] · [Access race tests][src-43]
 
-The [implementation plan](extraction-plan.md) pairs these names with upstream tests, raw frames and Cargo consumer and installed Tauri acceptance scenarios.
+The [implementation plan](extraction-plan.md) pairs these names with upstream tests, raw frames and Cargo consumer and installed GPUI acceptance scenarios.
 
 [src-1]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/contracts/src/orchestrationV2.ts
 [src-2]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/CommandPolicy.ts

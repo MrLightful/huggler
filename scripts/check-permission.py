@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Exercise a live denial or a recorded Codex grandchild approval in the installed Tauri UI."""
+"""Exercise a live denial or a recorded Codex grandchild approval in the installed GPUI window."""
 import argparse
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,12 +8,8 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-import uuid
 
-ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("installer", ROOT / "scripts/install-desktop.py")
-installer = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(installer)
+from desktop_check import ROOT, install_check, launch_thread, run_window, send_message
 
 
 def prepare_replay(root):
@@ -53,7 +48,6 @@ def check(mode):
     path = os.environ.get(variable) or shutil.which(program)
     if not replay and not path:
         raise SystemExit(f"Install {program} or set {variable} to its absolute path")
-    identifier = "dev.huggler.permission." + uuid.uuid4().hex
     with tempfile.TemporaryDirectory(prefix="huggler permission ") as tmp:
         root = Path(tmp)
         checkout = root / "project"
@@ -66,74 +60,42 @@ def check(mode):
             prompt = ("This is a permission UI test in an empty checkout. Request permission via exec_command "
                       "with sandbox_permissions=require_escalated to run exactly 'touch approval-check.txt'. "
                       "If denied, finish without trying a second time.")
-        ui = root / "ui"
-        shutil.copytree(ROOT / "desktop/ui", ui)
-        driver = """
-(async () => {
-  const el = id => document.getElementById(id);
-  el("root").value = INPUT.root;
-  el("provider").value = INPUT.provider;
-  el("name").value = INPUT.name;
-  el("launch").requestSubmit();
-  let sent = false;
-  let decided = false;
-  setInterval(() => {
-    if (!sent && !el("conversation").hidden) {
-      sent = true;
-      el("prompt").value = INPUT.prompt;
-      el("send").requestSubmit();
-    }
-    const panel = el("permissions");
-    const button = panel.querySelector(INPUT.replay ? "button[data-kind=allow_once]" : "button[data-kind=reject_once]");
-    if (button && !decided) {
-      if (INPUT.replay && !panel.querySelector("legend").textContent.includes("/root/relay/writer")) {
-        el("error").textContent = "Permission did not identify the requesting grandchild";
-      } else {
-        decided = true;
-        button.click();
-      }
-    }
-    if (el("error").textContent || ["failed","completed","interrupted"].includes(el("status").dataset.status)) el("quit").click();
-  }, 100);
-})();
-"""
-        (ui / "qualification.js").write_text("const INPUT = " + json.dumps({
-            "provider": provider, "root": str(checkout), "prompt": prompt, "name": name, "replay": replay
-        }) + ";\n" + driver)
-        html = ui / "index.html"
-        html.write_text(html.read_text().replace("</head>", '<script defer src="qualification.js"></script></head>'))
-        executable = installer.install(root / "Huggler Qualification.app", identifier=identifier, ui=ui)
-        state = Path.home() / "Library/Application Support" / identifier
+        executable = install_check(root / "Huggler Qualification.app")
+        state = root / "state"
         env = dict(os.environ, PATH="/usr/bin:/bin:/usr/sbin:/sbin")
         env[variable] = str(Path(path).resolve(strict=True))
-        try:
-            subprocess.run([executable], cwd="/", env=env, timeout=150, check=True)
-            with sqlite3.connect(state / "huggler.sqlite3") as db:
-                runs = db.execute("SELECT id,status,error FROM run").fetchall()
-                choices = db.execute("SELECT run_id,request,decision FROM permission").fetchall()
-                assert len(runs) == 1, runs
-                assert len(choices) == 1 and choices[0][0] == runs[0][0], "Expected one permission on the completed run"
-                _, request, selected = choices[0]
-                request = json.loads(request)
-                if replay:
-                    assert selected == "accept" and runs[0][1] == "completed", (selected, runs)
-                    children = [json.loads(row[0]) for row in db.execute(
-                        "SELECT projection FROM native_child WHERE run_id=? ORDER BY rowid", (runs[0][0],))]
-                    assert len(children) == 2 and all(c["result"] == "Written." for c in children)
-                    writer = children[1]
-                    assert writer["path"] == "/root/relay/writer"
-                    assert request["native_child"] == {k: writer[k] for k in ("thread_id", "turn_id")}
-                    print("Codex 0.156.1 replay: Tauri identified and approved /root/relay/writer, both children returned Written.")
-                    return
-                choice = next(o for o in request["options"] if o["optionId"] == selected)
-                assert choice["kind"] == "reject_once"
-                expected = "interrupted" if selected == "cancel" else "completed"
-                assert runs[0][1] == expected, runs
-                assert not (checkout / "approval-check.txt").exists()
-                print(f"{provider}: Tauri selected {selected!r}, same run {expected}, file absent")
-        finally:
-            if state.is_dir():
-                shutil.rmtree(state)
+        controls = launch_thread(checkout, name, "Codex" if provider == "codex" else "Claude Agent")
+        controls.extend(send_message(prompt))
+        if replay:
+            controls.extend([{"permission_from": "/root/relay/writer"}, {"click": "permission/allow_once"},
+                             {"see": "status/Completed"}])
+        else:
+            controls.extend([{"click": "permission/reject_once"},
+                             {"see_any": ["status/Completed", "status/Interrupted"]}])
+        run_window(executable, state, controls, env)
+        with sqlite3.connect(state / "huggler.sqlite3") as db:
+            runs = db.execute("SELECT id,status,error FROM run").fetchall()
+            choices = db.execute("SELECT run_id,request,decision FROM permission").fetchall()
+            assert len(runs) == 1, runs
+            assert len(choices) == 1 and choices[0][0] == runs[0][0], "Expected one permission on the completed run"
+            _, request, selected = choices[0]
+            request = json.loads(request)
+            if replay:
+                assert selected == "accept" and runs[0][1] == "completed", (selected, runs)
+                children = [json.loads(row[0]) for row in db.execute(
+                    "SELECT projection FROM native_child WHERE run_id=? ORDER BY rowid", (runs[0][0],))]
+                assert len(children) == 2 and all(c["result"] == "Written." for c in children)
+                writer = children[1]
+                assert writer["path"] == "/root/relay/writer"
+                assert request["native_child"] == {k: writer[k] for k in ("thread_id", "turn_id")}
+                print("Codex 0.156.1 replay: GPUI identified and approved /root/relay/writer, both children returned Written.")
+                return
+            choice = next(o for o in request["options"] if o["optionId"] == selected)
+            assert choice["kind"] == "reject_once"
+            expected = "interrupted" if selected == "cancel" else "completed"
+            assert runs[0][1] == expected, runs
+            assert not (checkout / "approval-check.txt").exists()
+            print(f"{provider}: GPUI selected {selected!r}, same run {expected}, file absent")
 
 
 if __name__ == "__main__":

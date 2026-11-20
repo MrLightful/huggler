@@ -2,13 +2,13 @@
 
 **Design proposal** based on T3 Code [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9), reviewed 20 November 2026.
 
-Huggler’s goal is one agent orchestration runtime that applications written in different programming languages can embed. Build and distribute the Rust crate through Cargo first, then expose that same runtime through language bindings. The Tauri desktop app is the first host and calls the crate directly from Rust.
+Huggler’s goal is one agent orchestration runtime that applications written in different programming languages can embed. Build and distribute the Rust crate through Cargo first, then expose that same runtime through language bindings. The GPUI desktop app is the first host and calls the crate directly from Rust.
 
 The core gives agents persistent conversations, runs them on different coding harnesses, and lets them message peers or delegate work. SQLite stores Huggler state. Provider adapters talk to local executables or external servers. The base desktop app needs no Node.js runtime for Huggler.
 
 Use T3 Code to identify capabilities and regression scenarios. Huggler can choose its own API, persistence schema and provider transports as long as the intended workflow is covered. Some outcomes depend on provider-native features, and some require a host integration. Record those prerequisites alongside the evidence. [Orchestrator][src-1] · [Server composition][src-2] · [Agent tool service][src-3]
 
-Start with a Codex conversation that survives reopening the Tauri app. Then qualify a second provider with a live approval in the UI and prove cross-provider messaging and delegation. [First milestone](first-milestone.md) · [Two-harness scenarios](extraction-plan.md#3-prove-agent-to-agent-operation-with-two-harnesses)
+Start with a Codex conversation that survives reopening the GPUI app. Then qualify a second provider with a live approval in the UI and prove cross-provider messaging and delegation. [First milestone](first-milestone.md) · [Two-harness scenarios](extraction-plan.md#3-prove-agent-to-agent-operation-with-two-harnesses)
 
 ## What an application gets
 
@@ -25,7 +25,7 @@ Start with a Codex conversation that survives reopening the Tauri app. Then qual
 
 | When you need to… | Open |
 | --- | --- |
-| Design an application that creates agents, sends messages, waits and handles human requests | [Proposed Rust API, Tauri integration and a two-harness example](sdk-proposal.md) |
+| Design an application that creates agents, sends messages, waits and handles human requests | [Proposed Rust API, GPUI integration and a two-harness example](sdk-proposal.md) |
 | Trace a command from intake through SQLite to the provider and back to a subscriber | [Runtime architecture and per-harness differences](upstream-orchestration.md) |
 | Look up the reference behavior for a command, read, stream, effect or MCP tool | [T3 Code capability inventory](parity-inventory.md) |
 | Pick the next implementation task and see what proves it works | [Seven-stage extraction plan](extraction-plan.md) |

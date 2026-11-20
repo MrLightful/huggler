@@ -1,6 +1,6 @@
 # Stage 2 qualification · Resume a Codex conversation
 
-The packaged `huggler` library and the installed Tauri app both continued a conversation after reopening SQLite. The second prompt started a new application run and a new Codex turn on the original native thread. A sibling thread in the same Git checkout kept its own conversation and events. [Stage 2 acceptance](extraction-plan.md#2-build-the-rust-core-and-run-one-durable-thread)
+The packaged `huggler` library and the installed desktop app both continued a conversation after reopening SQLite. The second prompt started a new application run and a new Codex turn on the original native thread. A sibling thread in the same Git checkout kept its own conversation and events. [Stage 2 acceptance](extraction-plan.md#2-build-the-rust-core-and-run-one-durable-thread)
 
 ## Reproduce the checks
 
@@ -37,9 +37,9 @@ The send transaction commits the receipt, user message, run, events and pending 
 
 Stage 2 supports one configured Codex instance, root-checkout launches and idle sends. An active turn produces `Error::Busy` on a second send. A model selection applies to subsequent turns. Human permission decisions and multi-provider routing begin in Stage 3. [Codex adapter](../src/providers/codex.rs)
 
-## Installed desktop result
+## Original Stage 2 desktop result
 
-The live check ran on Apple Silicon, macOS 27.0.1, Xcode 27.2, Rust/Cargo 1.94.1, Tauri 2.12.6 and Codex CLI 0.170.0 using the locally configured model. It installed an ad-hoc signed release bundle in `~/Applications` and ran the installed executable from `/` with a Node-free PATH. It also inspected bundle files and executable linkage for Node. A qualification-only script drove the normal WebView controls, read the rendered answers and clicked Quit. Between launches the checker verified the process exit, native bindings, completed runs and empty effect table in app data. [Installed check](../scripts/check-desktop.py) · [UI assertions](../scripts/desktop-smoke.js)
+The live check ran on Apple Silicon, macOS 27.0.1, Xcode 27.2, Rust/Cargo 1.94.1, Tauri 2.12.6 and Codex CLI 0.170.0 using the locally configured model. It installed an ad-hoc signed release bundle in `~/Applications` and ran the installed executable from `/` with a Node-free PATH. It also inspected bundle files and executable linkage for Node. A qualification-only script drove the normal WebView controls, read the rendered answers and clicked Quit. Between launches the checker verified the process exit, native bindings, completed runs and empty effect table in app data.
 
 | App launch | Result observed through the UI |
 | --- | --- |
@@ -47,9 +47,31 @@ The live check ran on Apple Silicon, macOS 27.0.1, Xcode 27.2, Rust/Cargo 1.94.1
 | 2 | Reopened with the first answer visible. Codex returned the first and second markers on separate lines. SQLite retained the same application/native thread pair and two distinct native turns. |
 | 3 | Restored the two-turn conversation, opened a sibling and observed one answer there. SQLite held three completed runs across two native threads. |
 
-To install the ordinary interactive build, choose an unused destination and run the following commands with Codex available to the app. Its database is `~/Library/Application Support/dev.huggler.stage2/huggler.sqlite3`. Each automated check uses a unique bundle identifier, prints the corresponding database path, and removes its qualification bundle on success. Desktop qualification covers macOS arm64. Linux and Windows installed builds remain open for release qualification. [Installer](../scripts/install-desktop.py) · [Tauri host](../desktop/src/main.rs)
+## Running the GPUI host
+
+The native GPUI app opens the existing database at `~/Library/Application Support/dev.huggler.stage2/huggler.sqlite3`. It saves the selected thread alongside the database. On the first GPUI launch it opens the oldest saved conversation, or the new conversation form if the database is empty. All existing threads are available in the sidebar. The desktop package and its lockfile are separate from the published Rust library. [Host](../desktop/src/main.rs) · [Conversation view](../desktop/src/conversation.rs)
+
+On macOS with Rust, Cargo and Xcode installed, run the app from a terminal with the provider executable on PATH. Set `HUGGLER_CODEX` to an absolute path if needed. GPUI compiles its Metal shaders at runtime.
+
+```sh
+cargo run --locked --release --manifest-path desktop/Cargo.toml --target-dir target/desktop
+```
+
+To install an ad-hoc signed bundle, choose an unused destination. The second command launches the installed executable with your shell environment.
 
 ```sh
 python3 scripts/install-desktop.py "$HOME/Applications/Huggler.app"
-open "$HOME/Applications/Huggler.app"
+"$HOME/Applications/Huggler.app/Contents/MacOS/huggler-desktop"
 ```
+
+The installed checks use temporary bundles, checkouts and state directories. Run the recorded permission check offline after building. The other two commands require a signed-in Codex CLI. [Installer](../scripts/install-desktop.py) · [Resume check](../scripts/check-desktop.py) · [Permission checks](../scripts/check-permission.py)
+
+```sh
+python3 scripts/check-permission.py recorded-codex
+python3 scripts/check-desktop.py
+python3 scripts/check-permission.py codex
+```
+
+On macOS arm64, the installed GPUI 0.2.2 app completed three live turns with Codex CLI 0.170.0 over app-server stdio. After restarting, the second turn recalled the first answer on the same native thread. A sibling conversation had its own native thread and history. The fourth launch restored that sibling, and switching back displayed the original two-turn conversation.
+
+In the live permission check, selecting **Deny and stop turn** interrupted the requesting run and left the file absent. In the Codex 0.156.1 recording, the app displayed the requesting grandchild’s path, `/root/relay/writer`. Selecting **Allow** let both children finish with `Written.`. Desktop verification covers macOS arm64.

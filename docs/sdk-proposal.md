@@ -1,6 +1,6 @@
 # Huggler Rust crate proposal
 
-Huggler is an async Rust library for durable agent orchestration. The Rust crate is the shared implementation. Deliver it through Cargo first, then build bindings so applications in other languages can use the same runtime. The first host is a Tauri desktop app whose Rust backend opens the crate in-process and owns its lifecycle. Provider-specific runtime or bridge dependencies belong to their adapters. The base desktop app runs without Node.js.
+Huggler is an async Rust library for durable agent orchestration. The Rust crate is the shared implementation. Deliver it through Cargo first, then build bindings so applications in other languages can use the same runtime. The first host is a native desktop app built with Zed’s GPUI framework. It opens the crate in-process and owns its lifecycle. Provider-specific runtime or bridge dependencies belong to their adapters. The base desktop app runs without Node.js.
 
 T3 Code supplies reference scenarios for user-visible behavior. Huggler can define its own Rust types, storage schema and transport payloads. Provider-native operations depend on the selected harness and version. [T3 Code behavior inventory](parity-inventory.md)
 
@@ -20,7 +20,7 @@ Preserve applicable license notices when reusing code or fixtures. [Agent tool m
 | Proposed Rust module | Responsibility |
 | --- | --- |
 | `huggler` | Open and close the runtime, configure provider instances, manage projects, launch threads, send, read, wait and answer requests. |
-| `huggler::contracts` | Typed IDs, commands, events, capabilities and errors. Serialize explicit DTOs at the Tauri or remote API boundary. |
+| `huggler::contracts` | Typed IDs, commands, events, capabilities and errors. The desktop host uses these types directly. Serialize explicit DTOs for remote APIs. |
 | `huggler::providers` | Driver configuration, discovery and health, continuation identity, session lifecycle and normalized provider events. |
 | `huggler::mcp` and `huggler::rpc` | Scope agent tools to a live caller. Provide an authenticated remote application transport when a host needs one. |
 | `huggler::integrations` | Optional implementations and host interfaces for workspace preparation, Git, schedules, source control, secrets, terminal, previews and other integrations. |
@@ -28,13 +28,13 @@ Preserve applicable license notices when reusing code or fixtures. [Agent tool m
 
 The host provides a writable app-data directory, provider configuration and the integrations it enables. The runtime owns migrations, command receipts, event publication, provider processes it starts and their cleanup. An instance identifies its own account, environment and continuation policy.
 
-## Embed in Tauri
+## Embed in GPUI
 
-1. In the Rust backend, resolve the app-data directory and open one `Huggler` runtime for it. Keep the handle in Tauri managed state.
-2. Expose typed commands for project and thread operations and for answering human requests. Use a Tauri IPC channel for each active thread subscription and forward serializable frames. Release the subscription when its view closes. The host keeps the state directory, credentials and provider management on the Rust side.
-3. On app shutdown, stop accepting new work and await `Huggler::close()`. On the next launch, reopen the same state directory and reconcile persisted work and provider sessions before accepting new commands.
+1. Open one `Huggler` with the app-data directory on a Tokio runtime. Give the GPUI conversation view a handle to the core.
+2. Call the crate directly to open a project, launch or select a thread, send a prompt and answer a permission request. Render the snapshot from `subscribe` and refresh the view when its stream advances. Drop the subscription when switching conversations.
+3. On app shutdown, await `Huggler::close()` while Tokio is still running. On the next launch, open the same directory and restore the selected conversation.
 
-The application can embed the core even when a provider runs in a child process. Discover the required executables per instance and report missing installs or login as instance status. Qualify optional adapter assets independently on each supported OS and architecture. [Tauri commands and channels](https://v2.tauri.app/develop/calling-rust/) · [Provider qualification](extraction-plan.md#4-qualify-every-provider-instance-and-capability)
+The UI lives in the desktop package. Other consumers can use the Cargo crate independently. Provider executables and their credentials belong to the relevant adapter. [Desktop entry point](../desktop/src/main.rs) · [Conversation view](../desktop/src/conversation.rs) · [Provider qualification](extraction-plan.md#4-qualify-every-provider-instance-and-capability)
 
 ## Two agents in one application
 
