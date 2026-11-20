@@ -109,6 +109,7 @@ pub struct Receipt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
+    Queued,
     Starting,
     Running,
     Waiting,
@@ -137,10 +138,35 @@ pub enum Role {
     Assistant,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageOrigin {
+    pub thread_id: ThreadId,
+    pub run_id: RunId,
+    pub request_key: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerDelivery {
+    Started,
+    Queued,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerReceipt {
+    pub thread_id: ThreadId,
+    pub message_id: MessageId,
+    pub run_id: RunId,
+    pub delivery: PeerDelivery,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub id: MessageId,
     pub run_id: RunId,
     pub role: Role,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
     pub text: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -204,6 +230,8 @@ fn display_error<E: fmt::Display, S: serde::Serializer>(
 pub enum Error {
     #[error("state directory already has a runtime owner")]
     AlreadyOpen,
+    #[error("agent caller lacks access to this operation")]
+    Forbidden,
     #[error("provider turn interrupted")]
     Interrupted,
     #[error("runtime is closed")]

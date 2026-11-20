@@ -4,7 +4,13 @@ mod rpc;
 use crate::{NativeThreadId, NativeTurnId, Provider};
 use std::path::PathBuf;
 
+pub(crate) struct AgentTools {
+    pub url: String,
+    pub token: String,
+}
+
 pub(crate) struct Turn {
+    pub agent_tools: Option<AgentTools>,
     pub provider: Provider,
     pub cwd: PathBuf,
     pub name: String,

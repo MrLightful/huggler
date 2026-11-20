@@ -8,9 +8,11 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 The standalone Claude ACP adapter 0.109.0 and its bundled Claude Code 2.1.328 initialized and created a session over stdio. Claude reported signed out. The ACP fixture verifies approval, denial, rejection of invalid or duplicate decisions, and continuation after reopening. The final Rust suite passed with `cargo test --locked`. Live cross-provider collaboration remains open. [Permission test](../tests/permissions.rs) · [ACP fixture](../tests/fixtures/permission-acp.py)
 
-**Next action.** Use two independent Codex threads on the existing subscription. Implement caller-scoped `thread_send` on the `huggler` MCP server. Have the reviewer reply to the sender address, retry that reply, and verify one delivery with the original sender, run IDs and receipt after reopening. Then exercise `delegate_task` and verify that a stored child result wakes its idle parent exactly once. Keep using the ACP fixture for repeatable second-adapter checks and revisit the live cross-provider case when a second authenticated harness is available within budget. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+Two live Codex CLI 0.170.0 threads discovered each other and exchanged a review through the loopback `huggler` MCP server. The reviewer issued two identical `thread_send` calls. Both returned the same message ID, and reopening showed one reply from the reviewer with its original run ID and receipt. Reproduce with `cargo test --locked --test peers live_codex_peer_exchange -- --ignored`. The offline ACP tests also cover revocation, cross-project denial and restart with queued deliveries. [Peer tests](../tests/peers.rs)
 
-**Branch recommendation.** Commit the verified permission work and continue Stage 3 on this branch. Peer messaging and delegation are still pending.
+**Next action.** Implement asynchronous `delegate_task` for a shared checkout. Let the parent go idle, read a stored child result through the Rust host, and verify that completion wakes the parent exactly once across reopen. Check acknowledgement from the owning parent. Continue to use the ACP fixture for repeatable second-adapter checks. Live cross-provider qualification requires a second authenticated harness available within budget. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+
+**Branch recommendation.** Commit and continue Stage 3 on this branch. The peer exchange and permission checks pass. Delegation remains open.
 
 ### Maintaining the handoff
 

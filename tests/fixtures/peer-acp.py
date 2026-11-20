@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""ACP harness using the HTTP MCP transport on both session/new and session/load."""
+import json
+import sys
+import uuid
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+
+def emit(**frame):
+    print(json.dumps({"jsonrpc": "2.0", **frame}), flush=True)
+
+
+def mcp(method, params, headers=None):
+    frame = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    req = Request(server["url"], json.dumps(frame).encode(), headers={
+        "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+        **(auth if headers is None else headers),
+    })
+    with urlopen(req, timeout=5) as response:
+        return json.load(response)
+
+
+def call(name, **arguments):
+    result = mcp("tools/call", {"name": name, "arguments": arguments})
+    assert "error" not in result, result
+    return result["result"]["structuredContent"]
+
+
+def deliver(thread, key, text, **extra):
+    return call("thread_send", threadId=thread, clientRequestId=key, message=text, **extra)
+
+
+def hold():
+    emit(id="permission", method="session/request_permission", params={
+        "sessionId": session, "toolCall": {"toolCallId": "hold", "title": "Hold this turn"},
+        "options": [{"optionId": "done", "name": "Continue", "kind": "allow_once"}],
+    })
+
+
+def finish(answer):
+    emit(method="session/update", params={"sessionId": session, "update": {
+        "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": answer}
+    }})
+    emit(id=prompt_id, result={"stopReason": "end_turn"})
+
+
+for line in sys.stdin:
+    frame = json.loads(line)
+    method = frame.get("method")
+    params = frame.get("params", {})
+    if method == "initialize":
+        emit(id=frame["id"], result={"protocolVersion": 1, "agentCapabilities": {
+            "loadSession": True, "mcpCapabilities": {"http": True}}})
+    elif method in ("session/new", "session/load"):
+        session = params.get("sessionId", str(uuid.uuid4()))
+        server, = params["mcpServers"]
+        assert server["name"] == "huggler" and server["type"] == "http"
+        auth = {h["name"]: h["value"] for h in server["headers"]}
+        init = mcp("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                                  "clientInfo": {"name": "peer-fixture", "version": "1"}})
+        assert init["result"]["serverInfo"]["name"] == "huggler"
+        emit(id=frame["id"], result={"sessionId": session, "modes": {"currentModeId": "default"}})
+    elif method == "session/prompt":
+        prompt_id = frame["id"]
+        text = params["prompt"][0]["text"]
+        tools = mcp("tools/list", {})["result"]["tools"]
+        assert {"thread_list", "thread_send"} <= {t["name"] for t in tools}
+        if text.startswith("Use the huggler"):
+            peers = call("thread_list")["threads"]
+            assert [t["id"] for t in peers] == ["reviewer"]
+            assert deliver("outside", "review-1", "unreachable")["code"] == "forbidden"
+            bad = mcp("tools/call", {"name": "thread_send", "arguments": {
+                "threadId": "reviewer", "message": "bad", "clientRequestId": "review-1", "mode": "admin"}})
+            assert "error" in bad or bad["result"]["isError"]
+            deliver(peers[0]["id"], "review-1", "Review 2+2")
+            finish("Review requested")
+        elif text == "hold":
+            hold()
+        elif text == "queue-two":
+            for key in ("first", "second"):
+                assert deliver("author", key, key)["delivery"] == "queued"
+            hold()
+        elif text.startswith("Peer message from Huggler "):
+            attribution, message = text.split("\n\n", 1)
+            sender = json.loads(attribution.removeprefix("Peer message from Huggler "))["thread_id"]
+            if message == "Review 2+2":
+                first = deliver(sender, "reply-1", "2+2=4")
+                retry = deliver(sender, "reply-1", "2+2=4")
+                assert first == retry
+                assert deliver(sender, "reply-1", "different")["code"] == "conflict"
+                finish(first["messageId"] + " " + retry["messageId"])
+            else:
+                finish("Received " + message)
+        else:
+            raise AssertionError("unknown fixture prompt")
+    elif frame["id"] == "permission":
+        if text == "queue-two":
+            try:
+                deliver("author", "revoked", "unreachable")
+            except HTTPError as e:
+                assert e.code == 401
+            else:
+                raise AssertionError("revoked caller retained access")
+        finish("released")

@@ -29,6 +29,12 @@ impl Default for CodexOptions {
     }
 }
 
+enum Approval {
+    Command,
+    Permissions(Value),
+    Mcp,
+}
+
 struct Client {
     rpc: Rpc,
     next_id: u64,
@@ -45,6 +51,7 @@ impl Client {
                     Some(
                         "item/commandExecution/requestApproval"
                             | "item/permissions/requestApproval"
+                            | "mcpServer/elicitation/request"
                     )
                 ) {
                     return Ok(frame);
@@ -84,6 +91,7 @@ impl Client {
                             | "turn/completed"
                             | "item/commandExecution/requestApproval"
                             | "item/permissions/requestApproval"
+                            | "mcpServer/elicitation/request"
                     )
                 )
             {
@@ -114,6 +122,12 @@ impl Client {
             "tools.update_plan.enabled":true, "mcp_optional_startup_grace_ms":10000,
             "features.concurrent_reasoning_summaries":true
         }});
+        if let Some(tools) = &turn.agent_tools {
+            session["config"]["mcp_servers.huggler"] = json!({
+                "url": tools.url, "bearer_token_env_var": "HUGGLER_MCP_TOKEN",
+                "required": true
+            });
+        }
         if request_approvals {
             session["approvalPolicy"] = json!("on-request");
             session["sandbox"] = json!("read-only");
@@ -168,10 +182,11 @@ impl Client {
                     frame = self.read() => frame?,
                     decision = permissions.decisions.recv() => {
                         let (request,option) = decision.ok_or(Error::Closed)?;
-                        let (wire_id, profile): (Value,Option<Value>) = pending.remove(&request).ok_or_else(||protocol("expired approval"))?;
-                        let result = match profile {
-                            Some(profile) => json!({"permissions":if option=="accept" {profile} else {json!({})},"scope":"turn"}),
-                            None => json!({"decision":option}),
+                        let (wire_id, approval) = pending.remove(&request).ok_or_else(||protocol("expired approval"))?;
+                        let result = match approval {
+                            Approval::Permissions(profile) => json!({"permissions":if option=="accept" {profile} else {json!({})},"scope":"turn"}),
+                            Approval::Command => json!({"decision":option}),
+                            Approval::Mcp => json!({"action":option,"content":if option=="accept" {json!({})} else {Value::Null}}),
                         };
                         self.rpc.write(json!({"id":wire_id,"result":result})).await?;
                         continue;
@@ -184,14 +199,31 @@ impl Client {
                     self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"No matching interactive run"}})).await?;
                     continue;
                 }
-                let profile = (frame["method"] == "item/permissions/requestApproval")
-                    .then(|| p["permissions"].clone());
-                let request = RequestId(uuid::Uuid::new_v4().to_string());
-                let title = if profile.is_some() {
-                    "Grant permissions for this turn"
-                } else {
-                    "Run command outside the sandbox"
+                let (approval, title) = match frame["method"].as_str() {
+                    Some("item/permissions/requestApproval") => (
+                        Approval::Permissions(p["permissions"].clone()),
+                        "Grant permissions for this turn",
+                    ),
+                    Some("mcpServer/elicitation/request")
+                        if turn.agent_tools.is_some()
+                            && p["serverName"] == "huggler"
+                            && p["mode"] == "form"
+                            && p["_meta"]["codex_approval_kind"] == "mcp_tool_call" =>
+                    {
+                        (
+                            Approval::Mcp,
+                            p["message"].as_str().unwrap_or("Use Huggler agent tool"),
+                        )
+                    }
+                    Some("item/commandExecution/requestApproval") => {
+                        (Approval::Command, "Run command outside the sandbox")
+                    }
+                    _ => {
+                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32601,"message":"Unsupported host request"}})).await?;
+                        continue;
+                    }
                 };
+                let request = RequestId(uuid::Uuid::new_v4().to_string());
                 let options = [
                     ("accept", "Allow", "allow_once"),
                     ("decline", "Deny", "reject_once"),
@@ -211,7 +243,7 @@ impl Client {
                     kind: kind.into(),
                 })
                 .collect();
-                pending.insert(request.clone(), (wire_id.clone(), profile));
+                pending.insert(request.clone(), (wire_id.clone(), approval));
                 (permissions.publish)(PermissionRequest {
                     id: request,
                     run_id: permissions.run.clone(),

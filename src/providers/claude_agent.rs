@@ -53,10 +53,18 @@ impl Session<'_> {
         }
     }
 
-    async fn configure(&mut self, turn: &Turn, servers: Value) -> Result<String> {
+    async fn configure(&mut self, turn: &Turn) -> Result<String> {
         let init = self.request("initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"huggler","version":env!("CARGO_PKG_VERSION")}})).await?;
         if init["protocolVersion"] != 1 {
             return Err(protocol("ACP v1 required"));
+        }
+        let mut servers = vec![];
+        if let Some(tools) = &turn.agent_tools {
+            if init.pointer("/agentCapabilities/mcpCapabilities/http") != Some(&Value::Bool(true)) {
+                return Err(protocol("adapter does not support HTTP MCP servers"));
+            }
+            servers.push(json!({"name":"huggler","type":"http","url":tools.url,
+                "headers":[{"name":"Authorization","value":format!("Bearer {}",tools.token)}]}));
         }
         let mut params = json!({"cwd":turn.cwd,"mcpServers":servers});
         let (session, info) = if let Some(native) = &turn.resume {
@@ -115,7 +123,6 @@ fn result(frame: &Value, id: u64, method: &str) -> Result<Value> {
 pub(crate) async fn execute(
     options: &ClaudeAgentOptions,
     turn: Turn,
-    servers: Value,
     mut stop: watch::Receiver<bool>,
     update: impl Fn(Update) -> Result<()>,
     mut permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
@@ -129,7 +136,7 @@ pub(crate) async fn execute(
             rpc: &mut rpc,
             sequence: 0,
         };
-        let session = client.configure(&turn, servers).await?;
+        let session = client.configure(&turn).await?;
         update(Update::Bound(NativeThreadId(session.clone())))?;
         let prompt = client
             .send(

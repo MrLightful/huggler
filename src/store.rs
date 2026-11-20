@@ -17,6 +17,7 @@ const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
 fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
     let status: String = row.get(2)?;
     let status = match status.as_str() {
+        "queued" => RunStatus::Queued,
         "starting" => RunStatus::Starting,
         "running" => RunStatus::Running,
         "waiting" => RunStatus::Waiting,
@@ -57,6 +58,7 @@ fn message(
     thread: &ThreadId,
     run_id: &RunId,
     role: Role,
+    origin: Option<MessageOrigin>,
     text: String,
 ) -> Result<(MessageId, i64)> {
     let id = MessageId(new_id());
@@ -65,8 +67,14 @@ fn message(
         Role::Assistant => "assistant",
     };
     tx.execute(
-        "INSERT INTO message(id,run_id,role,text) VALUES(?,?,?,?)",
-        params![id.0, run_id.0, stored_role, text],
+        "INSERT INTO message(id,run_id,role,text,origin) VALUES(?,?,?,?,?)",
+        params![
+            id.0,
+            run_id.0,
+            stored_role,
+            text,
+            origin.as_ref().map(serde_json::to_string).transpose()?
+        ],
     )?;
     let seq = event(
         tx,
@@ -76,11 +84,46 @@ fn message(
                 id: id.clone(),
                 run_id: run_id.clone(),
                 role,
+                origin,
                 text,
             },
         },
     )?;
     Ok((id, seq))
+}
+
+fn start_message(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+    text: &str,
+    model: Option<String>,
+    origin: Option<MessageOrigin>,
+) -> Result<(RunId, MessageId, Vec<i64>, PeerDelivery)> {
+    if text.trim().is_empty() {
+        return Err(Error::Invalid("empty message".into()));
+    }
+    let busy: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM run WHERE thread_id=? AND status IN ('starting','running','waiting','queued'))",
+        [&thread.0], |r| r.get(0),
+    )?;
+    if busy && origin.is_none() {
+        return Err(Error::Busy);
+    }
+    let (status, delivery) = if busy {
+        ("queued", PeerDelivery::Queued)
+    } else {
+        ("starting", PeerDelivery::Started)
+    };
+    let id = RunId(new_id());
+    tx.execute("INSERT INTO run(id,thread_id,status,ordinal) SELECT ?,?,?,COALESCE(MAX(ordinal),0)+1 FROM run WHERE thread_id=?",
+        params![id.0,thread.0,status,thread.0])?;
+    let started = run_event(tx, thread, &id)?;
+    let (msg, seq) = message(tx, thread, &id, Role::User, origin, text.to_owned())?;
+    tx.execute(
+        "INSERT INTO turn_effect(run_id,model,state) VALUES(?,?,'pending')",
+        params![id.0, model],
+    )?;
+    Ok((id, msg, vec![started, seq], delivery))
 }
 
 pub(crate) struct Database {
@@ -108,23 +151,31 @@ impl Database {
             std::fs::TryLockError::Error(e) => Error::Io(e),
         })?;
         let mut db = Connection::open(dir.join("huggler.sqlite3"))?;
-        db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;")?;
+        db.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA temp_store=MEMORY;",
+        )?;
         let tx = db.transaction()?;
-        match tx.query_row("PRAGMA user_version", [], |r| r.get(0))? {
-            0 => {
-                tx.execute_batch(include_str!("../migrations/001.sql"))?;
-                tx.execute_batch(include_str!("../migrations/002.sql"))?;
-            }
-            1 => tx.execute_batch(include_str!("../migrations/002.sql"))?,
-            2 => {}
-            n => return Err(Error::SchemaVersion(n)),
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let migrations = [
+            include_str!("../migrations/001.sql"),
+            include_str!("../migrations/002.sql"),
+            include_str!("../migrations/003.sql"),
+        ];
+        if !(0..=migrations.len() as i64).contains(&version) {
+            return Err(Error::SchemaVersion(version));
         }
+        for migration in &migrations[version as usize..] {
+            tx.execute_batch(migration)?;
+        }
+        tx.execute_batch(
+            "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
+        )?;
         // Both pending and claimed starts belong to the old process. A send might
         // have reached Codex before its reply was persisted. Never issue it twice.
         let lost = tx
             .prepare(
                 "SELECT r.id, r.thread_id FROM turn_effect e
-                      JOIN run r ON r.id=e.run_id ORDER BY r.rowid",
+                      JOIN run r ON r.id=e.run_id WHERE r.status != 'queued' ORDER BY r.rowid",
             )?
             .query_map([], |row| Ok((RunId(row.get(0)?), ThreadId(row.get(1)?))))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -249,29 +300,11 @@ impl Database {
                 }
             }
             Action::Send { text } => {
-                if text.trim().is_empty() {
-                    return Err(Error::Invalid("empty message".into()));
-                }
-                let busy: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM run WHERE thread_id=? AND status IN ('starting','running','waiting'))",
-                    [&thread.0],
-                    |r| r.get(0),
-                )?;
-                if busy {
-                    return Err(Error::Busy);
-                }
-                let id = RunId(new_id());
-                tx.execute("INSERT INTO run(id,thread_id,status,ordinal) SELECT ?,?,'starting',COALESCE(MAX(ordinal),0)+1 FROM run WHERE thread_id=?",
-                    params![id.0,thread.0,thread.0])?;
-                receipt.event_sequences.push(run_event(&tx, thread, &id)?);
-                let (msg, seq) = message(&tx, thread, &id, Role::User, text.clone())?;
-                receipt.message_id = Some(msg);
-                receipt.event_sequences.push(seq);
-                tx.execute(
-                    "INSERT INTO turn_effect(run_id,model,state) VALUES(?,?,'pending')",
-                    params![id.0, selection.flatten()],
-                )?;
+                let (id, msg, events, _) =
+                    start_message(&tx, thread, text, selection.flatten(), None)?;
                 receipt.run_id = Some(id);
+                receipt.message_id = Some(msg);
+                receipt.event_sequences = events;
             }
         }
         tx.execute(
@@ -285,7 +318,7 @@ impl Database {
     pub fn claim(&mut self, id: &RunId) -> Result<Turn> {
         let tx = self.db.transaction()?;
         let turn = tx.query_row(
-            "SELECT p.root,t.name,m.text,e.model,t.native_thread,t.provider FROM run r
+            "SELECT p.root,t.name,m.text,e.model,t.native_thread,t.provider,m.origin FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
              JOIN message m ON m.run_id=r.id WHERE r.id=? AND m.role='user'",
@@ -293,9 +326,16 @@ impl Database {
             |r| {
                 Ok(Turn {
                     provider: Provider::from_key(&r.get::<_, String>(5)?)?,
+                    agent_tools: None,
                     cwd: r.get::<_, String>(0)?.into(),
                     name: r.get(1)?,
-                    text: r.get(2)?,
+                    text: match r.get::<_, Option<String>>(6)? {
+                        Some(origin) => format!(
+                            "Peer message from Huggler {origin}\n\n{}",
+                            r.get::<_, String>(2)?
+                        ),
+                        None => r.get(2)?,
+                    },
                     model: r.get(3)?,
                     resume: r.get::<_, Option<String>>(4)?.map(NativeThreadId),
                 })
@@ -332,7 +372,7 @@ impl Database {
                 run_event(&tx, thread, id)?;
             }
             Update::Finalizing(text) => {
-                message(&tx, thread, id, Role::Assistant, text)?;
+                message(&tx, thread, id, Role::Assistant, None, text)?;
                 tx.execute("UPDATE run SET status='waiting' WHERE id=?", [&id.0])?;
                 run_event(&tx, thread, id)?;
             }
@@ -418,7 +458,144 @@ impl Database {
     pub fn finish(&mut self, thread: &ThreadId, id: &RunId, result: Result<()>) -> Result<()> {
         let tx = self.db.transaction()?;
         Self::finish_tx(&tx, thread, id, result)?;
+        tx.execute("DELETE FROM agent_grant WHERE run_id=?", [&id.0])?;
         Ok(tx.commit()?)
+    }
+
+    /// Promote the oldest queued message when the previous run has settled.
+    pub fn next_queued(&mut self, thread: &ThreadId) -> Result<Option<RunId>> {
+        let tx = self.db.transaction()?;
+        let id = tx.query_row(
+            "UPDATE run SET status='starting' WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' ORDER BY ordinal LIMIT 1)
+             AND NOT EXISTS(SELECT 1 FROM run WHERE thread_id=?1 AND status IN ('starting','running','waiting')) RETURNING id",
+            [&thread.0], |r| Ok(RunId(r.get(0)?)),
+        ).optional()?;
+        if let Some(id) = &id {
+            run_event(&tx, thread, id)?;
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
+    pub fn queued_threads(&self) -> Result<Vec<ThreadId>> {
+        Ok(self
+            .db
+            .prepare("SELECT DISTINCT thread_id FROM run WHERE status='queued'")?
+            .query_map([], |r| Ok(ThreadId(r.get(0)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn grant(&self, run: &RunId) -> Result<String> {
+        let token = new_id();
+        self.db.execute(
+            "INSERT INTO agent_grant(token,run_id) VALUES(?,?)",
+            params![token, run.0],
+        )?;
+        Ok(token)
+    }
+
+    pub fn revoke(&self, thread: &ThreadId, run: &RunId) -> Result<bool> {
+        Ok(self.db.execute(
+            "DELETE FROM agent_grant WHERE run_id=(SELECT id FROM run WHERE thread_id=? AND id=?)",
+            params![thread.0, run.0],
+        )? != 0)
+    }
+
+    pub fn caller(&self, token: &str) -> Result<(ThreadId, RunId, ProjectId)> {
+        self.db.query_row("SELECT t.id,r.id,t.project FROM agent_grant g JOIN run r ON r.id=g.run_id JOIN thread t ON t.id=r.thread_id
+            WHERE g.token=? AND r.status IN ('starting','running')", [token], |r| Ok((ThreadId(r.get(0)?),RunId(r.get(1)?),ProjectId(r.get(2)?))))
+            .optional()?.ok_or(Error::Forbidden)
+    }
+
+    pub fn peers(&self, token: &str) -> Result<Vec<ThreadSummary>> {
+        let (sender, _, project) = self.caller(token)?;
+        Ok(self
+            .db
+            .prepare("SELECT id,name FROM thread WHERE project=? AND id!=? ORDER BY rowid")?
+            .query_map(params![project.0, sender.0], |r| {
+                Ok(ThreadSummary {
+                    id: ThreadId(r.get(0)?),
+                    name: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn peer_receipt(&self, sender: &ThreadId, key: &str) -> Result<Option<PeerReceipt>> {
+        let json: Option<String> = self
+            .db
+            .query_row(
+                "SELECT result FROM peer_receipt WHERE sender_thread=? AND request_key=?",
+                params![sender.0, key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json.map(|s| serde_json::from_str(&s)).transpose()?)
+    }
+
+    pub fn send_peer(
+        &mut self,
+        token: &str,
+        target: &ThreadId,
+        key: &str,
+        text: &str,
+    ) -> Result<(PeerReceipt, bool)> {
+        let (sender, run_id, project) = self.caller(token)?;
+        if sender == *target {
+            return Err(Error::Invalid("expected an independent peer".into()));
+        }
+        if key.trim().is_empty() {
+            return Err(Error::Invalid("empty clientRequestId".into()));
+        }
+        let model: Option<String> = self
+            .db
+            .query_row(
+                "SELECT model FROM thread WHERE id=? AND project=?",
+                params![target.0, project.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(Error::Forbidden)?;
+        if let Some(receipt) = self.peer_receipt(&sender, key)? {
+            let original: String = self.db.query_row(
+                "SELECT text FROM message WHERE id=?",
+                [&receipt.message_id.0],
+                |r| r.get(0),
+            )?;
+            if receipt.thread_id != *target || original != text {
+                return Err(Error::Conflict {
+                    command: CommandId(key.into()),
+                    original_thread: receipt.thread_id,
+                    requested_thread: target.clone(),
+                });
+            }
+            return Ok((receipt, false));
+        }
+        let tx = self.db.transaction()?;
+        let origin = MessageOrigin {
+            thread_id: sender.clone(),
+            run_id,
+            request_key: key.into(),
+        };
+        let (run_id, message_id, _, delivery) =
+            start_message(&tx, target, text, model, Some(origin))?;
+        let receipt = PeerReceipt {
+            thread_id: target.clone(),
+            run_id,
+            message_id,
+            delivery,
+        };
+        tx.execute(
+            "INSERT INTO peer_receipt(sender_thread,request_key,message_id,result) VALUES(?,?,?,?)",
+            params![
+                sender.0,
+                key,
+                receipt.message_id.0,
+                serde_json::to_string(&receipt)?
+            ],
+        )?;
+        tx.commit()?;
+        Ok((receipt, true))
     }
 
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {
@@ -467,7 +644,7 @@ impl Database {
         thread.messages = self
             .db
             .prepare(
-                "SELECT m.id,m.run_id,m.role,m.text FROM message m JOIN run r ON m.run_id=r.id
+                "SELECT m.id,m.run_id,m.role,m.text,m.origin FROM message m JOIN run r ON m.run_id=r.id
             WHERE r.thread_id=? ORDER BY r.ordinal,m.rowid",
             )?
             .query_map([&id.0], |r| {
@@ -480,6 +657,7 @@ impl Database {
                         Role::Assistant
                     },
                     text: r.get(3)?,
+                    origin: r.get::<_,Option<String>>(4)?.map(|s| serde_json::from_str(&s).map_err(|e|rusqlite::Error::FromSqlConversionFailure(4,rusqlite::types::Type::Text,Box::new(e)))).transpose()?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -521,6 +699,29 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrades_v2_messages_and_events_without_attribution() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let conn = Connection::open(dir.path().join("huggler.sqlite3"))?;
+        conn.execute_batch(include_str!("../migrations/001.sql"))?;
+        conn.execute_batch(include_str!("../migrations/002.sql"))?;
+        conn.execute_batch(r#"INSERT INTO project VALUES('p','/old');
+            INSERT INTO thread(id,project,name) VALUES('t','p','legacy');
+            INSERT INTO run(id,thread_id,ordinal,status) VALUES('r','t',1,'completed');
+            INSERT INTO message VALUES('m','r','assistant','legacy answer');
+            INSERT INTO event(thread_id,change) VALUES('t','{"type":"message","message":{"id":"m","run_id":"r","role":"assistant","text":"legacy answer"}}');"#)?;
+        drop(conn);
+        let thread = ThreadId("t".into());
+        let db = Database::open(dir.path())?;
+        let snapshot = db.read(&thread)?;
+        assert_eq!(snapshot.messages[0].text, "legacy answer");
+        assert_eq!(snapshot.messages[0].origin, None);
+        assert!(
+            matches!(&db.events(&thread,0)?[0].change, Change::Message {message} if message == &snapshot.messages[0])
+        );
+        Ok(())
+    }
 
     #[test]
     fn recovery_finishes_a_persisted_answer_exactly_once() -> Result<()> {

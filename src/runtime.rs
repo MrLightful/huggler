@@ -21,6 +21,8 @@ use tokio::{
 #[derive(Clone, Debug)]
 pub struct HugglerOptions {
     pub state_dir: PathBuf,
+    /// Enable caller-scoped orchestration tools over loopback HTTP.
+    pub agent_tools: bool,
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,
 }
@@ -28,13 +30,18 @@ impl HugglerOptions {
     pub fn new(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
+            agent_tools: false,
             codex: CodexOptions::default(),
             claude_agent: ClaudeAgentOptions::default(),
         }
     }
 }
 
-struct Shared {
+pub(crate) struct Shared {
+    options: HugglerOptions,
+    endpoint: Option<String>,
+    handle: Handle,
+    workers: Mutex<Option<JoinSet<()>>>,
     db: Mutex<Option<Database>>,
     decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
@@ -43,7 +50,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn access<T>(&self, f: impl FnOnce(&mut Database) -> Result<T>) -> Result<T> {
+    pub(crate) fn access<T>(&self, f: impl FnOnce(&mut Database) -> Result<T>) -> Result<T> {
         let mut db = self.db.lock().unwrap();
         if *self.stop.borrow() {
             return Err(Error::Closed);
@@ -54,70 +61,127 @@ impl Shared {
         f(db.as_mut().ok_or(Error::Closed)?)
     }
 
-    async fn execute(&self, options: HugglerOptions, thread: ThreadId, run: RunId) {
-        let claim = self.access(|db| db.claim(&run));
-        let result = match claim {
-            Ok(turn) => {
-                let update = |change| {
-                    self.access(|db| db.update(&thread, &run, change))?;
-                    self.changed.send_replace(());
-                    Ok(())
-                };
-                let (tx, decisions) = mpsc::unbounded_channel();
-                self.decisions.lock().unwrap().insert(run.clone(), tx);
-                let permissions = crate::providers::Permissions {
-                    run: run.clone(),
-                    decisions,
-                    publish: |request| {
-                        self.access(|db| db.request_permission(&thread, request))?;
-                        self.changed.send_replace(());
-                        Ok(())
-                    },
-                };
-                let result = match turn.provider {
-                    Provider::Codex => {
-                        codex::execute(
-                            options.codex,
-                            turn,
-                            self.stop.subscribe(),
-                            update,
-                            permissions,
-                        )
-                        .await
-                    }
-                    Provider::ClaudeAgent => {
-                        claude_agent::execute(
-                            &options.claude_agent,
-                            turn,
-                            serde_json::json!([]),
-                            self.stop.subscribe(),
-                            update,
-                            permissions,
-                        )
-                        .await
-                    }
-                };
-                self.decisions.lock().unwrap().remove(&run);
-                result
+    // Hold the intake gate through commit and worker registration. Shutdown
+    // takes this same gate before taking ownership of all registered workers.
+    fn schedule<T>(
+        self: &Arc<Self>,
+        write: impl FnOnce(&mut Database) -> Result<(T, Option<(ThreadId, RunId)>)>,
+    ) -> Result<T> {
+        let mut gate = self.workers.lock().unwrap();
+        let workers = gate.as_mut().ok_or(Error::Closed)?;
+        while let Some(completed) = workers.try_join_next() {
+            if let Err(e) = completed {
+                return Err(Error::Worker(e.to_string()));
             }
-            Err(e) => Err(e),
-        };
-        // close joins this task before dropping the connection. Persist a terminal
-        // result even when shutdown interrupted a provider call.
-        let mut db = self.db.lock().unwrap();
-        if let Err(e) = db.as_mut().unwrap().finish(&thread, &run, result) {
-            *self.fault.lock().unwrap() = Some(e.to_string());
         }
+        let (value, job) = self.access(write)?;
         self.changed.send_replace(());
+        if let Some((thread, run)) = job {
+            let shared = self.clone();
+            workers.spawn_on(async move { shared.work(thread, run).await }, &self.handle);
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn send_peer(
+        self: &Arc<Self>,
+        token: &str,
+        target: ThreadId,
+        key: &str,
+        text: &str,
+    ) -> Result<PeerReceipt> {
+        self.schedule(|db| {
+            let (receipt, fresh) = db.send_peer(token, &target, key, text)?;
+            let job = (fresh && receipt.delivery == PeerDelivery::Started)
+                .then(|| (target, receipt.run_id.clone()));
+            Ok((receipt, job))
+        })
+    }
+
+    async fn work(&self, thread: ThreadId, mut run: RunId) {
+        loop {
+            let result = self.execute(&thread, &run).await;
+            let mut guard = self.db.lock().unwrap();
+            let db = guard
+                .as_mut()
+                .expect("close joins workers before releasing storage");
+            let next = db.finish(&thread, &run, result).and_then(|()| {
+                if *self.stop.borrow() {
+                    Ok(None)
+                } else {
+                    db.next_queued(&thread)
+                }
+            });
+            self.changed.send_replace(());
+            match next {
+                Ok(Some(id)) => run = id,
+                Ok(None) => break,
+                Err(error) => {
+                    *self.fault.lock().unwrap() = Some(error.to_string());
+                    self.changed.send_replace(());
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn execute(&self, thread: &ThreadId, run: &RunId) -> Result<()> {
+        let turn = self.access(|db| {
+            let mut turn = db.claim(run)?;
+            if let Some(url) = &self.endpoint {
+                turn.agent_tools = Some(crate::providers::AgentTools {
+                    url: url.clone(),
+                    token: db.grant(run)?,
+                });
+            }
+            Ok(turn)
+        })?;
+        let update = |change| {
+            self.access(|db| db.update(thread, run, change))?;
+            self.changed.send_replace(());
+            Ok(())
+        };
+        let (tx, decisions) = mpsc::unbounded_channel();
+        self.decisions.lock().unwrap().insert(run.clone(), tx);
+        let permissions = crate::providers::Permissions {
+            run: run.clone(),
+            decisions,
+            publish: |request| {
+                self.access(|db| db.request_permission(thread, request))?;
+                self.changed.send_replace(());
+                Ok(())
+            },
+        };
+        let result = match turn.provider {
+            Provider::Codex => {
+                codex::execute(
+                    self.options.codex.clone(),
+                    turn,
+                    self.stop.subscribe(),
+                    update,
+                    permissions,
+                )
+                .await
+            }
+            Provider::ClaudeAgent => {
+                claude_agent::execute(
+                    &self.options.claude_agent,
+                    turn,
+                    self.stop.subscribe(),
+                    update,
+                    permissions,
+                )
+                .await
+            }
+        };
+        self.decisions.lock().unwrap().remove(run);
+        result
     }
 }
 
 /// The owner of a state directory. Share this handle via Arc inside the host.
 pub struct Huggler {
     shared: Arc<Shared>,
-    options: HugglerOptions,
-    handle: Handle,
-    workers: Mutex<Option<JoinSet<()>>>,
     closed: watch::Sender<bool>,
 }
 
@@ -128,19 +192,51 @@ impl Huggler {
         let db = tokio::task::spawn_blocking(move || Database::open(&dir))
             .await
             .map_err(|e| Error::Worker(e.to_string()))??;
-        Ok(Self {
-            shared: Arc::new(Shared {
-                db: Mutex::new(Some(db)),
-                decisions: Mutex::default(),
-                fault: Mutex::default(),
-                changed: watch::channel(()).0,
-                stop: watch::channel(false).0,
-            }),
+        let listener = if options.agent_tools {
+            Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?)
+        } else {
+            None
+        };
+        let endpoint = listener
+            .as_ref()
+            .map(|l| l.local_addr().map(|addr| format!("http://{addr}/mcp")))
+            .transpose()?;
+        let queued = db.queued_threads()?;
+        let shared = Arc::new(Shared {
+            db: Mutex::new(Some(db)),
+            decisions: Mutex::default(),
+            fault: Mutex::default(),
+            changed: watch::channel(()).0,
+            stop: watch::channel(false).0,
             options,
+            endpoint,
             handle: Handle::current(),
             workers: Mutex::new(Some(JoinSet::new())),
+        });
+        let runtime = Self {
+            shared,
             closed: watch::channel(false).0,
-        })
+        };
+        if let Some(listener) = listener {
+            let shared = &runtime.shared;
+            shared
+                .workers
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .spawn(crate::mcp::serve(
+                    listener,
+                    shared.clone(),
+                    shared.stop.subscribe(),
+                ));
+        }
+        for thread in queued {
+            runtime
+                .shared
+                .schedule(|db| Ok(((), db.next_queued(&thread)?.map(|id| (thread, id)))))?;
+        }
+        Ok(runtime)
     }
 
     /// Resolve the enclosing Git checkout and store its absolute working directory.
@@ -162,26 +258,15 @@ impl Huggler {
     /// Commit a launch, model selection or message. Reusing the same command
     /// identity and payload returns the original receipt, including after reopen.
     pub fn dispatch(&self, command: Command) -> Result<Receipt> {
-        let mut gate = self.workers.lock().unwrap();
-        let workers = gate.as_mut().ok_or(Error::Closed)?;
-        while let Some(completed) = workers.try_join_next() {
-            if let Err(e) = completed {
-                return Err(Error::Worker(e.to_string()));
-            }
-        }
-        let (receipt, fresh) = self.shared.access(|db| db.dispatch(&command))?;
-        if fresh {
-            self.shared.changed.send_replace(());
-            if let Some(run) = receipt.run_id.clone() {
-                let shared = self.shared.clone();
-                let options = self.options.clone();
-                workers.spawn_on(
-                    async move { shared.execute(options, command.thread_id, run).await },
-                    &self.handle,
-                );
-            }
-        }
-        Ok(receipt)
+        self.shared.schedule(|db| {
+            let (receipt, fresh) = db.dispatch(&command)?;
+            let job = receipt
+                .run_id
+                .clone()
+                .filter(|_| fresh)
+                .map(|run| (command.thread_id, run));
+            Ok((receipt, job))
+        })
     }
 
     pub fn launch(
@@ -228,6 +313,16 @@ impl Huggler {
         tx.send((id.clone(), option))
             .map_err(|_| Error::NotFound("live permission responder".into()))
     }
+    /// Read the original delivery receipt, including after the sender settles.
+    pub fn peer_receipt(&self, sender: &ThreadId, key: &str) -> Result<Option<PeerReceipt>> {
+        self.shared.access(|db| db.peer_receipt(sender, key))
+    }
+
+    /// Withdraw a live run's ability to call agent tools.
+    pub fn revoke_agent_tools(&self, thread: &ThreadId, run: &RunId) -> Result<bool> {
+        self.shared.access(|db| db.revoke(thread, run))
+    }
+
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {
         self.shared.access(|db| db.threads())
     }
@@ -268,15 +363,18 @@ impl Huggler {
     }
 
     fn start_close(&self) {
-        let mut gate = self.workers.lock().unwrap();
+        let mut gate = self.shared.workers.lock().unwrap();
         let Some(mut workers) = gate.take() else {
             return;
         };
-        self.shared.stop.send_replace(true);
+        {
+            let _db = self.shared.db.lock().unwrap();
+            self.shared.stop.send_replace(true);
+        }
         self.shared.changed.send_replace(());
         let shared = self.shared.clone();
         let closed = self.closed.clone();
-        self.handle.spawn(async move {
+        self.shared.handle.spawn(async move {
             while let Some(result) = workers.join_next().await {
                 if let Err(e) = result {
                     *shared.fault.lock().unwrap() = Some(e.to_string());
