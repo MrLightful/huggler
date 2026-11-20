@@ -18,12 +18,16 @@ id!(CommandId);
 id!(ThreadId);
 id!(RunId);
 id!(MessageId);
+id!(TaskId);
 id!(ProjectId);
 id!(RequestId);
 id!(NativeThreadId);
 id!(NativeTurnId);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, rmcp::schemars::JsonSchema,
+)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(rename_all = "camelCase")]
 pub enum Provider {
     #[default]
@@ -174,8 +178,35 @@ pub struct ThreadSummary {
     pub id: ThreadId,
     pub name: String,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletionDelivery {
+    Pending,
+    Acknowledged,
+    Delivered,
+    Disposed,
+}
+
+/// The initial child run and the run that settled its work can differ after a follow-up.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegatedTask {
+    pub task_id: TaskId,
+    pub parent_thread_id: ThreadId,
+    pub parent_run_id: RunId,
+    pub child_thread_id: ThreadId,
+    pub child_run_id: RunId,
+    pub result_run_id: Option<RunId>,
+    pub result: Option<String>,
+    pub status: RunStatus,
+    pub delivery: CompletionDelivery,
+    pub wake_run_id: Option<RunId>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Thread {
+    #[serde(default)]
+    pub tasks: Vec<DelegatedTask>,
     pub provider: Provider,
     pub permissions: Vec<PermissionRequest>,
     pub id: ThreadId,
@@ -190,6 +221,9 @@ pub struct Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    Task {
+        task: DelegatedTask,
+    },
     Launched,
     PermissionRequested {
         request: PermissionRequest,

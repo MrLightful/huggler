@@ -1,44 +1,10 @@
 #![cfg(unix)]
 use huggler::*;
-use std::{path::Path, process::Command as Git, time::Duration};
+#[path = "support/agents.rs"]
+mod agents;
+use agents::*;
+use std::{path::Path, time::Duration};
 use tokio::time::timeout;
-
-fn checkout(path: &Path) {
-    assert!(
-        Git::new("git")
-            .args(["init", "-q"])
-            .arg(path)
-            .status()
-            .unwrap()
-            .success()
-    );
-}
-
-fn launch(rt: &Huggler, project: &Project, name: &str, provider: Provider) -> ThreadId {
-    let id = ThreadId(name.into());
-    rt.dispatch(Command {
-        id: CommandId(format!("launch-{name}")),
-        thread_id: id.clone(),
-        action: Action::LaunchProvider {
-            project: project.id.clone(),
-            name: name.into(),
-            model: None,
-            provider,
-        },
-    })
-    .unwrap();
-    id
-}
-
-async fn completed(rt: &Huggler, thread: &ThreadId, run: &RunId) {
-    let state = rt.wait(thread, run).await.unwrap();
-    assert_eq!(
-        state.status,
-        RunStatus::Completed,
-        "{thread}: {:?}",
-        state.error
-    );
-}
 
 async fn approve_peer_tools(
     rt: &Huggler,

@@ -1,3 +1,4 @@
+mod tasks;
 use crate::{
     contracts::*,
     providers::{Turn, Update},
@@ -160,6 +161,7 @@ impl Database {
             include_str!("../migrations/001.sql"),
             include_str!("../migrations/002.sql"),
             include_str!("../migrations/003.sql"),
+            include_str!("../migrations/004.sql"),
         ];
         if !(0..=migrations.len() as i64).contains(&version) {
             return Err(Error::SchemaVersion(version));
@@ -172,6 +174,11 @@ impl Database {
         )?;
         // Both pending and claimed starts belong to the old process. A send might
         // have reached Codex before its reply was persisted. Never issue it twice.
+        // A task launch or wake still pending at this point never reached a provider.
+        // Put it back in order; claimed provider effects keep the recovery policy below.
+        tx.execute("UPDATE run SET status='queued' WHERE status='starting' AND stop_requested=0
+            AND id IN (SELECT run_id FROM turn_effect WHERE state='pending')
+            AND (id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task))", [])?;
         let lost = tx
             .prepare(
                 "SELECT r.id, r.thread_id FROM turn_effect e
@@ -446,8 +453,8 @@ impl Database {
         let interrupted = matches!(result, Err(Error::Interrupted));
         let error = result.err().map(|e| e.to_string());
         tx.execute(
-            "UPDATE run SET status=CASE WHEN status='waiting' OR ?1 IS NULL THEN 'completed' WHEN ?3 THEN 'interrupted' ELSE 'failed' END,
-                 error=CASE WHEN status='waiting' THEN NULL ELSE ?1 END WHERE id=?2",
+            "UPDATE run SET status=CASE WHEN status='waiting' THEN 'completed' WHEN stop_requested OR ?3 THEN 'interrupted' WHEN ?1 IS NULL THEN 'completed' ELSE 'failed' END,
+                 error=CASE WHEN status='waiting' THEN NULL WHEN stop_requested THEN 'task cancelled' ELSE ?1 END WHERE id=?2",
             params![error, id.0,interrupted],
         )?;
         run_event(tx, thread, id)?;
@@ -463,26 +470,34 @@ impl Database {
     }
 
     /// Promote the oldest queued message when the previous run has settled.
-    pub fn next_queued(&mut self, thread: &ThreadId) -> Result<Option<RunId>> {
-        let tx = self.db.transaction()?;
+    fn next_queued(tx: &Transaction, thread: &ThreadId) -> Result<Option<RunId>> {
         let id = tx.query_row(
             "UPDATE run SET status='starting' WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' ORDER BY ordinal LIMIT 1)
              AND NOT EXISTS(SELECT 1 FROM run WHERE thread_id=?1 AND status IN ('starting','running','waiting')) RETURNING id",
             [&thread.0], |r| Ok(RunId(r.get(0)?)),
         ).optional()?;
         if let Some(id) = &id {
-            run_event(&tx, thread, id)?;
+            run_event(tx, thread, id)?;
         }
-        tx.commit()?;
         Ok(id)
     }
 
-    pub fn queued_threads(&self) -> Result<Vec<ThreadId>> {
-        Ok(self
-            .db
+    /// Reserve runnable continuations under the same transaction as their delivery receipts.
+    pub fn ready_jobs(&mut self) -> Result<Vec<(ThreadId, RunId)>> {
+        let tx = self.db.transaction()?;
+        let threads = tx
             .prepare("SELECT DISTINCT thread_id FROM run WHERE status='queued'")?
             .query_map([], |r| Ok(ThreadId(r.get(0)?)))?
-            .collect::<rusqlite::Result<_>>()?)
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut jobs = Vec::new();
+        for thread in threads {
+            if let Some(run) = Self::next_queued(&tx, &thread)? {
+                jobs.push((thread, run));
+            }
+        }
+        tasks::reconcile(&tx, &mut jobs)?;
+        tx.commit()?;
+        Ok(jobs)
     }
 
     pub fn grant(&self, run: &RunId) -> Result<String> {
@@ -503,7 +518,7 @@ impl Database {
 
     pub fn caller(&self, token: &str) -> Result<(ThreadId, RunId, ProjectId)> {
         self.db.query_row("SELECT t.id,r.id,t.project FROM agent_grant g JOIN run r ON r.id=g.run_id JOIN thread t ON t.id=r.thread_id
-            WHERE g.token=? AND r.status IN ('starting','running')", [token], |r| Ok((ThreadId(r.get(0)?),RunId(r.get(1)?),ProjectId(r.get(2)?))))
+            WHERE g.token=? AND r.stop_requested=0 AND r.status IN ('starting','running')", [token], |r| Ok((ThreadId(r.get(0)?),RunId(r.get(1)?),ProjectId(r.get(2)?))))
             .optional()?.ok_or(Error::Forbidden)
     }
 
@@ -619,6 +634,7 @@ impl Database {
                 [&id.0],
                 |r| {
                     Ok(Thread {
+                        tasks: vec![],
                         provider: Provider::from_key(&r.get::<_, String>(4)?)?,
                         permissions: vec![],
                         id: id.clone(),
@@ -634,6 +650,7 @@ impl Database {
             )
             .optional()?
             .ok_or_else(|| Error::NotFound(id.to_string()))?;
+        thread.tasks = tasks::for_parent(&self.db, id)?;
         thread.runs = self
             .db
             .prepare(&format!(

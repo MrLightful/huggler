@@ -31,6 +31,15 @@ def deliver(thread, key, text, **extra):
     return call("thread_send", threadId=thread, clientRequestId=key, message=text, **extra)
 
 
+def delegate(task, key):
+    args = dict(task=task, title="Reviewer", mode="async", isolation="shared",
+                target={"providerInstanceId": "claudeAgent"}, clientRequestId=key)
+    created = call("delegate_task", **args)
+    assert call("delegate_task", **args)["taskId"] == created["taskId"]
+    assert call("delegate_task", **{**args, "task": "different"})["code"] == "conflict"
+    return created["taskId"]
+
+
 def hold():
     emit(id="permission", method="session/request_permission", params={
         "sessionId": session, "toolCall": {"toolCallId": "hold", "title": "Hold this turn"},
@@ -75,6 +84,26 @@ for line in sys.stdin:
             assert "error" in bad or bad["result"]["isError"]
             deliver(peers[0]["id"], "review-1", "Review 2+2")
             finish("Review requested")
+        elif text.startswith("delegate "):
+            action = text.removeprefix("delegate ")
+            child = "delegate leaf" if action == "nested" else "held review"
+            task_id = delegate(child, "review")
+            if action == "siblings":
+                delegate("held review", "review-again")
+            if action in ("ack", "cancel", "recover", "siblings"):
+                hold()
+            else:
+                finish("Delegated for review")
+        elif text == "held review":
+            hold()
+        elif text.startswith("inspect "):
+            task_id = text.removeprefix("inspect ")
+            assert call("task_status", taskId=task_id)["code"] == "forbidden"
+            assert call("task_cancel", taskId=task_id)["code"] == "forbidden"
+            finish("Access denied")
+        elif text.startswith("Huggler delegated task results\n"):
+            results = json.loads(text.split("\n", 1)[1])
+            finish("Received: " + ", ".join(r["result"] for r in results))
         elif text == "hold":
             hold()
         elif text == "queue-two":
@@ -102,4 +131,9 @@ for line in sys.stdin:
                 assert e.code == 401
             else:
                 raise AssertionError("revoked caller retained access")
-        finish("released")
+        if text == "delegate ack":
+            status = call("task_status", taskId=task_id)
+            assert status["result"] == "2+2=4" and status["delivery"] == "acknowledged"
+        elif text == "delegate cancel":
+            assert call("task_cancel", taskId=task_id)["delivery"] == "disposed"
+        finish("2+2=4" if text == "held review" else "released")

@@ -43,6 +43,7 @@ pub(crate) struct Shared {
     handle: Handle,
     workers: Mutex<Option<JoinSet<()>>>,
     db: Mutex<Option<Database>>,
+    run_stops: Mutex<HashMap<RunId, watch::Sender<bool>>>,
     decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
@@ -77,8 +78,7 @@ impl Shared {
         let (value, job) = self.access(write)?;
         self.changed.send_replace(());
         if let Some((thread, run)) = job {
-            let shared = self.clone();
-            workers.spawn_on(async move { shared.work(thread, run).await }, &self.handle);
+            self.spawn(workers, thread, run);
         }
         Ok(value)
     }
@@ -98,34 +98,75 @@ impl Shared {
         })
     }
 
-    async fn work(&self, thread: ThreadId, mut run: RunId) {
-        loop {
-            let result = self.execute(&thread, &run).await;
-            let mut guard = self.db.lock().unwrap();
-            let db = guard
-                .as_mut()
-                .expect("close joins workers before releasing storage");
-            let next = db.finish(&thread, &run, result).and_then(|()| {
-                if *self.stop.borrow() {
-                    Ok(None)
-                } else {
-                    db.next_queued(&thread)
-                }
-            });
-            self.changed.send_replace(());
-            match next {
-                Ok(Some(id)) => run = id,
-                Ok(None) => break,
-                Err(error) => {
-                    *self.fault.lock().unwrap() = Some(error.to_string());
-                    self.changed.send_replace(());
-                    break;
-                }
-            }
-        }
+    pub(crate) fn delegate(
+        self: &Arc<Self>,
+        token: &str,
+        input: crate::mcp::Delegation,
+    ) -> Result<DelegatedTask> {
+        self.schedule(|db| {
+            let (task, fresh) = db.delegate(token, input)?;
+            let job = fresh.then(|| (task.child_thread_id.clone(), task.child_run_id.clone()));
+            Ok((task, job))
+        })
     }
 
-    async fn execute(&self, thread: &ThreadId, run: &RunId) -> Result<()> {
+    pub(crate) fn task_status(&self, token: &str, id: &TaskId) -> Result<DelegatedTask> {
+        let task = self.access(|db| db.task_status(token, id))?;
+        self.changed.send_replace(());
+        Ok(task)
+    }
+
+    pub(crate) fn cancel_task(self: &Arc<Self>, token: &str, id: &TaskId) -> Result<DelegatedTask> {
+        self.schedule(|db| {
+            let (task, runs) = db.cancel_task(token, id)?;
+            let stops = self.run_stops.lock().unwrap();
+            for id in runs {
+                if let Some(stop) = stops.get(&id) {
+                    stop.send_replace(true);
+                }
+            }
+            Ok((task, None))
+        })
+    }
+
+    fn spawn(self: &Arc<Self>, workers: &mut JoinSet<()>, thread: ThreadId, run: RunId) {
+        let (stop, stopped) = watch::channel(false);
+        self.run_stops.lock().unwrap().insert(run.clone(), stop);
+        let shared = self.clone();
+        workers.spawn_on(
+            async move { shared.work(thread, run, stopped).await },
+            &self.handle,
+        );
+    }
+
+    async fn work(self: Arc<Self>, thread: ThreadId, run: RunId, stopped: watch::Receiver<bool>) {
+        let result = self.execute(&thread, &run, stopped).await;
+        let mut gate = self.workers.lock().unwrap();
+        let mut guard = self.db.lock().unwrap();
+        let db = guard
+            .as_mut()
+            .expect("close joins workers before releasing storage");
+        self.run_stops.lock().unwrap().remove(&run);
+        let finished = db.finish(&thread, &run, result).and_then(|()| {
+            if let Some(workers) = gate.as_mut() {
+                for (thread, run) in db.ready_jobs()? {
+                    self.spawn(workers, thread, run);
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = finished {
+            *self.fault.lock().unwrap() = Some(error.to_string());
+        }
+        self.changed.send_replace(());
+    }
+
+    async fn execute(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        stopped: watch::Receiver<bool>,
+    ) -> Result<()> {
         let turn = self.access(|db| {
             let mut turn = db.claim(run)?;
             if let Some(url) = &self.endpoint {
@@ -157,7 +198,7 @@ impl Shared {
                 codex::execute(
                     self.options.codex.clone(),
                     turn,
-                    self.stop.subscribe(),
+                    stopped,
                     update,
                     permissions,
                 )
@@ -167,7 +208,7 @@ impl Shared {
                 claude_agent::execute(
                     &self.options.claude_agent,
                     turn,
-                    self.stop.subscribe(),
+                    stopped,
                     update,
                     permissions,
                 )
@@ -189,7 +230,7 @@ impl Huggler {
     /// Requires a Tokio runtime with I/O and time enabled.
     pub async fn open(options: HugglerOptions) -> Result<Self> {
         let dir = options.state_dir.clone();
-        let db = tokio::task::spawn_blocking(move || Database::open(&dir))
+        let mut db = tokio::task::spawn_blocking(move || Database::open(&dir))
             .await
             .map_err(|e| Error::Worker(e.to_string()))??;
         let listener = if options.agent_tools {
@@ -201,10 +242,11 @@ impl Huggler {
             .as_ref()
             .map(|l| l.local_addr().map(|addr| format!("http://{addr}/mcp")))
             .transpose()?;
-        let queued = db.queued_threads()?;
+        let jobs = db.ready_jobs()?;
         let shared = Arc::new(Shared {
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
+            run_stops: Mutex::default(),
             fault: Mutex::default(),
             changed: watch::channel(()).0,
             stop: watch::channel(false).0,
@@ -231,10 +273,12 @@ impl Huggler {
                     shared.stop.subscribe(),
                 ));
         }
-        for thread in queued {
-            runtime
-                .shared
-                .schedule(|db| Ok(((), db.next_queued(&thread)?.map(|id| (thread, id)))))?;
+        {
+            let shared = &runtime.shared;
+            let mut gate = shared.workers.lock().unwrap();
+            for (thread, run) in jobs {
+                shared.spawn(gate.as_mut().unwrap(), thread, run);
+            }
         }
         Ok(runtime)
     }
@@ -370,6 +414,9 @@ impl Huggler {
         {
             let _db = self.shared.db.lock().unwrap();
             self.shared.stop.send_replace(true);
+            for stop in self.shared.run_stops.lock().unwrap().values() {
+                stop.send_replace(true);
+            }
         }
         self.shared.changed.send_replace(());
         let shared = self.shared.clone();

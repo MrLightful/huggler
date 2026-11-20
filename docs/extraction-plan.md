@@ -10,9 +10,11 @@ The standalone Claude ACP adapter 0.109.0 and its bundled Claude Code 2.1.328 in
 
 Two live Codex CLI 0.170.0 threads discovered each other and exchanged a review through the loopback `huggler` MCP server. The reviewer issued two identical `thread_send` calls. Both returned the same message ID, and reopening showed one reply from the reviewer with its original run ID and receipt. Reproduce with `cargo test --locked --test peers live_codex_peer_exchange -- --ignored`. The offline ACP tests also cover revocation, cross-project denial and restart with queued deliveries. [Peer tests](../tests/peers.rs)
 
-**Next action.** Implement asynchronous `delegate_task` for a shared checkout. Let the parent go idle, read a stored child result through the Rust host, and verify that completion wakes the parent exactly once across reopen. Check acknowledgement from the owning parent. Continue to use the ACP fixture for repeatable second-adapter checks. Live cross-provider qualification requires a second authenticated harness available within budget. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+Two live Codex CLI 0.170.0 sessions used app-server stdio and Huggler's loopback MCP endpoint for asynchronous delegation in a shared checkout. After the parent went idle, the child's result started one parent run. The parent repeated the finding, and reopening preserved the result, run IDs and event cursor. Reproduce with `cargo test --locked --test delegation live_codex_delegation -- --ignored`. The offline ACP cases cover passive reads, owner acknowledgement, cancellation, pending delivery on reopen, siblings and a grandchild. [Delegation tests](../tests/delegation.rs)
 
-**Branch recommendation.** Commit and continue Stage 3 on this branch. The peer exchange and permission checks pass. Delegation remains open.
+**Next action.** Exercise both peer messaging and delegation across adapters using a live Codex parent and the scripted ACP reviewer. Check the reply's sender and run, the selected child provider, and one parent wake after reopening. Live qualification with a second authenticated provider remains open. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+
+**Branch recommendation.** Commit and continue Stage 3 on this branch. Same-provider delegation passes, with cross-adapter and native-child checks still open.
 
 ### Maintaining the handoff
 

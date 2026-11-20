@@ -1,5 +1,5 @@
 //! Run-scoped agent tools on the runtime's loopback listener.
-use crate::{Error, Result as HostResult, ThreadId, runtime::Shared};
+use crate::{Error, Provider, Result as HostResult, TaskId, ThreadId, runtime::Shared};
 use axum::{
     Router,
     extract::{Request, State},
@@ -63,6 +63,47 @@ enum DeliveryMode {
     Auto,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Delegation {
+    pub task: String,
+    pub client_request_id: String,
+    /// Omit to use the parent's configured provider.
+    pub target: Option<Target>,
+    pub title: Option<String>,
+    pub role: Option<String>,
+    #[serde(default)]
+    mode: TaskMode,
+    #[serde(default)]
+    isolation: Isolation,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Target {
+    pub provider_instance_id: Provider,
+}
+
+#[derive(Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum TaskMode {
+    #[default]
+    Async,
+}
+
+#[derive(Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum Isolation {
+    #[default]
+    Shared,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskLookup {
+    task_id: String,
+}
+
 fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
     match value {
         Ok(value) => CallToolResult::structured(json!(value)),
@@ -72,6 +113,45 @@ fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
 
 #[tool_router]
 impl AgentServer {
+    #[tool(
+        description = "Delegate a task asynchronously to a new child thread in the same checkout. Its final result wakes you when idle. Reuse clientRequestId to retry."
+    )]
+    fn delegate_task(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<Delegation>,
+    ) -> CallToolResult {
+        tool_result(bearer(&parts.headers).and_then(|token| self.0.delegate(token, input)))
+    }
+
+    #[tool(
+        description = "Read your delegated task. Reading a terminal result acknowledges it and suppresses a pending wake."
+    )]
+    fn task_status(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<TaskLookup>,
+    ) -> CallToolResult {
+        tool_result(
+            bearer(&parts.headers)
+                .and_then(|token| self.0.task_status(token, &TaskId(input.task_id))),
+        )
+    }
+
+    #[tool(
+        description = "Stop your delegated task and its open descendants, and discard pending completion notifications."
+    )]
+    fn task_cancel(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<TaskLookup>,
+    ) -> CallToolResult {
+        tool_result(
+            bearer(&parts.headers)
+                .and_then(|token| self.0.cancel_task(token, &TaskId(input.task_id))),
+        )
+    }
+
     #[tool(description = "List other Huggler threads in your project and their addresses.")]
     fn thread_list(&self, Extension(parts): Extension<Parts>) -> CallToolResult {
         tool_result(
