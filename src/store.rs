@@ -1,4 +1,5 @@
 mod native_children;
+mod questions;
 mod tasks;
 use crate::{
     contracts::*,
@@ -165,6 +166,7 @@ impl Database {
             include_str!("../migrations/004.sql"),
             include_str!("../migrations/005.sql"),
             include_str!("../migrations/006.sql"),
+            include_str!("../migrations/007.sql"),
         ];
         if !(0..=migrations.len() as i64).contains(&version) {
             return Err(Error::SchemaVersion(version));
@@ -310,9 +312,18 @@ impl Database {
                     )?);
                 }
             }
-            Action::Send { text } => {
+            Action::Send { text } | Action::SendPlan { text } => {
                 let (id, msg, events, _) =
                     start_message(&tx, thread, text, selection.flatten(), None)?;
+                if matches!(cmd.action, Action::SendPlan { .. })
+                    && tx.execute(
+                        "UPDATE turn_effect SET plan_mode=1 WHERE run_id=? AND
+                     EXISTS(SELECT 1 FROM thread WHERE id=? AND provider='codex')",
+                        params![id.0, thread.0],
+                    )? == 0
+                {
+                    return Err(Error::Invalid("plan mode requires Codex".into()));
+                }
                 receipt.run_id = Some(id);
                 receipt.message_id = Some(msg);
                 receipt.event_sequences = events;
@@ -329,13 +340,14 @@ impl Database {
     pub fn claim(&mut self, id: &RunId) -> Result<Turn> {
         let tx = self.db.transaction()?;
         let turn = tx.query_row(
-            "SELECT p.root,t.name,m.text,e.model,t.native_thread,t.provider,m.origin FROM run r
+            "SELECT p.root,t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
              JOIN message m ON m.run_id=r.id WHERE r.id=? AND m.role='user'",
             [&id.0],
             |r| {
                 Ok(Turn {
+                    plan_mode: r.get(7)?,
                     provider: Provider::from_key(&r.get::<_, String>(5)?)?,
                     agent_tools: None,
                     cwd: r.get::<_, String>(0)?.into(),
@@ -366,6 +378,11 @@ impl Database {
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::Question(request) => questions::publish(&tx, thread, request)?,
+            Update::QuestionClosed {
+                id: request,
+                answered,
+            } => questions::close(&tx, thread, id, &request, answered)?,
             Update::NativeChild(child) => native_children::record(&tx, thread, child)?,
             Update::ForegroundComplete => {
                 Self::finish_tx(&tx, thread, id, Ok(()))?;
@@ -487,6 +504,7 @@ impl Database {
         result: Result<()>,
     ) -> Result<()> {
         Self::expire_permissions(tx, thread, id, None, None)?;
+        questions::expire_run(tx, thread, id)?;
         // Waiting and the final answer commit together. A cleanup error or a
         // process exit after this point cannot undo provider completion.
         let interrupted = matches!(result, Err(Error::Interrupted));
@@ -682,6 +700,7 @@ impl Database {
                 [&id.0],
                 |r| {
                     Ok(Thread {
+                        questions: vec![],
                         native_children: vec![],
                         tasks: vec![],
                         provider: Provider::from_key(&r.get::<_, String>(4)?)?,
@@ -700,6 +719,7 @@ impl Database {
             .optional()?
             .ok_or_else(|| Error::NotFound(id.to_string()))?;
         thread.tasks = tasks::for_parent(&self.db, id)?;
+        thread.questions = self.open_questions(id)?;
         thread.native_children = native_children::for_thread(&self.db, id)?;
         thread.runs = self
             .db

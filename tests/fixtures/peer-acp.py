@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -86,6 +87,35 @@ for line in sys.stdin:
             assert "error" in bad or bad["result"]["isError"]
             deliver(peers[0]["id"], "review-1", "Review 2+2")
             finish("Review requested")
+        elif text.startswith("check question "):
+            case = json.loads(text.removeprefix("check question "))
+            target = {"threadId": "planner"}
+            question = {**target, "requestId": case["id"]}
+            answers = {"schema_preference": "Strict schemas (Recommended)"}
+            def pending(action, **args):
+                return call("pending_request", action=action, **args)
+            assert pending("list") == {"requestIds": []}
+            if case["outside"]:
+                assert pending("list", **target)["code"] == "forbidden"
+                assert pending("read", **question)["code"] == "forbidden"
+                assert pending("respond", answers=answers, **question)["code"] == "forbidden"
+            else:
+                assert pending("list", **target) == {"requestIds": [case["id"]]}
+                data = pending("read", **question)
+                assert data == {"requestId": case["id"], "questions": case["questions"]}
+                permission = {"threadId": "held", "requestId": case["permission"]}
+                assert pending("list", threadId="held") == {"requestIds": []}
+                assert pending("read", **permission)["code"] == "not_found"
+                assert pending("respond", answers={"decision": "done"}, **permission)["code"] == "not_found"
+                assert pending("respond", answers={"wrong": "value"}, **question)["code"] == "invalid"
+                def respond():
+                    return pending("respond", answers=answers, **question)
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    replies = [future.result() for future in [pool.submit(respond), pool.submit(respond)]]
+                assert {"requestId": case["id"]} in replies and {"code": "already_answered"} in replies, replies
+                assert respond()["code"] == "already_answered"
+                assert pending("list", **target) == {"requestIds": []}
+            finish("Checked question")
         elif text.startswith("delegate "):
             action = text.removeprefix("delegate ")
             child = {"nested": "delegate leaf", "subtree": "branch review",

@@ -10,6 +10,7 @@ pub(crate) struct AgentTools {
 }
 
 pub(crate) struct Turn {
+    pub plan_mode: bool,
     pub agent_tools: Option<AgentTools>,
     pub provider: Provider,
     pub cwd: PathBuf,
@@ -20,6 +21,11 @@ pub(crate) struct Turn {
 }
 
 pub(crate) enum Update {
+    Question(crate::UserInputRequest),
+    QuestionClosed {
+        id: crate::RequestId,
+        answered: bool,
+    },
     Bound(NativeThreadId),
     Started(Option<NativeTurnId>),
     Finalizing(String),

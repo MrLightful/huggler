@@ -1,3 +1,4 @@
+mod questions;
 use crate::{
     contracts::*,
     providers::{
@@ -44,8 +45,7 @@ pub(crate) struct Shared {
     workers: Mutex<Option<JoinSet<()>>>,
     db: Mutex<Option<Database>>,
     run_stops: Mutex<HashMap<RunId, watch::Sender<bool>>>,
-    child_interrupts:
-        Mutex<HashMap<(ThreadId, RunId), mpsc::UnboundedSender<codex::ChildInterrupt>>>,
+    codex_controls: Mutex<HashMap<(ThreadId, RunId), mpsc::UnboundedSender<codex::Control>>>,
     decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
@@ -250,9 +250,9 @@ impl Shared {
         };
         let result = match turn.provider {
             Provider::Codex => {
-                let (tx, interrupts) = mpsc::unbounded_channel();
+                let (tx, controls) = mpsc::unbounded_channel();
                 let owner = (thread.clone(), run.clone());
-                self.child_interrupts
+                self.codex_controls
                     .lock()
                     .unwrap()
                     .insert(owner.clone(), tx);
@@ -262,10 +262,10 @@ impl Shared {
                     stopped,
                     update,
                     permissions,
-                    interrupts,
+                    controls,
                 )
                 .await;
-                self.child_interrupts.lock().unwrap().remove(&owner);
+                self.codex_controls.lock().unwrap().remove(&owner);
                 result
             }
             Provider::ClaudeAgent => {
@@ -311,7 +311,7 @@ impl Huggler {
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
             run_stops: Mutex::default(),
-            child_interrupts: Mutex::default(),
+            codex_controls: Mutex::default(),
             fault: Mutex::default(),
             changed: watch::channel(()).0,
             stop: watch::channel(false).0,
@@ -438,16 +438,16 @@ impl Huggler {
     ) -> Result<()> {
         let (reply, response) = tokio::sync::oneshot::channel();
         self.shared
-            .child_interrupts
+            .codex_controls
             .lock()
             .unwrap()
             .get(&(thread.clone(), run.clone()))
             .ok_or_else(|| Error::NotFound("live native child session".into()))?
-            .send(codex::ChildInterrupt {
+            .send(codex::Control::Interrupt(codex::ChildInterrupt {
                 thread: child.clone(),
                 turn: turn.clone(),
                 reply,
-            })
+            }))
             .map_err(|_| Error::Closed)?;
         response.await.map_err(|_| Error::Closed)?
     }

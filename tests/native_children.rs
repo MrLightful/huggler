@@ -1,7 +1,9 @@
 #![cfg(unix)]
+#[path = "support/codex_replay.rs"]
+mod replay;
 use huggler::*;
 use serde_json::{Value, json};
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use std::{fs, path::Path, time::Duration};
 use tokio::time::timeout;
 
 const TRANSCRIPT: &str = include_str!("fixtures/codex-subagents/codex_transcript.ndjson");
@@ -17,38 +19,8 @@ fn parse(transcript: &str) -> Vec<Value> {
         .collect()
 }
 
-fn config(dir: &Path, records: &[Value]) -> HugglerOptions {
-    let executable = dir.join("codex");
-    fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/replay-codex.py"),
-        &executable,
-    )
-    .unwrap();
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
-    let fixture = dir.join("replay.ndjson");
-    fs::write(
-        &fixture,
-        records
-            .iter()
-            .map(Value::to_string)
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-    .unwrap();
-    let approvals = records[0]["scenario"] == "subagent_v2_nested_approval";
-    fs::write(
-        dir.join("case.json"),
-        json!({"fixture":fixture,"version":env!("CARGO_PKG_VERSION"),"start":1,"approvals":approvals}).to_string(),
-    )
-    .unwrap();
-    let mut options = HugglerOptions::new(dir.join("state"));
-    options.codex.executable = executable;
-    options.codex.request_approvals = approvals;
-    options
-}
-
 async fn start(dir: &Path, records: &[Value]) -> (HugglerOptions, Huggler, ThreadId, RunId) {
-    let options = config(dir, records);
+    let options = replay::config(dir, records, false);
     let rt = Huggler::open(options.clone()).await.unwrap();
     let repo = dir.join("repo");
     assert!(

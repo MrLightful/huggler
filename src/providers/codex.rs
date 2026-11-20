@@ -6,12 +6,12 @@ use super::{
 };
 use crate::{
     Error, NativeChildTurn, NativeThreadId, NativeTurnId, PermissionOption, PermissionRequest,
-    RequestId, Result,
+    RequestId, Result, UserAnswer, UserAnswers, UserInputRequest,
 };
 use children::Children;
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -20,6 +20,15 @@ pub(crate) struct ChildInterrupt {
     pub thread: NativeThreadId,
     pub turn: NativeTurnId,
     pub reply: oneshot::Sender<Result<()>>,
+}
+
+pub(crate) enum Control {
+    Interrupt(ChildInterrupt),
+    Answer {
+        id: RequestId,
+        answers: UserAnswers,
+        reply: oneshot::Sender<Result<()>>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +74,7 @@ impl Client {
                     frame["method"].as_str(),
                     Some(
                         "item/commandExecution/requestApproval"
+                            | "item/tool/requestUserInput"
                             | "item/permissions/requestApproval"
                             | "mcpServer/elicitation/request"
                     )
@@ -107,6 +117,8 @@ impl Client {
                             | "turn/started"
                             | "turn/completed"
                             | "item/commandExecution/requestApproval"
+                            | "item/tool/requestUserInput"
+                            | "serverRequest/resolved"
                             | "item/permissions/requestApproval"
                             | "mcpServer/elicitation/request"
                     )
@@ -117,13 +129,52 @@ impl Client {
         }
     }
 
+    async fn write_answers(&mut self, wire_id: Value, answers: UserAnswers) -> Result<()> {
+        let answers = answers
+            .into_iter()
+            .map(|(id, answer)| {
+                let values = match answer {
+                    UserAnswer::Text(text) => vec![text],
+                    UserAnswer::Choices(choices) => choices,
+                };
+                (id, json!({"answers": values}))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        self.rpc
+            .write(json!({"id": wire_id, "result": {"answers": answers}}))
+            .await
+    }
+
+    async fn interrupt_child(
+        &mut self,
+        request: ChildInterrupt,
+        children: &Children,
+        replies: &mut HashMap<u64, oneshot::Sender<Result<()>>>,
+    ) -> Result<()> {
+        if !children.running(&request.thread.0, &request.turn.0) {
+            let _ = request
+                .reply
+                .send(Err(Error::NotFound("running native child turn".into())));
+            return Ok(());
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.rpc
+            .write(json!({"id": id, "method": "turn/interrupt", "params": {
+                "threadId": request.thread, "turnId": request.turn
+            }}))
+            .await?;
+        replies.insert(id, request.reply);
+        Ok(())
+    }
+
     async fn converse(
         &mut self,
         turn: Turn,
         update: impl Fn(Update) -> Result<()>,
         request_approvals: bool,
         mut permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
-        mut interrupts: mpsc::UnboundedReceiver<ChildInterrupt>,
+        mut controls: mpsc::UnboundedReceiver<Control>,
     ) -> Result<()> {
         self.request("initialize", json!({
             "clientInfo":{"name":"huggler","title":"Huggler","version":env!("CARGO_PKG_VERSION")},
@@ -183,7 +234,10 @@ impl Client {
         }
         if let Some(model) = model.or_else(|| response["model"].as_str()) {
             params["model"] = json!(model);
-            params["collaborationMode"] = json!({"mode":"default","settings":{"model":model}});
+            let mode = if turn.plan_mode { "plan" } else { "default" };
+            params["collaborationMode"] = json!({"mode":mode,"settings":{"model":model}});
+        } else if turn.plan_mode {
+            return Err(protocol("Codex plan mode requires a model"));
         }
         let started = self.request("turn/start", params).await?;
         let id = started
@@ -193,6 +247,7 @@ impl Client {
         update(Update::Started(Some(NativeTurnId(id.to_owned()))))?;
         let mut answer = None;
         let mut pending = HashMap::<RequestId, PendingApproval>::new();
+        let mut questions = HashMap::<RequestId, Value>::new();
         let mut children = Children::default();
         let mut foreground_complete = false;
         let mut interrupt_replies = HashMap::<u64, oneshot::Sender<Result<()>>>::new();
@@ -204,18 +259,21 @@ impl Client {
                 Some(frame) => frame,
                 None => tokio::select! {
                     frame = self.read() => frame?,
-                    request = interrupts.recv() => {
-                        let request = request.ok_or(Error::Closed)?;
-                        if !children.running(&request.thread.0, &request.turn.0) {
-                            let _ = request.reply.send(Err(Error::NotFound("running native child turn".into())));
-                            continue;
+                    control = controls.recv() => {
+                        match control.ok_or(Error::Closed)? {
+                            Control::Interrupt(request) => {
+                                self.interrupt_child(request, &children, &mut interrupt_replies).await?;
+                            }
+                            Control::Answer { id, answers, reply } => {
+                                if let Some(wire_id) = questions.remove(&id) {
+                                    self.write_answers(wire_id, answers).await?;
+                                    update(Update::QuestionClosed { id, answered: true })?;
+                                    let _ = reply.send(Ok(()));
+                                } else {
+                                    let _ = reply.send(Err(Error::NotFound("live user-input request".into())));
+                                }
+                            }
                         }
-                        let rpc_id = self.next_id;
-                        self.next_id += 1;
-                        self.rpc.write(json!({"id":rpc_id,"method":"turn/interrupt","params":{
-                            "threadId":request.thread,"turnId":request.turn
-                        }})).await?;
-                        interrupt_replies.insert(rpc_id, request.reply);
                         continue;
                     }
                     decision = permissions.decisions.recv() => {
@@ -262,6 +320,31 @@ impl Client {
                     });
                 let root_request =
                     !foreground_complete && p["threadId"] == thread && p["turnId"] == id;
+                if frame["method"] == "item/tool/requestUserInput" && root_request {
+                    let Some(items) = p["questions"].as_array() else {
+                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"Missing questions"}})).await?;
+                        continue;
+                    };
+                    let ids: HashSet<_> = items
+                        .iter()
+                        .filter_map(|item| item["id"].as_str().filter(|id| !id.is_empty()))
+                        .collect();
+                    if items.is_empty()
+                        || ids.len() != items.len()
+                        || questions.values().any(|id| id == wire_id)
+                    {
+                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"Invalid question IDs"}})).await?;
+                        continue;
+                    }
+                    let id = RequestId(uuid::Uuid::new_v4().to_string());
+                    questions.insert(id.clone(), wire_id.clone());
+                    update(Update::Question(UserInputRequest {
+                        id,
+                        run_id: permissions.run.clone(),
+                        questions: items.clone(),
+                    }))?;
+                    continue;
+                }
                 if !request_approvals || (!root_request && child.is_none()) {
                     self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"No matching interactive run"}})).await?;
                     continue;
@@ -340,6 +423,19 @@ impl Client {
                 continue;
             }
             match frame["method"].as_str() {
+                Some("serverRequest/resolved") => {
+                    if let Some(request) = questions
+                        .iter()
+                        .find(|(_, wire)| **wire == p["requestId"])
+                        .map(|(id, _)| id.clone())
+                    {
+                        questions.remove(&request);
+                        update(Update::QuestionClosed {
+                            id: request,
+                            answered: false,
+                        })?;
+                    }
+                }
                 Some("item/completed")
                     if p["turnId"] == id
                         && p["item"]["type"] == "agentMessage"
@@ -366,6 +462,7 @@ impl Client {
                     }
                     update(Update::ForegroundComplete)?;
                     foreground_complete = true;
+                    questions.clear();
                     pending.retain(|_, request| request.child.is_some());
                 }
                 _ => {}
@@ -380,7 +477,7 @@ pub(crate) async fn execute(
     mut stop: watch::Receiver<bool>,
     update: impl Fn(Update) -> Result<()>,
     permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
-    interrupts: mpsc::UnboundedReceiver<ChildInterrupt>,
+    controls: mpsc::UnboundedReceiver<Control>,
 ) -> Result<()> {
     if *stop.borrow() {
         return Err(Error::Closed);
@@ -393,7 +490,7 @@ pub(crate) async fn execute(
     let result = tokio::select! {
         biased;
         _ = stop.wait_for(|v| *v) => Err(Error::Closed),
-        answer = client.converse(turn, update,options.request_approvals,permissions,interrupts) => answer,
+        answer = client.converse(turn, update,options.request_approvals,permissions,controls) => answer,
     };
     client.rpc.shutdown().await?;
     result

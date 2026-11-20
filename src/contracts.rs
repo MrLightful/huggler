@@ -69,6 +69,25 @@ pub struct PermissionRequest {
     pub options: Vec<PermissionOption>,
 }
 
+/// Structured questions from a provider turn. Each question has a provider-local
+/// string `id`. The provider's option descriptions and previews are retained.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct UserInputRequest {
+    pub id: RequestId,
+    pub run_id: RunId,
+    pub questions: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(untagged)]
+pub enum UserAnswer {
+    Text(String),
+    Choices(Vec<String>),
+}
+
+pub type UserAnswers = std::collections::BTreeMap<String, UserAnswer>;
+
 /// The provider-native turn requesting a decision within the owning run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeChildTurn {
@@ -97,6 +116,10 @@ pub enum Action {
         provider: Provider,
     },
     Send {
+        text: String,
+    },
+    /// Send one message in Codex plan mode.
+    SendPlan {
         text: String,
     },
     SetModel {
@@ -241,6 +264,8 @@ pub struct NativeChild {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Thread {
     #[serde(default)]
+    pub questions: Vec<UserInputRequest>,
+    #[serde(default)]
     pub native_children: Vec<NativeChild>,
     #[serde(default)]
     pub tasks: Vec<DelegatedTask>,
@@ -258,6 +283,15 @@ pub struct Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    QuestionRequested {
+        request: UserInputRequest,
+    },
+    QuestionClosed {
+        id: RequestId,
+        answered: bool,
+        /// Present when an agent submitted the answer.
+        responder_run: Option<RunId>,
+    },
     NativeChild {
         child: NativeChild,
     },
@@ -302,6 +336,8 @@ fn display_error<E: fmt::Display, S: serde::Serializer>(
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", content = "detail", rename_all = "snake_case")]
 pub enum Error {
+    #[error("the user-input request was already answered")]
+    AlreadyAnswered,
     #[error("state directory already has a runtime owner")]
     AlreadyOpen,
     #[error("agent caller lacks access to this operation")]

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """A stdio Codex peer. Run a single recorded process against the actual client."""
 import json
+import os
 from pathlib import Path
 import sys
 import time
+from urllib.parse import urlsplit
 
 here = Path(__file__).resolve().parent
 case = json.loads((here / "case.json").read_text())
@@ -57,6 +59,14 @@ while True:
             if case.get("approvals"):
                 frame["params"]["approvalPolicy"] = "on-request"
         if method == "thread/start":
+            if case.get("agentTools"):
+                config = actual["params"]["config"]["mcp_servers.huggler"]
+                url = urlsplit(config["url"])
+                assert url.scheme == "http" and url.hostname == "127.0.0.1" and url.port
+                assert url.path == "/mcp" and os.environ["HUGGLER_MCP_TOKEN"]
+                frame["params"]["config"]["mcp_servers.huggler"] = {
+                    "url": config["url"], "bearer_token_env_var": "HUGGLER_MCP_TOKEN", "required": True,
+                }
             if case.get("approvals"):
                 frame["params"].update(approvalPolicy="on-request", sandbox="read-only")
             # The recorder raised this limit to capture a three-level spawn.

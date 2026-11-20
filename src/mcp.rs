@@ -116,6 +116,26 @@ struct TaskCancel {
     client_request_id: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum QuestionAction {
+    List,
+    Read,
+    Respond,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PendingRequest {
+    action: QuestionAction,
+    /// Omit to select the caller's thread.
+    thread_id: Option<String>,
+    /// Required for read and respond.
+    request_id: Option<String>,
+    /// Required for respond. Keys are question IDs.
+    answers: Option<crate::UserAnswers>,
+}
+
 fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
     match value {
         Ok(value) => CallToolResult::structured(json!(value)),
@@ -125,6 +145,54 @@ fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
 
 #[tool_router]
 impl AgentServer {
+    #[tool(
+        description = "List, read or answer pending user questions. Omit threadId for your own thread. Use the question IDs from read as keys in answers. Provider permissions require a human responder."
+    )]
+    async fn pending_request(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<PendingRequest>,
+    ) -> CallToolResult {
+        let result: HostResult<_> = async {
+            let token = bearer(&parts.headers)?;
+            let target = input.thread_id.map(ThreadId);
+            let request_id = || {
+                input
+                    .request_id
+                    .map(crate::RequestId)
+                    .ok_or_else(|| Error::Invalid("requestId is required".into()))
+            };
+            match input.action {
+                QuestionAction::List => self.0.access(|db| {
+                    let (thread, _) = db.question_target(token, target.as_ref())?;
+                    let ids: Vec<_> = db
+                        .open_questions(&thread)?
+                        .into_iter()
+                        .map(|q| q.id)
+                        .collect();
+                    Ok(json!({"requestIds": ids}))
+                }),
+                QuestionAction::Read => self.0.access(|db| {
+                    let (thread, _) = db.question_target(token, target.as_ref())?;
+                    let (request, _) = db.question(&thread, &request_id()?, None)?;
+                    Ok(json!({"requestId": request.id, "questions": request.questions}))
+                }),
+                QuestionAction::Respond => {
+                    let id = request_id()?;
+                    let answers = input
+                        .answers
+                        .ok_or_else(|| Error::Invalid("answers are required".into()))?;
+                    self.0
+                        .answer_as_agent(token, target.as_ref(), &id, answers)
+                        .await?;
+                    Ok(json!({"requestId": id}))
+                }
+            }
+        }
+        .await;
+        tool_result(result)
+    }
+
     #[tool(
         description = "Delegate a task to a new child thread in the same checkout. Default async completion wakes you when idle. With mode wait, return on completion, a human approval request or timeout. Reuse clientRequestId to retry."
     )]
