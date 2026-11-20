@@ -1,6 +1,6 @@
-# Huggler parity inventory for the T3 Code baseline
+# T3 Code capability inventory for Huggler
 
-Use this inventory when deciding whether the extracted runtime can replace the pinned server for a particular application. It counts the top-level discriminants in the checked-out schemas, the entries in the named RPC method map, the outbox classifications and the server’s MCP tool declarations. Nested actions, project mutations, provider-native tools and third-party MCP Apps have separate contracts. A declared operation can require a particular caller, integration, driver or live session.
+Use this inventory to plan and verify the workflows Huggler should cover. The counts describe the pinned T3 Code implementation. Huggler maps those workflows to Rust APIs, Tauri commands, agent tools or optional host integrations. For each selected workflow, record the observable outcome, provider and host prerequisites, a passing scenario, and any fallback or limitation. The names, counts and wire shapes below identify upstream evidence. [Crate proposal](sdk-proposal.md) · [Qualification plan](extraction-plan.md)
 
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
@@ -42,11 +42,11 @@ A host should normally use launch, send, stop and the other management operation
 | Context and workspace | Fork/merge source points are `latest_stable`, `run` and `checkpoint`. Transfer kinds include fork, provider handoff, merge-back and subagent spawn/result. Persist `pending`, `resolved_native`, `resolved_portable`, `failed`, `consumed` and `superseded`. Test later delivery, supersession and replay. Independently exercise checkpoint rollback with/without file restoration. |
 | Delegation | Match the parent thread, run and node. Wake policy is `always` or `settled_only`. Delivery states are `pending`, `claimed`, `acknowledged`, `delivered`, `disposed`. Check interruptions, queued child work, grandchildren, a later follow-up result and simultaneous completions. |
 
-The authoritative payload fields, defaults and result types are in the contracts. The package can simplify their spelling at its host boundary while preserving these distinct behaviors. [V2 contracts][src-1] · [Agent result contracts][src-15] · [Dispatch policy][src-2] · [Request delivery][src-16]
+The authoritative payload fields, defaults and result types are in the contracts. Huggler can use its own Rust types and host payloads while preserving these distinct outcomes. [V2 contracts][src-1] · [Agent result contracts][src-15] · [Dispatch policy][src-2] · [Request delivery][src-16]
 
 ### Additional server-only commands
 
-These 15 variants are admitted by the internal command union. A host integration invokes the relevant service, which checks its authority and state before producing the command. Preserve this distinction in the package exports.
+These 15 variants are admitted by the internal command union. A host integration invokes the relevant service, which checks its authority and state before producing the command. Preserve this authority boundary in the crate API and its transports.
 
 | Issuer | Internal discriminants | Purpose |
 | --- | --- | --- |
@@ -104,7 +104,7 @@ Make the distinction visible in failure tests. A durable command receipt proves 
 
 ## Agent-facing tools
 
-The table records exact **upstream** names for source lookup and regression comparison. For the proposed `huggler` MCP server, remove a leading `t3_` from each baseline tool name and keep the other names as written. For example, upstream `t3_thread_send` maps to Huggler’s `thread_send`, and `delegate_task` maps to `delegate_task`. Compare input, result, authorization and side effects under the corresponding name. Apply this mapping only to this catalog of built-in tools. [Huggler naming conventions](sdk-proposal.md#naming)
+The table records exact **upstream** names for source lookup and regression comparison. For workflows exposed through the proposed `huggler` MCP server, use the name mapping below. Remove a leading `t3_` from each mapped baseline tool name and keep other mapped names as written. For example, upstream `t3_thread_send` maps to Huggler’s `thread_send`, and `delegate_task` maps to `delegate_task`. Compare the observable result, authorization and side effects. Record workflows implemented through a host interface and those that are unavailable. Apply this mapping only to this catalog of built-in tools. [Huggler naming conventions](sdk-proposal.md#naming)
 
 MCP is the agent’s interface to orchestration. For deferred discovery, the direct set is `orchestrator_capabilities`, `delegate_task`, `task_status` and `tool_search`, subject to caller eligibility. Searching can expose additional matching tools within the session. Tool visibility, write access, link permissions, target mode limits, handler capabilities and available host services all participate in the effective surface. An outside read-only client, a live author thread and a linked agent can receive different results. [Exposure][src-23] · [Invocation context][src-24] · [Access declarations][src-25]
 
@@ -128,7 +128,7 @@ MCP is the agent’s interface to orchestration. For deferred discovery, the dir
 
 **Three acceptance checks for Huggler callers.** A dashboard can inspect thread/child projections without acknowledging delivery. A live parent that calls `task_status` on its completed task can acknowledge its result. An agent can answer an eligible user question through `pending_request`. A human decision on provider permissions goes through an authorized responder. Exercise positive and denied cases through the real handlers. [Orchestrator handlers][src-41] · [Thread handlers][src-42] · [Access race tests][src-43]
 
-The [implementation plan](extraction-plan.md) pairs these names with upstream tests, raw frames and installed-consumer acceptance scenarios.
+The [implementation plan](extraction-plan.md) pairs these names with upstream tests, raw frames and Cargo consumer and installed Tauri acceptance scenarios.
 
 [src-1]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/contracts/src/orchestrationV2.ts
 [src-2]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/CommandPolicy.ts

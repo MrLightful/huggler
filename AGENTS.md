@@ -1,15 +1,19 @@
 # Working on Huggler
 
-The local T3 Code checkout on the maintainer’s Mac is `/Users/mrlightful/Projects/Personal/t3code`. Use it as the reference for orchestration behavior. Make Huggler changes in the current Huggler worktree. Keep the checkout path out of package code and runtime defaults.
+Build `huggler` as a Rust library crate distributed through Cargo. The Tauri backend embeds it directly. Keep the base app free of a Node.js runtime dependency and scope provider-specific runtime requirements to their adapters.
+
+Use T3 Code as the reference for what Huggler should enable. Aim to cover all of its user-visible orchestration capabilities where feasible. Judge coverage by the workflows users can accomplish. Choose Huggler’s interfaces, storage schema, provider transports and implementation to fit the Rust crate and its hosts.
+
+The local T3 Code reference checkout is `/Users/mrlightful/Projects/Personal/t3code`. Make changes in the current Huggler worktree. Keep the upstream checkout path out of crate code and runtime defaults.
 
 ## Porting and reviewing upstream changes
 
 - To locate the owner of a behavior, start with the [upstream component map](docs/upstream-watch-guide.md#find-the-implementation-by-behavior). Trace the implementation and its regression test at the revision under review. Use `git -C <checkout> show <sha>:<path>` to read a pinned file while keeping the local branch in place.
 - To review newer commits, run `python3 scripts/review-upstream.py <checkout>` from the Huggler root. The [review record](docs/upstream-review.json) holds the last reviewed SHA and deferred items. Advance it after accounting for the range using the [review workflow](docs/upstream-watch-guide.md#adapt-and-merge-a-relevant-change).
-- When porting a capability, identify its expected outcome in the [parity inventory](docs/parity-inventory.md) and verify it through Huggler’s public interface. For provider-specific behavior, record which harness and operation the evidence covers.
+- When implementing a capability, identify its expected outcome in the [capability inventory](docs/parity-inventory.md) and verify it through Huggler’s public interface. For provider-specific behavior, record the harness, version, transport and operation. Distinguish native behavior from fallbacks and unavailable operations.
 
-## Package and documentation conventions
+## Crate and documentation conventions
 
-- Use `huggler` for the npm package. Follow the [SDK naming conventions](docs/sdk-proposal.md#naming) for files, exports, agent tools and configuration. Preserve upstream spellings in source references and original license notices.
+- Follow the [crate naming conventions](docs/sdk-proposal.md#naming) for Rust modules, public APIs, agent tools and configuration. Preserve upstream spellings in source references and original license notices.
 - Use the [extraction plan](docs/extraction-plan.md) for milestones and acceptance criteria. Check the implementation and its tests before describing a proposed capability as available.
 - Keep design and engineering documentation under `docs/`. The maintainer owns the root `README.md`.

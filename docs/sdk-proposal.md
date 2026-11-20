@@ -1,108 +1,89 @@
-# Huggler SDK proposal
+# Huggler Rust crate proposal
 
-An application opens a Huggler runtime and owns its state directory. Its agents get scoped tools for addressing peers and delegating tasks. The npm package name is `huggler`. The exports, TypeScript interfaces and MCP names below describe the proposed SDK.
+Huggler is a proposed async Rust library for durable agent orchestration. Its first host is a Tauri desktop app. The Tauri backend opens the crate in-process and owns its lifecycle. Huggler stores state in SQLite and talks to separately installed provider executables or servers. The base desktop app requires no Node.js runtime for Huggler. A provider can have its own runtime or optional bridge requirements. Use Cargo for Rust distribution. A native Tauri integration needs no language bindings.
+
+T3 Code supplies reference scenarios for user-visible behavior. Huggler can define its own Rust types, storage schema and transport payloads. Provider-native operations depend on the selected harness and version. [T3 Code behavior inventory](parity-inventory.md)
 
 ## Naming
 
 | Surface | Huggler convention |
 | --- | --- |
-| npm and TypeScript | Import `openHuggler`, `Huggler` and `HugglerOptions` from `huggler`. Use domain names such as `ThreadId` and `ProviderAdapter` inside the package namespace. |
-| Files and exports | Name files for their purpose, for example `src/open-huggler.ts`, `src/providers/claude-agent.ts` and `src/profiles/full.ts`. The driver configuration ID is `claudeAgent` and the corresponding import is `huggler/providers/claude-agent`. |
-| Agent tools | Register the MCP server as `huggler`. Tool names describe operations, e.g. `thread_send` and `delegate_task`. A harness that qualifies names as `mcp__<server>__<tool>` exposes `mcp__huggler__thread_send`. Use the same tool catalog for discovery, dispatch, provider instructions and examples. |
-| Runtime assets and configuration | Use `HUGGLER_*` for Huggler-owned environment variables, e.g. `HUGGLER_MCP_URL`. Use Huggler filenames for generated assets such as `pi-huggler-mcp-extension.ts`. Keep harness-defined settings and protocol identifiers in their vendor spelling. |
+| Cargo and Rust | Name the library crate `huggler`. Use paths such as `src/providers/claude_agent.rs`, types such as `HugglerOptions` and methods such as `Huggler::open`. Use newtypes for distinct IDs. |
+| Driver configuration | Keep stable serialized IDs such as `codex` and `claudeAgent`. Use Rust paths such as `huggler::providers::codex` and `huggler::providers::claude_agent`. |
+| Agent tools | Register the MCP server as `huggler`. Use operation names such as `thread_send` and `delegate_task`. A harness that qualifies tool names can expose `mcp__huggler__thread_send`. Use the same catalog for discovery, dispatch and model instructions. |
+| Assets and settings | Use `HUGGLER_*` for Huggler-owned environment variables and filenames such as `pi-huggler-mcp-extension.ts` for provider-specific assets. Preserve vendor spellings in provider protocols, historical data readers and source references. |
 
-The [upstream inventory](parity-inventory.md#agent-facing-tools) maps the pinned source identifiers to Huggler tools. Keep original identifiers in source references, recorded upstream evidence and readers for historical input. Preserve the applicable license notices when porting code.
+Preserve applicable license notices when reusing code or fixtures. [Agent tool mapping](parity-inventory.md#agent-facing-tools)
 
-## Package exports
+## Crate and host boundaries
 
-Use one Node ESM package with explicit subpath exports. Applications should have a small public API even when the internal implementation spans several modules. Keep Effect's scoped resources, streams, SQL transactions and layers inside the runtime. Offer Promises and cancellable async iterables at the application boundary.
-
-| Import | Intended consumer |
+| Proposed Rust module | Responsibility |
 | --- | --- |
-| `huggler` | Trusted application server. Open/close the runtime, manage providers and projects, launch threads, send, read, wait and respond. |
-| `huggler/contracts` | Browser or server needing versioned wire types, codecs, IDs, capabilities, legal commands and stream frames. Keep Node, SQLite and provider SDKs out of this export. |
-| `huggler/providers/<driver-module>` | Register one driver or a custom driver implementing the provider extension API. A driver kind selects an implementation. An instance selects its configured account, environment, options and continuation identity. |
-| `huggler/mcp`, `huggler/rpc` | Scoped tools for agents and authorized remote clients, and a typed application transport for dashboards. Carry authenticated identity through every handler. |
-| `huggler/integrations/*`, `huggler/profiles/full` | Opt into host services individually or load the full set of host integrations. Report which integrations are active and which prerequisite is missing. |
-| `huggler/testing` | Build deterministic applications and driver conformance tests with replay transports and isolated state. |
+| `huggler` | Open and close the runtime, configure provider instances, manage projects, launch threads, send, read, wait and answer requests. |
+| `huggler::contracts` | Typed IDs, commands, events, capabilities and errors. Serialize explicit DTOs at the Tauri or remote API boundary. |
+| `huggler::providers` | Driver configuration, discovery and health, continuation identity, session lifecycle and normalized provider events. |
+| `huggler::mcp` and `huggler::rpc` | Scope agent tools to a live caller. Provide an authenticated remote application transport when a host needs one. |
+| `huggler::integrations` | Optional implementations and host interfaces for workspace preparation, Git, schedules, source control, secrets, terminal, previews and other integrations. |
+| `huggler::testing` | Replay transports, deterministic clock and IDs, temporary state and provider conformance scenarios. |
+
+The host provides a writable app-data directory, provider configuration and the integrations it enables. The runtime owns migrations, command receipts, event publication, provider processes it starts and their cleanup. An instance identifies its own account, environment and continuation policy.
+
+## Embed in Tauri
+
+1. In the Rust backend, resolve the app-data directory and open one `Huggler` runtime for it. Keep the handle in Tauri managed state.
+2. Expose typed commands for project and thread operations and for answering human requests. Use a Tauri IPC channel for each active thread subscription and forward serializable frames. Release the subscription when its view closes. The host keeps the state directory, credentials and provider management on the Rust side.
+3. On app shutdown, stop accepting new work and await `Huggler::close()`. On the next launch, reopen the same state directory and reconcile persisted work and provider sessions before accepting new commands.
+
+The application can embed the core even when a provider runs in a child process. Discover the required executables per instance and report missing installs or login as instance status. Qualify optional adapter assets independently on each supported OS and architecture. [Tauri commands and channels](https://v2.tauri.app/develop/calling-rust/) · [Provider qualification](extraction-plan.md#4-qualify-every-provider-instance-and-capability)
 
 ## Two agents in one application
 
-The proposed host API below assumes a Node service with an accessible Git checkout, two installed and authenticated harnesses, and a host that can handle human requests. Model resolution consults each instance's workspace catalog. The correlation key comes from the application's durable job. A retry of the same job uses the same key.
+The example sketches the proposed API. Assume the host has opened project `project_id`, configured a Codex instance named `writer` and a second instance named `reviewer`, and has a durable `job_id` for this request.
 
-```ts
-import { openHuggler, type Huggler } from "huggler";
-import { codex } from "huggler/providers/codex";
-import { claudeAgent } from "huggler/providers/claude-agent";
+```rust
+use huggler::{DeliveryMode, LaunchThread, SendMessage};
 
-// Call once at service startup. The host invokes its shutdown hooks after draining intake.
-export async function configureReviews(onShutdown: (close: () => Promise<void>) => void) {
-  const engine = await openHuggler({
-    stateDir: "./agent-state",
-    drivers: [codex(), claudeAgent()],
-    instances: [
-      { id: "writer", driver: "codex" },
-      { id: "reviewer", driver: "claudeAgent" },
-    ],
-    agentTools: { transport: "local", toolkits: ["orchestrator", "thread"] },
-  });
+let author = huggler.threads().launch(LaunchThread::new(project_id.clone(), "writer")
+    .with_client_request_id(format!("{job_id}/launch/writer"))).await?;
+let reviewer = huggler.threads().launch(LaunchThread::new(project_id, "reviewer")
+    .with_client_request_id(format!("{job_id}/launch/reviewer"))).await?;
 
-  onShutdown(() => engine.close());
-  return (jobId: string, checkout: string) => startReview(engine, jobId, checkout);
-}
-
-async function startReview(engine: Huggler, jobId: string, checkout: string) {
-  const project = await engine.projects.open({ workspaceRoot: checkout });
-  const launch = async (instanceId: string, title: string) => {
-    const modelSelection = await engine.providers.resolveSelection({ instanceId, cwd: checkout });
-    return engine.threads.launch({
-      projectId: project.id, title, modelSelection,
-      runtimeMode: "approval-required", interactionMode: "default",
-      clientRequestId: jobId + "/launch/" + instanceId,
-    });
-  };
-
-  const reviewer = await launch("reviewer", "Reviewer");
-  const writer = await launch("writer", "Author");
-  const sent = await engine.threads.send({
-    threadId: writer.threadId,
-    message: "Draft the changelog. Use thread_send to ask thread "
-      + reviewer.threadId + " for a review. Ask it to send its findings back here.",
-    mode: "auto",
-    clientRequestId: jobId + "/draft",
-  });
-  const observed = await engine.threads.wait({
-    threadId: writer.threadId, runId: sent.runId, timeoutMs: 10_000,
-  });
-  return { writer, reviewer, sent, observed };
-}
+let message = format!(
+    "Draft the changelog. Use thread_send to request a review from thread {}. Ask it to reply here.",
+    reviewer.thread_id
+);
+let sent = huggler.threads().send(
+    SendMessage::new(author.thread_id, message)
+        .with_mode(DeliveryMode::Auto)
+        .with_client_request_id(format!("{job_id}/draft")),
+).await?;
 ```
 
-The ten-second wait observes the author's first run. A review can arrive later and start a **new run in the same author thread**. The host can follow the exchange with `threads.subscribe({ threadId })` and read current state with `threads.status(threadId)`. Use a delegated task when the parent needs an owned result and a completion notification.
+Use `sent.run_id` to observe the run that handles that message. A later peer reply can start another run on the same author thread. The host observes both through a subscription. Use an owned delegation when the parent needs a result and a completion notification. [Peer and delegation scenarios](extraction-plan.md#3-prove-agent-to-agent-operation-with-two-harnesses)
 
 ## Proposed agent calls
 
-These examples use the proposed Huggler MCP catalog and the argument shapes from the upstream contracts. Replace example IDs with values returned by thread discovery, the package host, or `orchestrator_capabilities`. The running writer's MCP credential determines who sent the message. The receiver gets the message with sender provenance and can use the same tool to reply. [Agent tool schemas][src-4]
+The caller's live MCP session determines sender identity and task ownership. Resolve a peer thread through discovery or a host-supplied ID.
 
 ```json
 {
   "name": "thread_send",
   "arguments": {
     "threadId": "<reviewer thread ID>",
-    "message": "Review the draft in CHANGELOG.md and send your findings back to my thread.",
+    "message": "Review CHANGELOG.md and send your findings back to my thread.",
     "mode": "auto",
     "clientRequestId": "release-42/changelog-review"
   }
 }
 ```
 
-Use delegation when completion should wake the parent. A writer can ask Claude to do a review even if the writer runs on Codex. Include the material the child needs in the task or a shared file. A child starts with the task and optional role. Use `isolation: "worktree"` if it should start from the parent commit in a separate checkout. Uncommitted edits are available in shared isolation.
+For owned work, supply the task and provider instance. Shared isolation lets the child read current workspace edits. Worktree isolation starts from a checked-out commit.
 
 ```json
 {
   "name": "delegate_task",
   "arguments": {
-    "task": "Review the draft in CHANGELOG.md and return the corrections.",
+    "task": "Review CHANGELOG.md and return the corrections.",
     "target": { "providerInstanceId": "reviewer" },
     "role": "review",
     "isolation": "shared",
@@ -112,55 +93,21 @@ Use delegation when completion should wake the parent. A writer can ask Claude t
 }
 ```
 
-The first call yields a message ID, run ID and actual delivery. The second yields a task ID and local child thread ID or remote address. Its run ID can initially be null. The parent can continue working and receive a completion. Reading the completed task with `task_status({ taskId })` can acknowledge the result. A bounded `mode: "wait"` can return on a question, approval or timeout. A host displaying progress should use ordinary observation APIs to avoid consuming a parent's delivery. [MCP input and result schemas][src-4] [Tool declarations][src-5]
+A send returns message and run IDs plus actual delivery. Delegation returns a task ID and child address. The child run ID may become available later. A bounded wait may return early for human input. Passive host reads leave delivery pending. An authorized parent read or explicit acknowledgement can consume it. [Upstream agent schemas][src-4] · [Tool declarations][src-5]
 
-## Interface contracts for the SDK
+## Public API behavior
 
-Proposed signatures below use the upstream schema names in shortened form. The document names the important fields. The published contracts export would supply the complete unions, including attachment types and provider options.
+| Operation | Proposed behavior |
+| --- | --- |
+| `Huggler::open`, `close` | Open one runtime per private state directory. Recover before accepting commands. Close releases subscriptions, workers, storage and managed provider processes. |
+| `projects().open`, `providers().resolve_selection` | Resolve workspace roots, then validate the selected instance and its workspace-specific model and options. |
+| `threads().launch`, `send` | Return typed thread, message and run IDs and the actual delivery outcome. Reuse a caller-scoped request key for retry and expose conflicts across distinct intents. Distinguish committed intent from provider acceptance and final completion. |
+| `threads().status`, `wait`, `subscribe` | Report active and latest terminal work, queued or held work and pending requests. Wait for a particular run or for a delegated family. Send snapshot and cursor-based delta frames. Dropping the wait or stream releases the observation. Execution controls stop or interrupt the underlying work explicitly. |
+| `human_requests().list`, `respond` | Resolve the owning request and live session. Route a typed approval, denial or answer from an authorized host and report a lost or expired callback explicitly. |
 
-```ts
-declare function openHuggler(options: HugglerOptions): Promise<Huggler>;
+A Huggler thread, application run, execution attempt, delegated task and provider session each have their own identity. Preserve these distinctions in DTOs. An agent action derives its identity from the authenticated caller, with scope and ownership rechecked at dispatch. [Identity and status reference](upstream-orchestration.md#which-identity-or-status-to-expose)
 
-interface Huggler {
-  readonly projects: Projects;
-  readonly providers: Providers;
-  readonly threads: Threads;
-  readonly humanRequests: HumanRequests;
-  close(): Promise<void>;
-}
-
-interface Threads {
-  launch(input: LaunchThreadInput): Promise<{ threadId: ThreadId; runId: RunId | null }>;
-  send(input: SendInput): Promise<{
-    threadId: ThreadId;
-    messageId: MessageId;
-    runId: RunId;
-    taskId?: TaskId;
-    delivery: "started" | "queued" | "steered" | "restarted";
-    status: RunStatus;
-  }>;
-  status(id: ThreadId): Promise<ThreadStatusView>;
-  wait(input: {
-    threadId: ThreadId; runId?: RunId; timeoutMs?: number;
-    untilDelegatedWorkSettled?: boolean; signal?: AbortSignal;
-  }): Promise<WaitResult>;
-  subscribe(input: {
-    threadId: ThreadId; afterSequence?: number; signal?: AbortSignal;
-  }): AsyncIterable<ThreadStreamFrame>;
-}
-
-interface HumanRequests {
-  list(threadId: ThreadId): Promise<PendingRequest[]>;
-  respond(input: AuthorizedRequestResponse): Promise<CommandReceipt>;
-}
-```
-
-- **Identity.** Give IDs distinct types. A thread identifies a conversation, a run identifies one unit of application work, an attempt identifies an execution of it, and a task identifies a parent–child relationship. A process restart can replace a provider session while the application thread survives.
-- **Reads.** `ThreadStatusView` should expose current and latest terminal runs, held/queued work, unanswered requests, active children, background work and settlement. `WaitResult` should expose `timedOut`, the observed run/status and, for a settled family, the run containing the result. Clients can read paged activity for its answer.
-- **Writes.** Use a stable command ID or a caller-scoped request key for retried operations. Distinguish committed intent, provider acceptance and terminal outcome in the result types. Expose typed reasons for unsupported capabilities, insufficient authority, stale targets, unavailable instances and storage failures.
-- **Subscriptions.** Return the upstream snapshot/delta semantics. Persist a cursor **after** applying its updates. Cancellation of a subscription or wait releases the observer. Execution stops through explicit run, thread or task controls.
-- **Authority.** The trusted application owns runtime configuration and human decisions. Agent-facing access goes through a credential bound to the live caller. Expose agent delegation through that authenticated context. Accepting an arbitrary `parentThreadId` from an app client would bypass the runtime’s ownership checks.
-- **Installation.** Ship compiled JavaScript, declarations and runtime assets. Load an SDK or CLI only when its driver is selected. Report setup, version and login state by instance. The compatible Node range and supported OS/architecture combinations must be qualified from the packed release.
+When a new transport can preserve the workflow with different mechanics, describe the result precisely. A history-based fork creates a fresh provider session with selected transcript context. Git restoration is a separate workspace action. Advertise a native operation only when the selected adapter exposes it, and distinguish a fallback from a provider-native result in the API. [Context and recovery reference](upstream-orchestration.md#recovery-streams-and-context)
 
 [src-4]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/contracts/src/orchestratorMcp.ts
 [src-5]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/mcp/toolkits/orchestrator/tools.ts
