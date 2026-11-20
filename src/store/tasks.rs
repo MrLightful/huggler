@@ -1,5 +1,8 @@
 use super::*;
-use crate::mcp::Delegation;
+use crate::{
+    mcp::{Delegation, Isolation},
+    worktree,
+};
 
 const SELECT_TASK: &str = "SELECT t.id,t.parent_thread,t.parent_run,t.child_thread,t.child_run,
     t.result_run,t.delivery,t.wake_run,CASE WHEN t.cancelled AND t.result_run IS NOT NULL THEN 'interrupted'
@@ -128,6 +131,25 @@ impl Database {
         let provider = input.target.map(|t| t.provider_instance_id);
         let name = input.title.as_deref().unwrap_or("Delegated task");
         let child = creation::create_agent_thread(&tx, &parent, name, provider)?;
+        if matches!(input.isolation, Isolation::Worktree) {
+            let cwd: String = tx.query_row(
+                "SELECT coalesce(t.worktree_path,p.root) FROM thread t JOIN project p ON p.id=t.project WHERE t.id=?",
+                [&parent.0], |r| r.get(0),
+            )?;
+            let (common_dir, base) = worktree::base(Path::new(&cwd))?;
+            let path = self.worktree_dir.join(&child.0);
+            let path = path
+                .to_str()
+                .ok_or_else(|| Error::Invalid("worktree path requires UTF-8".into()))?;
+            tx.execute(
+                "INSERT INTO worktree(path,common_dir,base_commit) VALUES(?,?,?)",
+                params![path, common_dir, base],
+            )?;
+            tx.execute(
+                "UPDATE thread SET worktree_path=? WHERE id=?",
+                params![path, child.0],
+            )?;
+        }
         let model = tx.query_row("SELECT model FROM thread WHERE id=?", [&child.0], |r| {
             r.get(0)
         })?;

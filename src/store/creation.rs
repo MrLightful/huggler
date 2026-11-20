@@ -11,8 +11,8 @@ pub(super) fn create_agent_thread(
 ) -> Result<ThreadId> {
     let thread = ThreadId(new_id());
     tx.execute(
-        "INSERT INTO thread(id,project,name,provider,model)
-         SELECT ?1,project,?2,coalesce(?3,provider),CASE WHEN ?3 IS NULL OR ?3=provider THEN model END
+        "INSERT INTO thread(id,project,name,provider,model,worktree_path)
+         SELECT ?1,project,?2,coalesce(?3,provider),CASE WHEN ?3 IS NULL OR ?3=provider THEN model END,worktree_path
          FROM thread WHERE id=?4",
         params![thread.0, name, provider.map(Provider::key), caller.0],
     )?;

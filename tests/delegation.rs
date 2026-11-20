@@ -773,3 +773,184 @@ async fn live_codex_to_acp_delegation() {
     .await
     .unwrap();
 }
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.test",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim_end().into()
+}
+
+async fn acp_prompt(rt: &Huggler, thread: &ThreadId, key: &str, text: &str) -> String {
+    let run = rt
+        .send(CommandId(key.into()), thread.clone(), text.into())
+        .unwrap()
+        .run_id
+        .unwrap();
+    completed(rt, thread, &run).await;
+    rt.read(thread)
+        .unwrap()
+        .messages
+        .last()
+        .unwrap()
+        .text
+        .clone()
+}
+
+async fn checkout_task(rt: &Huggler, caller: &ThreadId, key: &str, prompt: &str) -> DelegatedTask {
+    serde_json::from_str(&acp_prompt(rt, caller, key, prompt).await).unwrap()
+}
+
+async fn exercise_worktree_delegation() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repository with spaces");
+    checkout(&repo);
+    let options = options(&dir.path().join("state"));
+    let rt = Huggler::open(options.clone()).await.unwrap();
+    let project = rt.open_project(&repo).unwrap();
+    let author = launch(&rt, &project, "author", Provider::ClaudeAgent);
+    let isolated = r#"checkout task {"clientRequestId":"isolate","task":"edit tracked isolated","isolation":"worktree"}"#;
+    let rejected: serde_json::Value =
+        serde_json::from_str(&acp_prompt(&rt, &author, "unborn", isolated).await).unwrap();
+    assert_eq!(rejected["code"], "invalid");
+    assert!(rt.read(&author).unwrap().tasks.is_empty());
+    assert_eq!(rt.threads().unwrap().len(), 1);
+
+    let tracked = repo.join("tracked.txt");
+    std::fs::write(&tracked, "initial").unwrap();
+    git(&repo, &["add", "tracked.txt"]);
+    git(&repo, &["commit", "-qm", "Base"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    let shared = r#"checkout task {"clientRequestId":"share","task":"edit tracked shared"}"#;
+    let shared = checkout_task(&rt, &author, "shared", shared).await;
+    assert_eq!(shared.result.as_deref(), Some("initial"));
+    assert!(
+        rt.read(&shared.child_thread_id)
+            .unwrap()
+            .worktree_path
+            .is_none()
+    );
+    assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "shared");
+
+    let task = checkout_task(&rt, &author, "isolated", isolated).await;
+    assert_eq!(task.result.as_deref(), Some("initial"));
+    let child = &task.child_thread_id;
+    let path = rt.read(child).unwrap().worktree_path.unwrap();
+    assert_ne!(path, project.root);
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), base);
+    assert_eq!(
+        std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
+        "isolated"
+    );
+    assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "shared");
+    let worktrees = git(&repo, &["worktree", "list", "--porcelain"]);
+    assert_eq!(
+        worktrees
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        2
+    );
+    rt.close().await.unwrap();
+
+    // An accepted retry does not need a resolvable parent HEAD.
+    git(&repo, &["symbolic-ref", "HEAD", "refs/heads/unborn"]);
+    let rt = Huggler::open(options).await.unwrap();
+    let retry = checkout_task(&rt, &author, "retry", isolated).await;
+    assert_eq!(retry, task);
+    assert_eq!(rt.read(child).unwrap().worktree_path.as_ref(), Some(&path));
+    assert_eq!(rt.read(child).unwrap().runs.len(), 1);
+    assert_eq!(
+        acp_prompt(&rt, child, "continue", "edit tracked resumed").await,
+        "isolated"
+    );
+    git(&path, &["commit", "-qam", "Child commit"]);
+    let child_base = git(&path, &["rev-parse", "HEAD"]);
+    assert_ne!(child_base, base);
+
+    // Shared descendants and independent peers use the caller's checkout.
+    let inherit = r#"checkout task {"clientRequestId":"shared-child","task":"edit tracked inherited","isolation":"shared"}"#;
+    let sub = checkout_task(&rt, child, "inherit", inherit).await;
+    assert_eq!(sub.result.as_deref(), Some("resumed"));
+    assert_eq!(
+        rt.read(&sub.child_thread_id)
+            .unwrap()
+            .worktree_path
+            .as_ref(),
+        Some(&path)
+    );
+    let peers: serde_json::Value = serde_json::from_str(
+        &acp_prompt(
+            &rt,
+            child,
+            "batch",
+            r#"create peers {"clientRequestId":"peer","threads":[{"title":"Peer"}]}"#,
+        )
+        .await,
+    )
+    .unwrap();
+    let peer = ThreadId(peers["threads"][0]["threadId"].as_str().unwrap().into());
+    assert_eq!(
+        acp_prompt(&rt, &peer, "peer-edit", "edit tracked peer").await,
+        "inherited"
+    );
+
+    let nested = checkout_task(&rt, child, "nested", isolated).await;
+    let nested_path = rt
+        .read(&nested.child_thread_id)
+        .unwrap()
+        .worktree_path
+        .unwrap();
+    assert_ne!(nested_path, path);
+    assert_eq!(git(&nested_path, &["rev-parse", "HEAD"]), child_base);
+    assert_eq!(nested.result.as_deref(), Some("resumed"));
+    assert_eq!(
+        std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
+        "peer"
+    );
+    assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "shared");
+
+    // Losing a prepared checkout must not re-create it or dispatch in the parent.
+    std::fs::rename(&nested_path, dir.path().join("moved")).unwrap();
+    let missing = rt
+        .send(
+            CommandId("missing".into()),
+            nested.child_thread_id.clone(),
+            "edit tracked wrong".into(),
+        )
+        .unwrap()
+        .run_id
+        .unwrap();
+    assert_eq!(
+        rt.wait(&nested.child_thread_id, &missing)
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Failed
+    );
+    assert!(!nested_path.exists());
+    assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "shared");
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn worktree_delegation_keeps_the_callers_checkout_and_retries_after_reopen() {
+    timeout(Duration::from_secs(30), exercise_worktree_delegation())
+        .await
+        .expect("worktree delegation");
+}

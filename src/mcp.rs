@@ -78,7 +78,7 @@ pub(crate) struct Delegation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_ms: Option<u64>,
     #[serde(default)]
-    isolation: Isolation,
+    pub isolation: Isolation,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -122,9 +122,10 @@ enum TaskMode {
 
 #[derive(Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-enum Isolation {
+pub(crate) enum Isolation {
     #[default]
     Shared,
+    Worktree,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -228,7 +229,7 @@ impl AgentServer {
     }
 
     #[tool(
-        description = "Delegate a task to a new child thread in the same checkout. Default async completion wakes you when idle. With mode wait, return on completion, a human approval request or timeout. Reuse clientRequestId to retry."
+        description = "Delegate a task to a new child thread. Default isolation shared uses your current checkout. Use worktree to start a separate Git checkout at your current commit. Default async completion wakes you when idle. With mode wait, return on completion, a human approval request or timeout. Reuse clientRequestId to retry."
     )]
     async fn delegate_task(
         &self,

@@ -70,6 +70,7 @@ for line in sys.stdin:
         emit(id=frame["id"], result={"protocolVersion": 1, "agentCapabilities": {
             "loadSession": True, "mcpCapabilities": {"http": True}}})
     elif method in ("session/new", "session/load"):
+        assert Path(params["cwd"]).resolve() == Path.cwd()
         session = params.get("sessionId", str(uuid.uuid4()))
         server, = params["mcpServers"]
         assert server["name"] == "huggler" and server["type"] == "http"
@@ -92,6 +93,15 @@ for line in sys.stdin:
             assert "error" in bad or bad["result"]["isError"]
             deliver(peers[0]["id"], "review-1", "Review 2+2")
             finish("Review requested")
+        elif text.startswith("checkout task "):
+            args = json.loads(text.removeprefix("checkout task "))
+            result = call("delegate_task", mode="wait", timeoutMs=4000, **args)
+            finish(json.dumps(result))
+        elif text.startswith("edit tracked "):
+            tracked = Path("tracked.txt")
+            original = tracked.read_text()
+            tracked.write_text(text.removeprefix("edit tracked "))
+            finish(original)
         elif text.startswith("create peers "):
             assert "create_threads" in {t["name"] for t in tools}
             args = json.loads(text.removeprefix("create peers "))

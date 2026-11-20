@@ -276,6 +276,9 @@ pub struct Thread {
     pub permissions: Vec<PermissionRequest>,
     pub id: ThreadId,
     pub project: ProjectId,
+    /// Managed checkout used by this thread. None selects the project root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<PathBuf>,
     pub name: String,
     pub model: Option<String>,
     pub native_thread: Option<NativeThreadId>,

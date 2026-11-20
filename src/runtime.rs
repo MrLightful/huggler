@@ -245,6 +245,17 @@ impl Shared {
         run: &RunId,
         stopped: watch::Receiver<bool>,
     ) -> Result<()> {
+        if let Some(worktree) = self.access(|db| db.worktree(thread))? {
+            let worktree = tokio::task::spawn_blocking(move || {
+                worktree.prepare()?;
+                Ok::<_, Error>(worktree)
+            })
+            .await
+            .map_err(|e| Error::Worker(e.to_string()))??;
+            if !worktree.ready {
+                self.access(|db| db.worktree_ready(&worktree.path))?;
+            }
+        }
         let turn = self.access(|db| {
             let mut turn = db.claim(run)?;
             if let Some(url) = &self.endpoint {

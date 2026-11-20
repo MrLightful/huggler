@@ -6,11 +6,12 @@ mod tasks;
 use crate::{
     contracts::*,
     providers::{Turn, Update},
+    worktree::Worktree,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use std::{
     fs::{self, File},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 fn new_id() -> String {
@@ -30,6 +31,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/008.sql"),
     include_str!("../migrations/009.sql"),
     include_str!("../migrations/010.sql"),
+    include_str!("../migrations/011.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
@@ -163,6 +165,7 @@ impl Drop for StateLock {
 
 pub(crate) struct Database {
     db: Connection,
+    worktree_dir: PathBuf,
     // Drop after SQLite closes.
     _lock: StateLock,
 }
@@ -225,7 +228,11 @@ impl Database {
         }
         native_children::disconnect(&tx, None)?;
         tx.commit()?;
-        Ok(Self { db, _lock: lock })
+        Ok(Self {
+            db,
+            worktree_dir: dir.canonicalize()?.join("worktrees"),
+            _lock: lock,
+        })
     }
 
     pub fn project(&self, root: &Path) -> Result<Project> {
@@ -361,10 +368,35 @@ impl Database {
         Ok((receipt, true))
     }
 
+    pub fn worktree(&self, thread: &ThreadId) -> Result<Option<Worktree>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT w.path,w.common_dir,w.base_commit,w.ready FROM thread t
+                 JOIN worktree w ON w.path=t.worktree_path WHERE t.id=?",
+                [&thread.0],
+                |r| {
+                    Ok(Worktree {
+                        path: r.get(0)?,
+                        common_dir: r.get(1)?,
+                        base_commit: r.get(2)?,
+                        ready: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn worktree_ready(&self, path: &str) -> Result<()> {
+        self.db
+            .execute("UPDATE worktree SET ready=1 WHERE path=?", [path])?;
+        Ok(())
+    }
+
     pub fn claim(&mut self, id: &RunId) -> Result<Turn> {
         let tx = self.db.transaction()?;
         let turn = tx.query_row(
-            "SELECT p.root,t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode FROM run r
+            "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
              JOIN message m ON m.run_id=r.id WHERE r.id=? AND m.role='user'",
@@ -743,7 +775,7 @@ impl Database {
         let mut thread = self
             .db
             .query_row(
-                "SELECT project,name,model,native_thread,provider FROM thread WHERE id=?",
+                "SELECT project,name,model,native_thread,provider,worktree_path FROM thread WHERE id=?",
                 [&id.0],
                 |r| {
                     Ok(Thread {
@@ -754,6 +786,7 @@ impl Database {
                         permissions: vec![],
                         id: id.clone(),
                         project: ProjectId(r.get(0)?),
+                        worktree_path: r.get::<_, Option<String>>(5)?.map(PathBuf::from),
                         name: r.get(1)?,
                         model: r.get(2)?,
                         native_thread: r.get::<_, Option<String>>(3)?.map(NativeThreadId),
@@ -866,6 +899,7 @@ mod tests {
         let thread = ThreadId("t".into());
         let db = Database::open(dir.path())?;
         let snapshot = db.read(&thread)?;
+        assert!(snapshot.worktree_path.is_none());
         assert_eq!(snapshot.messages[0].text, "legacy answer");
         assert_eq!(snapshot.messages[0].origin, None);
         assert!(
