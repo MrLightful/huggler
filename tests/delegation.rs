@@ -265,6 +265,200 @@ async fn queued_followup_supplies_the_final_result_once() {
     .unwrap();
 }
 
+async fn settled_review(rt: &Huggler, parent: &ThreadId) -> DelegatedTask {
+    let first = rt
+        .send(
+            CommandId("start".into()),
+            parent.clone(),
+            "delegate rounds".into(),
+        )
+        .unwrap()
+        .run_id
+        .unwrap();
+    task(rt, parent, 0, |t| t.status.terminal()).await;
+    release(rt, parent, None).await;
+    completed(rt, parent, &first).await;
+    let original = rt.read(parent).unwrap().tasks.remove(0);
+    assert_eq!(original.result.as_deref(), Some("2+2=4"));
+    assert_eq!(original.delivery, CompletionDelivery::Acknowledged);
+    original
+}
+
+#[tokio::test]
+async fn owner_followups_keep_their_own_runs_receipts_and_results() {
+    timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        checkout(&repo);
+        let options = options(&dir.path().join("state"));
+        let rt = Huggler::open(options.clone()).await.unwrap();
+        let project = rt.open_project(&repo).unwrap();
+        let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
+        let original = settled_review(&rt, &parent).await;
+        let child = &original.child_thread_id;
+        let owner_run = rt
+            .send(
+                CommandId("rounds".into()),
+                parent.clone(),
+                format!("followups {child}"),
+            )
+            .unwrap()
+            .run_id
+            .unwrap();
+        // The parent requests permission only after both sends and their retries.
+        permission(&rt, &parent).await;
+        let pending = rt.read(&parent).unwrap().tasks;
+        assert_eq!(pending.len(), 3);
+        assert_eq!(pending[0], original);
+        assert_eq!(pending[1].status, RunStatus::Running);
+        assert_eq!(pending[2].status, RunStatus::Queued);
+        let child_snapshot = rt.read(child).unwrap();
+        assert_eq!(child_snapshot.runs.len(), 3);
+        let mut receipts = vec![];
+        for (index, key, delivery) in [
+            (1, "review", PeerDelivery::Started),
+            (2, "next", PeerDelivery::Queued),
+        ] {
+            let receipt = rt.peer_receipt(&parent, key).unwrap().unwrap();
+            let followup = &pending[index];
+            assert_eq!(receipt.task_id.as_ref(), Some(&followup.task_id));
+            assert_eq!(receipt.run_id, followup.child_run_id);
+            assert_eq!(receipt.delivery, delivery);
+            assert_eq!(followup.parent_run_id, owner_run);
+            assert_eq!(&followup.child_thread_id, child);
+            assert!(followup.result_run_id.is_none());
+            let message = child_snapshot
+                .messages
+                .iter()
+                .find(|m| m.id == receipt.message_id)
+                .unwrap();
+            assert_eq!(message.run_id, receipt.run_id);
+            assert_eq!(
+                message.origin,
+                Some(MessageOrigin {
+                    thread_id: parent.clone(),
+                    run_id: owner_run.clone(),
+                    request_key: key.into()
+                })
+            );
+            receipts.push((key, receipt));
+        }
+
+        // ACP ends the first prompt with stopReason=cancelled. The queued
+        // review is still awaiting permission when the interrupted result arrives.
+        release(&rt, child, None).await;
+        let interrupted = task(&rt, &parent, 1, |t| t.status.terminal()).await;
+        assert_eq!(interrupted.status, RunStatus::Interrupted);
+        assert_eq!(
+            interrupted.result_run_id.as_ref(),
+            Some(&pending[1].child_run_id)
+        );
+        assert_eq!(
+            interrupted.result.as_deref(),
+            Some("provider turn interrupted")
+        );
+        assert_eq!(
+            rt.read(&parent).unwrap().tasks[2].status,
+            RunStatus::Running
+        );
+        release(&rt, child, None).await;
+        let second = task(&rt, &parent, 2, |t| t.status.terminal()).await;
+        assert_eq!(second.result.as_deref(), Some("Second finding"));
+        assert_eq!(
+            second.result_run_id.as_ref(),
+            Some(&pending[2].child_run_id)
+        );
+
+        release(&rt, &parent, None).await;
+        completed(&rt, &parent, &owner_run).await;
+        let delivered = task(&rt, &parent, 2, |t| t.wake_run_id.is_some()).await;
+        completed(&rt, &parent, delivered.wake_run_id.as_ref().unwrap()).await;
+        let saved = rt.read(&parent).unwrap();
+        assert_eq!(saved.tasks[0], original);
+        assert_eq!(saved.tasks[1].wake_run_id, delivered.wake_run_id);
+        assert_eq!(saved.runs.len(), 3);
+        assert_eq!(
+            saved.messages.last().unwrap().text,
+            "Received: provider turn interrupted, Second finding"
+        );
+        rt.close().await.unwrap();
+
+        let rt = Huggler::open(options).await.unwrap();
+        let retry = rt
+            .send(
+                CommandId("retry".into()),
+                parent.clone(),
+                format!("retry followups {child}"),
+            )
+            .unwrap()
+            .run_id
+            .unwrap();
+        completed(&rt, &parent, &retry).await;
+        assert_eq!(rt.read(&parent).unwrap().tasks, saved.tasks);
+        assert_eq!(rt.read(child).unwrap().runs.len(), 3);
+        for (key, receipt) in receipts {
+            assert_eq!(rt.peer_receipt(&parent, key).unwrap(), Some(receipt));
+        }
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn nested_results_wake_only_the_followup_that_requested_them() {
+    timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        checkout(&repo);
+        let rt = Huggler::open(options(&dir.path().join("state")))
+            .await
+            .unwrap();
+        let project = rt.open_project(&repo).unwrap();
+        let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
+        let original = settled_review(&rt, &parent).await;
+        let child = &original.child_thread_id;
+        let owner_run = rt
+            .send(
+                CommandId("nested".into()),
+                parent.clone(),
+                format!("nested followups {child}"),
+            )
+            .unwrap()
+            .run_id
+            .unwrap();
+        permission(&rt, &parent).await;
+        let alpha = task(&rt, child, 0, |_| true).await;
+        release(&rt, child, None).await;
+        let beta = task(&rt, child, 1, |_| true).await;
+        // Both reports arrive while the second follow-up occupies the child.
+        for (index, leaf) in [&alpha, &beta].into_iter().enumerate() {
+            release(&rt, &leaf.child_thread_id, None).await;
+            task(&rt, child, index, |t| t.result.is_some()).await;
+        }
+        let pending = rt.read(&parent).unwrap().tasks;
+        assert!(pending[1..].iter().all(|t| t.result.is_none()));
+        release(&rt, child, None).await;
+        for (i, answer) in ["Received: alpha", "Received: beta"]
+            .into_iter()
+            .enumerate()
+        {
+            let followup = task(&rt, &parent, i + 1, |t| t.result.is_some()).await;
+            let nested = &rt.read(child).unwrap().tasks[i];
+            assert_eq!(followup.child_run_id, nested.parent_run_id);
+            assert_eq!(followup.result_run_id, nested.wake_run_id);
+            assert_eq!(followup.result.as_deref(), Some(answer));
+        }
+        release(&rt, &parent, None).await;
+        completed(&rt, &parent, &owner_run).await;
+        let delivered = task(&rt, &parent, 2, |t| t.wake_run_id.is_some()).await;
+        completed(&rt, &parent, delivered.wake_run_id.as_ref().unwrap()).await;
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn cancellation_reaches_grandchildren_and_queued_work_even_after_a_result() {
     for mode in ["subtree", "settled"] {

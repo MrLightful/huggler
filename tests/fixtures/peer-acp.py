@@ -119,7 +119,7 @@ for line in sys.stdin:
         elif text.startswith("delegate "):
             action = text.removeprefix("delegate ")
             child = {"nested": "delegate leaf", "subtree": "branch review",
-                     "settled": "immediate review"}.get(action, "held review")
+                     "settled": "immediate review", "rounds": "immediate review"}.get(action, "held review")
             task = delegate(child, "review")
             task_id = task["taskId"]
             if action == "siblings":
@@ -127,10 +127,30 @@ for line in sys.stdin:
             if action == "followup":
                 followup = deliver(task["childThreadId"], "revise", "revised finding")
                 assert followup["delivery"] == "queued"
-            if action in ("ack", "cancel", "recover", "siblings", "subtree", "settled"):
+            if action in ("ack", "cancel", "recover", "siblings", "subtree", "settled", "rounds"):
                 hold()
             else:
                 finish("Delegated for review")
+        elif text.startswith("nested followups "):
+            target = text.split()[-1]
+            for label, delivery in [("alpha", "started"), ("beta", "queued")]:
+                assert deliver(target, label, "nested " + label)["delivery"] == delivery
+            hold()
+        elif text.startswith("report "):
+            hold()
+        elif text.startswith(("followups ", "retry followups ")):
+            target = text.split()[-1]
+            running = deliver(target, "review", "interrupt this review")
+            queued = deliver(target, "next", "second review")
+            assert running["delivery"] == "started" and queued["delivery"] == "queued"
+            assert running["taskId"] != queued["taskId"]
+            assert running == deliver(target, "review", "interrupt this review")
+            assert queued == deliver(target, "next", "second review")
+            assert deliver(target, "next", "different")["code"] == "conflict"
+            if text.startswith("retry "):
+                finish("Retried both follow-ups")
+            else:
+                hold()
         elif text == "branch review":
             leaf = delegate("held review", "leaf")
             assert deliver(leaf["childThreadId"], "revise", "revised finding")["delivery"] == "queued"
@@ -177,7 +197,13 @@ for line in sys.stdin:
         elif text.startswith("Peer message from Huggler "):
             attribution, message = text.split("\n\n", 1)
             sender = json.loads(attribution.removeprefix("Peer message from Huggler "))["thread_id"]
-            if message == "Review 2+2":
+            if message.startswith("nested "):
+                label = message.split()[-1]
+                delegate("report " + label, label)
+                hold()
+            elif message in ("interrupt this review", "second review"):
+                hold()
+            elif message == "Review 2+2":
                 first = deliver(sender, "reply-1", "2+2=4")
                 retry = deliver(sender, "reply-1", "2+2=4")
                 assert first == retry
@@ -195,11 +221,24 @@ for line in sys.stdin:
                 assert e.code == 401
             else:
                 raise AssertionError("revoked caller retained access")
-        if text == "delegate ack":
+        if text.startswith("Peer message from Huggler "):
+            if message == "interrupt this review":
+                emit(id=prompt_id, result={"stopReason": "cancelled"})
+            elif message == "second review":
+                finish("Second finding")
+            elif message.startswith("nested "):
+                finish("Waiting for nested review")
+            else:
+                raise AssertionError("unexpected held message")
+            continue
+        if text in ("delegate ack", "delegate rounds"):
             status = call("task_status", taskId=task_id)
             assert status["result"] == "2+2=4" and status["delivery"] == "acknowledged"
         elif text == "delegate cancel":
             assert call("task_cancel", taskId=task_id)["delivery"] == "disposed"
         elif text in ("delegate subtree", "delegate settled"):
             assert call("task_cancel", taskId=task_id, clientRequestId="stop-review")["delivery"] == "disposed"
-        finish("2+2=4" if text == "held review" else "released")
+        if text.startswith("report "):
+            finish(text.split()[-1])
+        else:
+            finish("2+2=4" if text == "held review" else "released")

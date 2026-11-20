@@ -264,7 +264,7 @@ impl AgentServer {
     }
 
     #[tool(
-        description = "Send a message to another Huggler thread. An idle recipient starts a run. A busy recipient queues it. Reuse clientRequestId for an identical retry."
+        description = "Send a message to another Huggler thread. An idle recipient starts a run. A busy recipient queues it. Sending to your delegated child after its original task settles returns a new taskId. Reuse clientRequestId for an identical retry."
     )]
     fn thread_send(
         &self,

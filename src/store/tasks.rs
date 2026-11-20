@@ -2,9 +2,11 @@ use super::*;
 use crate::mcp::Delegation;
 
 const SELECT_TASK: &str = "SELECT t.id,t.parent_thread,t.parent_run,t.child_thread,t.child_run,
-    t.result_run,t.delivery,t.wake_run,CASE WHEN t.cancelled AND t.result_run IS NOT NULL THEN 'interrupted' ELSE r.status END,
+    t.result_run,t.delivery,t.wake_run,CASE WHEN t.cancelled AND t.result_run IS NOT NULL THEN 'interrupted'
+        WHEN initial.status='queued' THEN 'queued' ELSE r.status END,
     CASE WHEN t.cancelled AND t.result_run IS NOT NULL THEN 'task cancelled' ELSE coalesce(r.error,m.text) END
-    FROM delegated_task t LEFT JOIN run r ON r.id=t.result_run
+    FROM delegated_task t JOIN run initial ON initial.id=t.child_run
+    LEFT JOIN run r ON r.id=t.result_run
     LEFT JOIN message m ON m.run_id=r.id AND m.role='assistant'";
 
 fn task_row(row: &Row<'_>) -> rusqlite::Result<DelegatedTask> {
@@ -17,6 +19,7 @@ fn task_row(row: &Row<'_>) -> rusqlite::Result<DelegatedTask> {
     };
     let status = match row.get::<_, Option<String>>(8)?.as_deref() {
         None => RunStatus::Running,
+        Some("queued") => RunStatus::Queued,
         Some("completed") => RunStatus::Completed,
         Some("failed") => RunStatus::Failed,
         Some("interrupted") => RunStatus::Interrupted,
@@ -59,6 +62,41 @@ fn publish(tx: &Transaction, parent: &ThreadId, id: &TaskId) -> Result<Delegated
     let task = owned(tx, parent, id)?;
     event(tx, parent, Change::Task { task: task.clone() })?;
     Ok(task)
+}
+
+pub(super) fn publish_promoted(tx: &Transaction, run: &RunId) -> Result<()> {
+    let task = tx
+        .query_row(
+            "SELECT id,parent_thread FROM delegated_task WHERE child_run=?",
+            [&run.0],
+            |r| Ok((TaskId(r.get(0)?), ThreadId(r.get(1)?))),
+        )
+        .optional()?;
+    if let Some((id, owner)) = task {
+        publish(tx, &owner, &id)?;
+    }
+    Ok(())
+}
+
+pub(super) fn record_followup(
+    tx: &Transaction,
+    sender: &ThreadId,
+    sender_run: &RunId,
+    target: &ThreadId,
+    run: &RunId,
+) -> Result<Option<TaskId>> {
+    let id = TaskId(new_id());
+    let inserted = tx.execute(
+        "INSERT INTO delegated_task(id,parent_thread,parent_run,child_thread,child_run)
+         SELECT ?1,parent_thread,?2,child_thread,?3 FROM delegated_task
+         WHERE child_thread=?4 AND parent_thread=?5 AND request_key IS NOT NULL AND result_run IS NOT NULL",
+        params![id.0, sender_run.0, run.0, target.0, sender.0],
+    )?;
+    if inserted == 0 {
+        return Ok(None);
+    }
+    publish(tx, sender, &id)?;
+    Ok(Some(id))
 }
 
 impl Database {
@@ -128,11 +166,11 @@ impl Database {
         Ok(task)
     }
 
-    pub fn child_awaits_approval(&self, thread: &ThreadId) -> Result<bool> {
+    pub fn task_awaits_approval(&self, task: &TaskId) -> Result<bool> {
         Ok(self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM permission p JOIN run r ON r.id=p.run_id
-             WHERE r.thread_id=? AND p.expired=0 AND p.decision IS NULL)",
-            [&thread.0],
+             WHERE r.task_id=? AND p.expired=0 AND p.decision IS NULL)",
+            [&task.0],
             |row| row.get(0),
         )?)
     }
@@ -165,30 +203,31 @@ impl Database {
         // A later turn in any of these threads can have more work in flight.
         let subtree = tx
             .prepare(
-                "WITH RECURSIVE family(id,parent_thread,child_thread) AS (
-                    SELECT id,parent_thread,child_thread FROM delegated_task WHERE id=?1
-                    UNION ALL
-                    SELECT t.id,t.parent_thread,t.child_thread FROM delegated_task t
-                    JOIN family f ON t.parent_thread=f.child_thread
-                ) SELECT id,parent_thread,child_thread FROM family",
+                "WITH RECURSIVE family(child) AS (
+                    SELECT child_thread FROM delegated_task WHERE id=?1
+                    UNION
+                    SELECT t.child_thread FROM delegated_task t JOIN family f ON t.parent_thread=f.child
+                    WHERE t.request_key IS NOT NULL
+                ) SELECT child FROM family",
             )?
-            .query_map([&id.0], |r| {
-                Ok((TaskId(r.get(0)?), ThreadId(r.get(1)?), ThreadId(r.get(2)?)))
-            })?
+            .query_map([&id.0], |r| Ok(ThreadId(r.get(0)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stops = Vec::new();
-        for (subtask, owner, child) in subtree {
-            if tx.execute(
-                "UPDATE delegated_task SET delivery='disposed',cancelled=(result_run IS NULL AND
-                    (EXISTS (SELECT 1 FROM run WHERE thread_id=child_thread AND status IN ('starting','running','queued'))
-                    OR EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
-                               WHERE c.active AND r.thread_id=child_thread)
-                     OR EXISTS (SELECT 1 FROM delegated_task d WHERE d.parent_thread=delegated_task.child_thread
-                                AND (d.result_run IS NULL OR d.delivery='pending'))))
-                 WHERE id=? AND delivery='pending'",
-                [&subtask.0],
-            )? != 0
-            {
+        for child in subtree {
+            let disposed = tx.prepare(
+                "UPDATE delegated_task AS t SET delivery='disposed',cancelled=(result_run IS NULL AND
+                    (EXISTS (SELECT 1 FROM run WHERE task_id=t.id AND status IN ('starting','running','queued'))
+                     OR EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
+                                WHERE c.active AND r.task_id=t.id)
+                     OR EXISTS (SELECT 1 FROM delegated_task d JOIN run r ON r.id=d.parent_run
+                                WHERE r.task_id=t.id AND (d.result_run IS NULL OR d.delivery='pending'))))
+                 WHERE child_thread=?1 AND delivery='pending'
+                   AND (id=?2 OR child_thread<>?3 OR result_run IS NULL)
+                 RETURNING id,parent_thread",
+            )?.query_map(params![child.0, id.0, task.child_thread_id.0], |r|
+                Ok((TaskId(r.get(0)?), ThreadId(r.get(1)?))))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (subtask, owner) in disposed {
                 publish(&tx, &owner, &subtask)?;
             }
             let runs = tx.prepare("SELECT id,status FROM run WHERE thread_id=? AND
@@ -214,29 +253,39 @@ impl Database {
 pub(super) fn reconcile(tx: &Transaction, jobs: &mut Vec<(ThreadId, RunId)>) -> Result<()> {
     loop {
         let settled = tx.prepare("UPDATE delegated_task AS t SET result_run=(
-            SELECT id FROM run WHERE thread_id=t.child_thread ORDER BY ordinal DESC LIMIT 1)
+            SELECT id FROM run WHERE task_id=t.id ORDER BY ordinal DESC LIMIT 1)
             WHERE result_run IS NULL AND NOT EXISTS (
-                SELECT 1 FROM run WHERE thread_id=t.child_thread AND status IN ('starting','running','waiting','queued'))
+                SELECT 1 FROM run WHERE task_id=t.id AND status IN ('starting','running','waiting','queued'))
             AND NOT EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
-                WHERE c.active AND r.thread_id=t.child_thread)
-            AND NOT EXISTS (SELECT 1 FROM delegated_task d WHERE d.parent_thread=t.child_thread
+                WHERE c.active AND r.task_id=t.id)
+            AND NOT EXISTS (SELECT 1 FROM delegated_task d JOIN run r ON r.id=d.parent_run WHERE r.task_id=t.id
                 AND (d.result_run IS NULL OR d.delivery='pending'))
             RETURNING id,parent_thread")?.query_map([],|r|Ok((TaskId(r.get(0)?),ThreadId(r.get(1)?))))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (id, parent) in &settled {
             publish(tx, parent, id)?;
         }
-        let parents = tx.prepare("SELECT DISTINCT parent_thread FROM delegated_task t
-            WHERE delivery='pending' AND result_run IS NOT NULL AND NOT EXISTS (
-            SELECT 1 FROM run WHERE thread_id=t.parent_thread AND status IN ('starting','running','waiting','queued'))")?
-            .query_map([],|r|Ok(ThreadId(r.get(0)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        for parent in parents {
+        // Group siblings into one wake. If two runs on this parent belong to
+        // different outer tasks, each needs its own wake and final response.
+        let parents = tx
+            .prepare(
+                "SELECT ready.parent_thread,r.task_id FROM (
+                    SELECT parent_thread,min(rowid) AS first_ready FROM delegated_task
+                    WHERE delivery='pending' AND result_run IS NOT NULL GROUP BY parent_thread
+                 ) ready JOIN delegated_task t ON t.rowid=ready.first_ready JOIN run r ON r.id=t.parent_run
+                 WHERE NOT EXISTS (SELECT 1 FROM run WHERE thread_id=ready.parent_thread
+                                   AND status IN ('starting','running','waiting','queued'))",
+            )?
+            .query_map([], |row| Ok((ThreadId(row.get(0)?), row.get::<_, Option<String>>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (parent, outer_task) in parents {
             let tasks = tx
                 .prepare(&format!(
-                    "{SELECT_TASK} WHERE t.parent_thread=? AND t.delivery='pending'
+                    "{SELECT_TASK} JOIN run owner ON owner.id=t.parent_run
+                WHERE t.parent_thread=?1 AND owner.task_id IS ?2 AND t.delivery='pending'
                 AND t.result_run IS NOT NULL ORDER BY t.rowid"
                 ))?
-                .query_map([&parent.0], task_row)?
+                .query_map(params![parent.0, outer_task], task_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let results: Vec<_> = tasks.iter().map(|t|serde_json::json!({
                 "taskId":t.task_id,"childThreadId":t.child_thread_id,"resultRunId":t.result_run_id,
@@ -250,6 +299,10 @@ pub(super) fn reconcile(tx: &Transaction, jobs: &mut Vec<(ThreadId, RunId)>) -> 
                 r.get(0)
             })?;
             let (wake, _, _, _) = start_message(tx, &parent, &prompt, model, None)?;
+            tx.execute(
+                "UPDATE run SET task_id=? WHERE id=?",
+                params![outer_task, wake.0],
+            )?;
             for task in tasks {
                 tx.execute(
                     "UPDATE delegated_task SET delivery='delivered',wake_run=? WHERE id=?",

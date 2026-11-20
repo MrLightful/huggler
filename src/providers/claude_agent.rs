@@ -188,6 +188,9 @@ pub(crate) async fn execute(
                 Some(_) => {}
                 None => {
                     let response = result(&f, prompt, "session/prompt")?;
+                    if response["stopReason"] == "cancelled" {
+                        return Err(Error::Interrupted);
+                    }
                     if response["stopReason"] != "end_turn" {
                         return Err(protocol(format!(
                             "Claude stopped: {}",

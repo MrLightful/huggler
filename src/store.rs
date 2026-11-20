@@ -15,6 +15,17 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/001.sql"),
+    include_str!("../migrations/002.sql"),
+    include_str!("../migrations/003.sql"),
+    include_str!("../migrations/004.sql"),
+    include_str!("../migrations/005.sql"),
+    include_str!("../migrations/006.sql"),
+    include_str!("../migrations/007.sql"),
+    include_str!("../migrations/008.sql"),
+];
+
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
@@ -118,8 +129,13 @@ fn start_message(
         ("starting", PeerDelivery::Started)
     };
     let id = RunId(new_id());
-    tx.execute("INSERT INTO run(id,thread_id,status,ordinal) SELECT ?,?,?,COALESCE(MAX(ordinal),0)+1 FROM run WHERE thread_id=?",
-        params![id.0,thread.0,status,thread.0])?;
+    tx.execute(
+        "INSERT INTO run(id,thread_id,status,ordinal,task_id)
+         SELECT ?1,?2,?3,COALESCE(MAX(ordinal),0)+1,
+            (SELECT id FROM delegated_task WHERE child_thread=?2 AND request_key IS NOT NULL AND result_run IS NULL)
+         FROM run WHERE thread_id=?2",
+        params![id.0, thread.0, status],
+    )?;
     let started = run_event(tx, thread, &id)?;
     let (msg, seq) = message(tx, thread, &id, Role::User, origin, text.to_owned())?;
     tx.execute(
@@ -171,19 +187,10 @@ impl Database {
         )?;
         let tx = db.transaction()?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        let migrations = [
-            include_str!("../migrations/001.sql"),
-            include_str!("../migrations/002.sql"),
-            include_str!("../migrations/003.sql"),
-            include_str!("../migrations/004.sql"),
-            include_str!("../migrations/005.sql"),
-            include_str!("../migrations/006.sql"),
-            include_str!("../migrations/007.sql"),
-        ];
-        if !(0..=migrations.len() as i64).contains(&version) {
+        if !(0..=MIGRATIONS.len() as i64).contains(&version) {
             return Err(Error::SchemaVersion(version));
         }
-        for migration in &migrations[version as usize..] {
+        for migration in &MIGRATIONS[version as usize..] {
             tx.execute_batch(migration)?;
         }
         tx.execute_batch(
@@ -556,6 +563,7 @@ impl Database {
         ).optional()?;
         if let Some(id) = &id {
             run_event(tx, thread, id)?;
+            tasks::publish_promoted(tx, id)?;
         }
         Ok(id)
     }
@@ -633,7 +641,7 @@ impl Database {
         key: &str,
         text: &str,
     ) -> Result<(PeerReceipt, bool)> {
-        let (sender, run_id, project) = self.caller(token)?;
+        let (sender, sender_run, project) = self.caller(token)?;
         if sender == *target {
             return Err(Error::Invalid("expected an independent peer".into()));
         }
@@ -667,12 +675,14 @@ impl Database {
         let tx = self.db.transaction()?;
         let origin = MessageOrigin {
             thread_id: sender.clone(),
-            run_id,
+            run_id: sender_run.clone(),
             request_key: key.into(),
         };
         let (run_id, message_id, _, delivery) =
             start_message(&tx, target, text, model, Some(origin))?;
+        let task_id = tasks::record_followup(&tx, &sender, &sender_run, target, &run_id)?;
         let receipt = PeerReceipt {
+            task_id,
             thread_id: target.clone(),
             run_id,
             message_id,
@@ -836,6 +846,64 @@ mod tests {
         assert!(
             matches!(&db.events(&thread,0)?[0].change, Change::Message {message} if message == &snapshot.messages[0])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn v7_tasks_keep_their_runs_and_retry_receipts() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let conn = Connection::open(dir.path().join("huggler.sqlite3"))?;
+        for migration in &MIGRATIONS[..7] {
+            conn.execute_batch(migration)?;
+        }
+        conn.execute_batch(r#"INSERT INTO project VALUES('p','/old');
+            INSERT INTO thread(id,project,name) VALUES('owner','p','parent'),('child','p','child'),('later','p','sibling');
+            INSERT INTO run(id,thread_id,ordinal,status) VALUES
+                ('sender','owner',1,'completed'),('first','child',1,'completed'),('revision','child',2,'completed'),
+                ('sibling-run','later',1,'completed');
+            INSERT INTO message(id,run_id,role,text) VALUES
+                ('input','revision','user','revise'),('answer','revision','assistant','revised'),
+                ('sibling-answer','sibling-run','assistant','pending at restart');
+            INSERT INTO delegated_task(id,parent_thread,parent_run,request_key,intent,child_thread,child_run,result_run,delivery)
+                VALUES('task','owner','sender','original','{}','child','first','revision','disposed'),
+                      ('sibling','owner','sender','sibling','{}','later','sibling-run',NULL,'pending');
+            INSERT INTO task_cancel_receipt VALUES('task','request:stop');
+            INSERT INTO peer_receipt VALUES('owner','old-send','input',
+                '{"threadId":"child","messageId":"input","runId":"revision","delivery":"queued"}');"#)?;
+        drop(conn);
+        let mut db = Database::open(dir.path())?;
+        let owner = ThreadId("owner".into());
+        let child = ThreadId("child".into());
+        let (receipt, _) = db.dispatch(&Command {
+            id: CommandId("resume".into()),
+            thread_id: owner.clone(),
+            action: Action::Send {
+                text: "resume".into(),
+            },
+        })?;
+        let token = db.grant(&receipt.run_id.unwrap())?;
+        db.ready_jobs()?;
+        let tasks = db.read(&owner)?.tasks;
+        assert_eq!(tasks[0].result.as_deref(), Some("revised"));
+        assert_eq!(tasks[0].delivery, CompletionDelivery::Disposed);
+        assert_eq!(tasks[1].result.as_deref(), Some("pending at restart"));
+
+        let (old, fresh) = db.send_peer(&token, &child, "old-send", "revise")?;
+        assert!(!fresh && old.task_id.is_none());
+        let (new, fresh) = db.send_peer(&token, &child, "original", "revise again")?;
+        assert!(fresh && new.task_id.is_some());
+        let (_, stops) = db.cancel_task(&token, &tasks[0].task_id, Some("stop"))?;
+        assert!(stops.is_empty());
+        assert_eq!(
+            db.read(&owner)?.tasks[2].delivery,
+            CompletionDelivery::Pending
+        );
+        let violations: i64 =
+            db.db
+                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?;
+        assert_eq!(violations, 0);
         Ok(())
     }
 

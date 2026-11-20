@@ -190,6 +190,9 @@ pub enum PeerDelivery {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerReceipt {
+    /// A new task when the owner sends to a child whose original task has settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
     pub thread_id: ThreadId,
     pub message_id: MessageId,
     pub run_id: RunId,

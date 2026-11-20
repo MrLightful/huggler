@@ -138,8 +138,7 @@ impl Shared {
         loop {
             let (task, awaiting_approval) = self.access(|db| {
                 let task = db.task_status(token, id)?;
-                let approval =
-                    !task.status.terminal() && db.child_awaits_approval(&task.child_thread_id)?;
+                let approval = !task.status.terminal() && db.task_awaits_approval(id)?;
                 Ok((task, approval))
             })?;
             if task.status.terminal() {

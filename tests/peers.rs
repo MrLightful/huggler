@@ -147,6 +147,7 @@ async fn exchange(author_provider: Provider, reviewer_provider: Provider) {
             rt.peer_receipt(sender, key).unwrap().as_ref(),
             Some(receipt)
         );
+        assert!(receipt.task_id.is_none());
         assert_eq!(&receipt.thread_id, recipient);
         let thread = rt.read(recipient).unwrap();
         let received: Vec<_> = thread
