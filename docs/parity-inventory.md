@@ -4,6 +4,8 @@ Use this inventory to plan and verify the workflows Huggler should cover. The co
 
 Stage 1 exercised selected command, projection, provider and agent-tool paths in four upstream suites. The run record maps the tested scenarios to the rows below. Other entries currently have source evidence. [Stage 1 coverage](reference/codex-resume/README.md#what-the-four-suites-exercised)
 
+Stage 2 verified root-checkout launch, idle send, receipt retry and conflicts, model selection and thread-scoped reads, waits and events through the Huggler crate. The installed macOS app also verified provider-native Codex continuation across quit and reopen. [Stage 2 coverage and versions](stage-2.md)
+
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
 | Thread orchestration commands | 58 wire variants + 15 additional internal variants | [Command and event unions][src-1] · [Command policy][src-2] |

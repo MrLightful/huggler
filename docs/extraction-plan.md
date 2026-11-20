@@ -4,11 +4,11 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Completed through Stage 1.** All 35 tests in four upstream suites passed at T3 Code commit `338352dee2f43079482e054e8229a2ba055641d9`. The restart capture links both dispatch receipts to their projected runs and recorded Codex turns. [Results and reproduction](reference/codex-resume/README.md)
+**Completed through Stage 2.** An independent consumer of the packaged Rust crate replayed both Codex turns across a SQLite reopen and recovered the original dispatch receipt on retry. The installed macOS arm64 Tauri app resumed the same native thread with Codex CLI 0.170.0 and completed a third turn on an isolated sibling. The command-ID races and process-loss checks passed. [Stage 2 results and reproduction](stage-2.md) · [Stage 1 reference](reference/codex-resume/README.md)
 
-**Resume at Stage 2.** Start with a Rust transport replay test for the two recorded prompts. Check that Codex receives `thread/resume` with the thread ID from `thread/start` and returns both expected answers. Then carry the restart case through SQLite, an independent consumer of the packaged crate, and an installed Tauri app. [First milestone](first-milestone.md#build-the-first-consumer-in-four-changes) · [Stage 2 acceptance](#2-build-the-rust-core-and-run-one-durable-thread)
+**Resume at Stage 3.** Configure one second harness using Claude's standalone ACP adapter or Cursor CLI ACP. Trigger a live permission request, display it in Tauri and send the user's decision through the Rust host. Verify that the same provider run continues after approval or honors denial, and record the version and required executables. Then exercise peer reply and owned delegation. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
 
-**Branch recommendation.** Merge the Stage 1 reference and this handoff. The reference is reproducible on its own and gives Stage 2 a baseline. After merge, start a workspace from updated `master` and prompt `continue`.
+**Branch recommendation.** Commit and merge Stage 2. The packaged consumer and installed app independently pass the restart check, and Stage 3 can build on the verified Rust API. After merge, start a workspace from updated `master` and prompt `continue`.
 
 ### Maintaining the handoff
 
@@ -22,7 +22,7 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 | Stage | Ready when | Evidence to keep |
 | --- | --- | --- |
 | [1. Capture the reference](#1-capture-the-upstream-reference) | A checkout contains the pinned source | [Codex recording, expected projections and focused test results](reference/codex-resume/README.md). |
-| [2. Run one durable thread](#2-build-the-rust-core-and-run-one-durable-thread) | The reference case is reproducible | An installed consumer resumes the same conversation and a retried command returns its original receipt. |
+| [2. Run one durable thread](#2-build-the-rust-core-and-run-one-durable-thread) | The reference case is reproducible | [Packaged-crate replay, receipt races, recovery and installed Tauri results](stage-2.md). |
 | [3. Connect two harnesses](#3-prove-agent-to-agent-operation-with-two-harnesses) | One driver works through the public API | A peer reply with sender identity and a delegated completion that wakes its parent. |
 | [4. Qualify all drivers](#4-qualify-every-provider-instance-and-capability) | Two harnesses share a conformance suite | Results per driver, provider version, instance configuration and supported operation. |
 | [5. Complete runtime behavior](#5-complete-control-history-and-recovery) | Stage 2 works, with qualified drivers available for provider-specific cases | Results for history, commands, requests, stream recovery, process loss and migration. |
