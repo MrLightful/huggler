@@ -1,0 +1,23 @@
+[package]
+name = "huggler"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+repository = "https://github.com/MrLightful/huggler"
+description = "Embed durable Codex conversations in Rust applications"
+include = ["src/**", "migrations/**", "Cargo.toml", "Cargo.lock", "tests/**", "docs/reference/codex-resume/{LICENSE,codex_transcript.ndjson,cursors.json,expected.txt}"]
+
+[dependencies]
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time", "macros"] }
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread"] }
