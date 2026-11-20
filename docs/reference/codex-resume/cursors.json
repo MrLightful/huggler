@@ -1,0 +1,12 @@
+[
+  {
+    "run": 1,
+    "snapshotSequence": 31,
+    "replayCursor": 40
+  },
+  {
+    "run": 2,
+    "snapshotSequence": 59,
+    "replayCursor": 92
+  }
+]

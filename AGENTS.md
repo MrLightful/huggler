@@ -6,6 +6,10 @@ Use T3 Code as the reference for what Huggler should enable. Aim to cover all of
 
 The local T3 Code reference checkout is `/Users/mrlightful/Projects/Personal/t3code`. Make changes in the current Huggler worktree. Keep the upstream checkout path out of crate code and runtime defaults.
 
+## Continuing extraction
+
+When the entire prompt is `continue`, resume extraction from the [stage handoff](docs/extraction-plan.md#stage-handoff). Follow its next action through the stage acceptance checks. At each handoff, update the plan and tell the user whether to merge or commit and continue. Publish the next-stage artifact when a stage is complete.
+
 ## Porting and reviewing upstream changes
 
 - To locate the owner of a behavior, start with the [upstream component map](docs/upstream-watch-guide.md#find-the-implementation-by-behavior). Trace the implementation and its regression test at the revision under review. Use `git -C <checkout> show <sha>:<path>` to read a pinned file while keeping the local branch in place.

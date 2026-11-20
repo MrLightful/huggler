@@ -2,6 +2,8 @@
 
 Use this inventory to plan and verify the workflows Huggler should cover. The counts describe the pinned T3 Code implementation. Huggler maps those workflows to Rust APIs, Tauri commands, agent tools or optional host integrations. For each selected workflow, record the observable outcome, provider and host prerequisites, a passing scenario, and any fallback or limitation. The names, counts and wire shapes below identify upstream evidence. [Crate proposal](sdk-proposal.md) · [Qualification plan](extraction-plan.md)
 
+Stage 1 exercised selected command, projection, provider and agent-tool paths in four upstream suites. The run record maps the tested scenarios to the rows below. Other entries currently have source evidence. [Stage 1 coverage](reference/codex-resume/README.md#what-the-four-suites-exercised)
+
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
 | Thread orchestration commands | 58 wire variants + 15 additional internal variants | [Command and event unions][src-1] · [Command policy][src-2] |

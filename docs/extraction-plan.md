@@ -2,13 +2,26 @@
 
 Start with a Rust consumer that resumes a Codex conversation after reopening its state. Then exercise the same flow in an installed Tauri app and qualify a second provider through a live approval and cross-provider collaboration. Use T3 Code as the behavioral reference across the broader capability inventory. The Rust crate can use its own API, schema and transports. Record whether each workflow is supported directly, through a documented fallback, or unavailable for the selected provider or host. [Crate proposal](sdk-proposal.md) · [Upstream architecture](upstream-orchestration.md) · [Capability inventory](parity-inventory.md)
 
-These are proposed implementation tasks and acceptance tests. The reference is T3 Code commit `338352dee2f43079482e054e8229a2ba055641d9`. Test results and live compatibility evidence belong to the implementation phase.
+## Stage handoff
+
+**Completed through Stage 1.** All 35 tests in four upstream suites passed at T3 Code commit `338352dee2f43079482e054e8229a2ba055641d9`. The restart capture links both dispatch receipts to their projected runs and recorded Codex turns. [Results and reproduction](reference/codex-resume/README.md)
+
+**Resume at Stage 2.** Start with a Rust transport replay test for the two recorded prompts. Check that Codex receives `thread/resume` with the thread ID from `thread/start` and returns both expected answers. Then carry the restart case through SQLite, an independent consumer of the packaged crate, and an installed Tauri app. [First milestone](first-milestone.md#build-the-first-consumer-in-four-changes) · [Stage 2 acceptance](#2-build-the-rust-core-and-run-one-durable-thread)
+
+**Branch recommendation.** Merge the Stage 1 reference and this handoff. The reference is reproducible on its own and gives Stage 2 a baseline. After merge, start a workspace from updated `master` and prompt `continue`.
+
+### Maintaining the handoff
+
+- On `continue`, compare the handoff with the current branch, working tree and linked evidence. Resume the first unfinished acceptance check. If the stage already passes, update the handoff and use the stage table to select the next eligible stage.
+- At a stopping point, replace the status, next action and branch recommendation above. Link the evidence another developer can reproduce from a checkout. For a partial stage, identify the outstanding check, its expected result and any blocker so the next session can resume it.
+- When a stage passes its acceptance checks, publish a Conductor artifact showing the verified outcome and the next stage’s first action and observable success condition. Include the artifact in the final reply. Keep the same next action in this tracked handoff so a fresh session can find it. After the final stage, record extraction as complete and use the artifact to point to the release evidence.
+- End every extraction handoff with a branch recommendation and its reason. Recommend **merge** when the stage is independently verified and ready to land. Recommend **commit and continue** on the current branch when work forms a coherent checkpoint but stage checks remain. If a blocker prevents either action, say what must happen first. A merge requires the user’s instruction.
 
 ## Choose a stage
 
 | Stage | Ready when | Evidence to keep |
 | --- | --- | --- |
-| [1. Capture the reference](#1-capture-the-upstream-reference) | A checkout contains the pinned source | Transcripts, expected projections and focused test results. Begin with the [Codex restart recipe](first-milestone.md). |
+| [1. Capture the reference](#1-capture-the-upstream-reference) | A checkout contains the pinned source | [Codex recording, expected projections and focused test results](reference/codex-resume/README.md). |
 | [2. Run one durable thread](#2-build-the-rust-core-and-run-one-durable-thread) | The reference case is reproducible | An installed consumer resumes the same conversation and a retried command returns its original receipt. |
 | [3. Connect two harnesses](#3-prove-agent-to-agent-operation-with-two-harnesses) | One driver works through the public API | A peer reply with sender identity and a delegated completion that wakes its parent. |
 | [4. Qualify all drivers](#4-qualify-every-provider-instance-and-capability) | Two harnesses share a conformance suite | Results per driver, provider version, instance configuration and supported operation. |

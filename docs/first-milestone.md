@@ -48,6 +48,8 @@ The last two lines form a single assistant answer. The resumed request carries t
 
 ## Establish the runtime reference
 
+Stage 1 captured the two dispatch receipts, run transitions, native IDs and messages. Run the reference script from a Huggler checkout to reproduce all four suites and compare the SQLite trace and both cursors. [Capture and reproduction instructions](reference/codex-resume/README.md)
+
 Use a T3 Code checkout at the same revision with its development dependencies installed. Upstream pins Node 26.13.1 and pnpm 12.14.0 and uses `vp i` for setup. Run both tests from the checkout root. [Toolchain][toolchain] · [Upstream setup and test commands][setup]
 
 ```sh
@@ -62,7 +64,7 @@ vp test run apps/server/src/orchestration-v2/Orchestrator.receipt-race.test.ts \
 | [Recovery across two runtimes][recovery] | The upstream test splits after the first idle point, creates a second runtime over the same file-backed database and enables startup recovery. The projection ends with one provider thread, run ordinals 1 and 2 both completed, and four messages in user/assistant/user/assistant order. Both final-answer markers survive. |
 | [Concurrent command IDs][race] | Two threads submit the same command ID. Only the winner’s model changes. The loser gets `OrchestratorCommandIdConflictError` identifying both threads. A retry on the winner returns the original event sequences. A no-op command also retains its receipt and replays an empty event list. |
 
-Use the recovery **test** as the reference for reopening SQLite. The general fixture input exercises resume by advancing one runtime’s clock by 31 minutes. Both paths can produce a provider resume call. Only the recovery test constructs the second orchestrator. [Fixture scenario input][input] · [Recovery test][recovery]
+Use the recovery **test** as the Codex reference for reopening SQLite. At the pin, the general fixture registry uses the 31-minute idle scenario for Pi. The recovery suite constructs the second orchestrator for Codex. [Fixture scenario input][input] · [Recovery test][recovery]
 
 ## Build the first consumer in four changes
 
