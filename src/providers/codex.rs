@@ -1,7 +1,7 @@
 //! Codex app-server over newline-delimited JSON-RPC on a managed child's stdio.
 mod children;
 use super::{
-    Permissions, Turn, Update,
+    ChildInterrupt, Control, Permissions, Turn, Update,
     rpc::{Rpc, protocol},
 };
 use crate::{
@@ -15,21 +15,6 @@ use std::{
     path::PathBuf,
 };
 use tokio::sync::{mpsc, oneshot, watch};
-
-pub(crate) struct ChildInterrupt {
-    pub thread: NativeThreadId,
-    pub turn: NativeTurnId,
-    pub reply: oneshot::Sender<Result<()>>,
-}
-
-pub(crate) enum Control {
-    Interrupt(ChildInterrupt),
-    Answer {
-        id: RequestId,
-        answers: UserAnswers,
-        reply: oneshot::Sender<Result<()>>,
-    },
-}
 
 #[derive(Clone, Debug)]
 pub struct CodexOptions {
@@ -151,7 +136,11 @@ impl Client {
         children: &Children,
         replies: &mut HashMap<u64, oneshot::Sender<Result<()>>>,
     ) -> Result<()> {
-        if !children.running(&request.thread.0, &request.turn.0) {
+        if !request
+            .turn
+            .as_ref()
+            .is_some_and(|t| children.running(&request.thread.0, &t.0))
+        {
             let _ = request
                 .reply
                 .send(Err(Error::NotFound("running native child turn".into())));
@@ -316,7 +305,7 @@ impl Client {
                     .filter(|(t, u)| children.running(t, u))
                     .map(|(t, u)| NativeChildTurn {
                         thread_id: NativeThreadId(t.into()),
-                        turn_id: NativeTurnId(u.into()),
+                        turn_id: Some(NativeTurnId(u.into())),
                     });
                 let root_request =
                     !foreground_complete && p["threadId"] == thread && p["turnId"] == id;
@@ -413,10 +402,12 @@ impl Client {
             if let Some(child) = children.observe(thread, id, &permissions.run, &frame) {
                 update(Update::NativeChild(child))?;
                 pending.retain(|_, request| {
-                    request
-                        .child
-                        .as_ref()
-                        .is_none_or(|owner| children.running(&owner.thread_id.0, &owner.turn_id.0))
+                    request.child.as_ref().is_none_or(|owner| {
+                        owner
+                            .turn_id
+                            .as_ref()
+                            .is_some_and(|t| children.running(&owner.thread_id.0, &t.0))
+                    })
                 });
             }
             if foreground_complete || p["threadId"] != thread {

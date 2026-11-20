@@ -1,5 +1,4 @@
 use super::*;
-use crate::providers::codex::Control;
 
 enum Responder<'a> {
     Agent {
@@ -55,7 +54,7 @@ impl Shared {
                         "provide an answer for each question ID".into(),
                     ));
                 }
-                let controls = self.codex_controls.lock().unwrap();
+                let controls = self.controls.lock().unwrap();
                 let tx = controls
                     .get(&(target, request.run_id))
                     .filter(|tx| !tx.is_closed())

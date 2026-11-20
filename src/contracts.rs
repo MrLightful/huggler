@@ -88,11 +88,11 @@ pub enum UserAnswer {
 
 pub type UserAnswers = std::collections::BTreeMap<String, UserAnswer>;
 
-/// The provider-native turn requesting a decision within the owning run.
+/// The child requesting a decision within the owning run. ACP addresses sessions only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeChildTurn {
     pub thread_id: NativeThreadId,
-    pub turn_id: NativeTurnId,
+    pub turn_id: Option<NativeTurnId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -243,11 +243,22 @@ pub struct DelegatedTask {
 pub enum NativeChildStatus {
     Starting,
     Running,
+    RequiresAction,
+    /// ACP reports that work ended without giving a stop reason.
+    Idle,
+    /// The adapter has no current work state for this session.
+    Unknown,
     Completed,
     Interrupted,
     Failed,
     /// The owning provider process closed before reporting an outcome.
     Disconnected,
+}
+
+impl NativeChildStatus {
+    pub(crate) fn working(self) -> bool {
+        matches!(self, Self::Running | Self::RequiresAction)
+    }
 }
 
 /// Provider-owned work observed during an application run. Native addresses are
@@ -256,10 +267,14 @@ pub enum NativeChildStatus {
 pub struct NativeChild {
     pub run_id: RunId,
     pub parent_thread_id: NativeThreadId,
-    pub parent_turn_id: NativeTurnId,
+    pub parent_turn_id: Option<NativeTurnId>,
     pub thread_id: NativeThreadId,
     pub turn_id: Option<NativeTurnId>,
+    /// Codex agent path or ACP display title (session ID when untitled).
     pub path: String,
+    /// The live adapter can address this child's current work.
+    #[serde(default)]
+    pub can_interrupt: bool,
     pub status: NativeChildStatus,
     pub result: Option<String>,
 }

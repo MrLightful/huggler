@@ -32,6 +32,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/009.sql"),
     include_str!("../migrations/010.sql"),
     include_str!("../migrations/011.sql"),
+    include_str!("../migrations/012.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
@@ -434,6 +435,12 @@ impl Database {
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::PermissionWithdrawn(request) => {
+                if tx.execute("UPDATE permission SET expired=1 WHERE id=? AND run_id=? AND expired=0 AND decision IS NULL",
+                    params![request.0, id.0])? != 0 {
+                    event(&tx, thread, Change::PermissionClosed { id: request, option: None })?;
+                }
+            }
             Update::Question(request) => questions::publish(&tx, thread, request)?,
             Update::QuestionClosed {
                 id: request,

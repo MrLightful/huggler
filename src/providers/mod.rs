@@ -1,8 +1,24 @@
 pub mod claude_agent;
 pub mod codex;
 mod rpc;
-use crate::{NativeThreadId, NativeTurnId, Provider};
+use crate::{NativeThreadId, NativeTurnId, Provider, RequestId, Result, UserAnswers};
 use std::path::PathBuf;
+use tokio::sync::oneshot;
+
+pub(crate) struct ChildInterrupt {
+    pub thread: NativeThreadId,
+    pub turn: Option<NativeTurnId>,
+    pub reply: oneshot::Sender<Result<()>>,
+}
+
+pub(crate) enum Control {
+    Interrupt(ChildInterrupt),
+    Answer {
+        id: RequestId,
+        answers: UserAnswers,
+        reply: oneshot::Sender<Result<()>>,
+    },
+}
 
 pub(crate) struct AgentTools {
     pub url: String,
@@ -21,6 +37,7 @@ pub(crate) struct Turn {
 }
 
 pub(crate) enum Update {
+    PermissionWithdrawn(RequestId),
     Question(crate::UserInputRequest),
     QuestionClosed {
         id: crate::RequestId,

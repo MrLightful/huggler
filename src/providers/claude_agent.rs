@@ -1,13 +1,21 @@
 //! Claude Agent ACP v1 over the standalone adapter's stdio.
-use super::Permissions;
+mod children;
 use super::{
-    Turn, Update,
+    Control, Permissions, Turn, Update,
     rpc::{Rpc, protocol},
 };
-use crate::{Error, NativeThreadId, PermissionOption, PermissionRequest, RequestId, Result};
+use crate::{
+    Error, NativeChildTurn, NativeThreadId, PermissionOption, PermissionRequest, RequestId, Result,
+};
+use children::{Children, text_chunk};
 use serde_json::{Value, json};
 use std::{collections::HashMap, path::PathBuf};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+
+struct PendingPermission {
+    wire_id: Value,
+    child: Option<NativeThreadId>,
+}
 
 #[derive(Clone, Debug)]
 pub struct ClaudeAgentOptions {
@@ -24,6 +32,7 @@ impl Default for ClaudeAgentOptions {
 
 struct Session<'a> {
     rpc: &'a mut Rpc,
+    children: Children<'a>,
     sequence: u64,
 }
 impl Session<'_> {
@@ -39,13 +48,62 @@ impl Session<'_> {
         self.rpc.write(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported client method"}})).await
     }
 
+    async fn cancel_permission(&mut self, wire_id: Value) -> Result<()> {
+        self.rpc
+            .write(json!({
+                "jsonrpc": "2.0", "id": wire_id, "result": {"outcome": {"outcome": "cancelled"}}
+            }))
+            .await
+    }
+
+    async fn close_permissions(
+        &mut self,
+        pending: &mut HashMap<RequestId, PendingPermission>,
+        owner: Option<&NativeThreadId>,
+    ) -> Result<()> {
+        for (_, request) in pending.extract_if(|_, p| p.child.as_ref() == owner) {
+            self.cancel_permission(request.wire_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn control(&mut self, control: Control) -> Result<()> {
+        match control {
+            Control::Interrupt(request) => {
+                if request.turn.is_some() || !self.children.can_interrupt(&request.thread.0) {
+                    let _ = request.reply.send(Err(Error::NotFound(
+                        "interruptible native child session".into(),
+                    )));
+                } else {
+                    self.rpc
+                        .write(json!({
+                            "jsonrpc": "2.0",
+                            "method": "session/cancel",
+                            "params": {"sessionId": request.thread}
+                        }))
+                        .await?;
+                    let _ = request.reply.send(Ok(()));
+                }
+            }
+            Control::Answer { reply, .. } => {
+                let _ = reply.send(Err(Error::NotFound("live user-input request".into())));
+            }
+        }
+        Ok(())
+    }
+
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        let root = params["sessionId"].as_str().map(str::to_owned);
         let id = self.send(method, params).await?;
         loop {
             let f = self.rpc.read().await?;
             if f.get("method").is_some() {
                 if let Some(id) = f.get("id") {
                     self.unsupported(id).await?;
+                } else if f["method"] == "session/update"
+                    && let Some(root) = &root
+                {
+                    self.children.announcement(root, &f["params"], true);
                 }
             } else {
                 return result(&f, id, method);
@@ -54,7 +112,7 @@ impl Session<'_> {
     }
 
     async fn configure(&mut self, turn: &Turn) -> Result<String> {
-        let init = self.request("initialize",json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"huggler","version":env!("CARGO_PKG_VERSION")}})).await?;
+        let init = self.request("initialize",json!({"protocolVersion":1,"clientCapabilities":{"subagents":{}},"clientInfo":{"name":"huggler","version":env!("CARGO_PKG_VERSION")}})).await?;
         if init["protocolVersion"] != 1 {
             return Err(protocol("ACP v1 required"));
         }
@@ -126,6 +184,7 @@ pub(crate) async fn execute(
     mut stop: watch::Receiver<bool>,
     update: impl Fn(Update) -> Result<()>,
     mut permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
+    mut controls: mpsc::UnboundedReceiver<Control>,
 ) -> Result<()> {
     if *stop.borrow() {
         return Err(Error::Closed);
@@ -135,6 +194,7 @@ pub(crate) async fn execute(
         let mut client = Session {
             rpc: &mut rpc,
             sequence: 0,
+            children: Children::new(&permissions.run),
         };
         let session = client.configure(&turn).await?;
         update(Update::Bound(NativeThreadId(session.clone())))?;
@@ -146,46 +206,105 @@ pub(crate) async fn execute(
             .await?;
         update(Update::Started(None))?;
         let mut answer = String::new();
-        let mut pending = HashMap::new();
+        let mut pending = HashMap::<RequestId, PendingPermission>::new();
+        let mut foreground_complete = false;
         loop {
+            if foreground_complete && !client.children.active() {
+                return Ok(());
+            }
             let f = tokio::select! {
                 frame = client.rpc.read() => frame?,
+                control = controls.recv() => {
+                    client.control(control.ok_or(Error::Closed)?).await?;
+                    continue;
+                }
                 decision = permissions.decisions.recv() => {
                     let (request,option) = decision.ok_or(Error::Closed)?;
-                    let wire_id = pending.remove(&request).ok_or_else(||protocol("expired permission"))?;
-                    client.rpc.write(json!({"jsonrpc":"2.0","id":wire_id,"result":{"outcome":{"outcome":"selected","optionId":option}}})).await?;
+                    let Some(request) = pending.remove(&request) else {
+                        continue;
+                    };
+                    client.rpc.write(json!({"jsonrpc":"2.0","id":request.wire_id,"result":{"outcome":{"outcome":"selected","optionId":option}}})).await?;
                     continue;
                 }
             };
             let params = &f["params"];
             match f["method"].as_str() {
-                Some("session/request_permission")
-                    if params["sessionId"] == session && !f["id"].is_null() =>
-                {
+                Some("session/request_permission") if !f["id"].is_null() => {
+                    let target = params["sessionId"].as_str().unwrap_or("");
+                    let child = if client.children.running(target) {
+                        Some(NativeThreadId(target.into()))
+                    } else if foreground_complete || target != session {
+                        client.rpc.write(json!({"jsonrpc":"2.0","id":f["id"],"error":{"code":-32602,"message":"Unknown active session"}})).await?;
+                        continue;
+                    } else {
+                        None
+                    };
                     let options: Vec<PermissionOption> =
                         serde_json::from_value(params["options"].clone())?;
                     let id = RequestId(uuid::Uuid::new_v4().to_string());
-                    pending.insert(id.clone(), f["id"].clone());
+                    pending.insert(
+                        id.clone(),
+                        PendingPermission {
+                            wire_id: f["id"].clone(),
+                            child: child.clone(),
+                        },
+                    );
                     (permissions.publish)(PermissionRequest {
-                        native_child: None,
+                        native_child: child.map(|thread_id| NativeChildTurn {
+                            thread_id,
+                            turn_id: None,
+                        }),
                         id,
                         run_id: permissions.run.clone(),
                         tool_call: params["toolCall"].clone(),
                         options,
                     })?;
                 }
-                Some("session/update") if params["sessionId"] == session => {
-                    let update = &params["update"];
-                    if update["sessionUpdate"] == "agent_message_chunk"
-                        && update["content"]["type"] == "text"
+                Some("$/cancel_request") => {
+                    if let Some(id) = pending
+                        .iter()
+                        .find(|(_, p)| p.wire_id == params["requestId"])
+                        .map(|(id, _)| id.clone())
                     {
-                        if let Some(text) = update["content"]["text"].as_str() {
+                        pending.remove(&id);
+                        update(Update::PermissionWithdrawn(id))?;
+                        client
+                            .cancel_permission(params["requestId"].clone())
+                            .await?;
+                    }
+                }
+                Some("session/update") => {
+                    let Some(target) = params["sessionId"].as_str() else {
+                        continue;
+                    };
+                    let notification = &params["update"];
+                    if notification["sessionUpdate"] == "subagent_update" {
+                        if let Some(child) = client.children.announcement(&session, params, false) {
+                            let finished =
+                                (!child.status.working()).then(|| child.thread_id.clone());
+                            update(Update::NativeChild(child))?;
+                            if let Some(id) = finished {
+                                client.close_permissions(&mut pending, Some(&id)).await?;
+                            }
+                        }
+                    } else if target == session
+                        && let Some(text) = text_chunk(notification)
+                    {
+                        if !foreground_complete
+                            && notification
+                                .pointer("/_meta/claudeCode/parentToolUseId")
+                                .and_then(Value::as_str)
+                                .is_none()
+                        {
                             answer.push_str(text);
                         }
+                    } else if let Some(child) = client.children.message(target, notification) {
+                        update(Update::NativeChild(child))?;
                     }
                 }
                 Some(_) if f.get("id").is_some() => client.unsupported(&f["id"]).await?,
                 Some(_) => {}
+                None if foreground_complete => {}
                 None => {
                     let response = result(&f, prompt, "session/prompt")?;
                     if response["stopReason"] == "cancelled" {
@@ -197,7 +316,13 @@ pub(crate) async fn execute(
                             response["stopReason"]
                         )));
                     }
-                    return update(Update::Finalizing(answer));
+                    update(Update::Finalizing(std::mem::take(&mut answer)))?;
+                    if !client.children.active() {
+                        return Ok(());
+                    }
+                    update(Update::ForegroundComplete)?;
+                    foreground_complete = true;
+                    client.close_permissions(&mut pending, None).await?;
                 }
             }
         }

@@ -10,18 +10,18 @@ pub(super) fn record(tx: &Transaction, thread: &ThreadId, child: NativeChild) ->
             serde_json::to_string(&child)?
         ],
     )?;
-    let active_turn = if child.status == NativeChildStatus::Running {
-        child.turn_id.as_ref()
-    } else {
-        None
-    };
-    Database::expire_permissions(
-        tx,
-        thread,
-        &child.run_id,
-        Some(&child.thread_id),
-        active_turn,
-    )?;
+    // ACP permissions belong to the session and survive updates while it works.
+    // Codex also expires permissions from an earlier turn on the same child.
+    let working = child.status.working();
+    if !working || child.turn_id.is_some() {
+        Database::expire_permissions(
+            tx,
+            thread,
+            &child.run_id,
+            Some(&child.thread_id),
+            child.turn_id.as_ref().filter(|_| working),
+        )?;
+    }
     event(tx, thread, Change::NativeChild { child })?;
     Ok(())
 }
@@ -51,6 +51,7 @@ pub(super) fn disconnect(tx: &Transaction, run: Option<&RunId>) -> Result<()> {
     for (thread, projection) in open {
         let mut child: NativeChild = serde_json::from_str(&projection)?;
         child.status = NativeChildStatus::Disconnected;
+        child.can_interrupt = false;
         record(tx, &thread, child)?;
     }
     Ok(())

@@ -2,6 +2,7 @@ mod questions;
 use crate::{
     contracts::*,
     providers::{
+        ChildInterrupt, Control,
         claude_agent::{self, ClaudeAgentOptions},
         codex::{self, CodexOptions},
     },
@@ -45,7 +46,7 @@ pub(crate) struct Shared {
     workers: Mutex<Option<JoinSet<()>>>,
     db: Mutex<Option<Database>>,
     run_stops: Mutex<HashMap<RunId, watch::Sender<bool>>>,
-    codex_controls: Mutex<HashMap<(ThreadId, RunId), mpsc::UnboundedSender<codex::Control>>>,
+    controls: Mutex<HashMap<(ThreadId, RunId), mpsc::UnboundedSender<Control>>>,
     decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
@@ -285,15 +286,12 @@ impl Shared {
                 Ok(())
             },
         };
+        let (tx, controls) = mpsc::unbounded_channel();
+        let owner = (thread.clone(), run.clone());
+        self.controls.lock().unwrap().insert(owner.clone(), tx);
         let result = match turn.provider {
             Provider::Codex => {
-                let (tx, controls) = mpsc::unbounded_channel();
-                let owner = (thread.clone(), run.clone());
-                self.codex_controls
-                    .lock()
-                    .unwrap()
-                    .insert(owner.clone(), tx);
-                let result = codex::execute(
+                codex::execute(
                     self.options.codex.clone(),
                     turn,
                     stopped,
@@ -301,9 +299,7 @@ impl Shared {
                     permissions,
                     controls,
                 )
-                .await;
-                self.codex_controls.lock().unwrap().remove(&owner);
-                result
+                .await
             }
             Provider::ClaudeAgent => {
                 claude_agent::execute(
@@ -312,10 +308,12 @@ impl Shared {
                     stopped,
                     update,
                     permissions,
+                    controls,
                 )
                 .await
             }
         };
+        self.controls.lock().unwrap().remove(&owner);
         self.decisions.lock().unwrap().remove(run);
         result
     }
@@ -348,7 +346,7 @@ impl Huggler {
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
             run_stops: Mutex::default(),
-            codex_controls: Mutex::default(),
+            controls: Mutex::default(),
             fault: Mutex::default(),
             changed: watch::channel(()).0,
             stop: watch::channel(false).0,
@@ -464,25 +462,27 @@ impl Huggler {
         self.shared.access(|db| db.peer_receipt(sender, key))
     }
 
-    /// Ask the owning Codex process to interrupt this exact native turn.
-    /// Success acknowledges the request. Observe the child for its terminal status.
-    pub async fn interrupt_native_child(
+    /// Interrupt a live native child in its owning run. Supply the exact turn for
+    /// Codex and `None` for ACP session cancellation. See [`NativeChild::can_interrupt`].
+    /// Observe the child for its outcome after the adapter accepts the request (Codex)
+    /// or the notification is written (ACP).
+    pub async fn interrupt_native_child<'a>(
         &self,
         thread: &ThreadId,
         run: &RunId,
         child: &NativeThreadId,
-        turn: &NativeTurnId,
+        turn: impl Into<Option<&'a NativeTurnId>>,
     ) -> Result<()> {
         let (reply, response) = tokio::sync::oneshot::channel();
         self.shared
-            .codex_controls
+            .controls
             .lock()
             .unwrap()
             .get(&(thread.clone(), run.clone()))
             .ok_or_else(|| Error::NotFound("live native child session".into()))?
-            .send(codex::Control::Interrupt(codex::ChildInterrupt {
+            .send(Control::Interrupt(ChildInterrupt {
                 thread: child.clone(),
-                turn: turn.clone(),
+                turn: turn.into().cloned(),
                 reply,
             }))
             .map_err(|_| Error::Closed)?;

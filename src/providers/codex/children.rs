@@ -54,7 +54,8 @@ impl Children {
                 let child = NativeChild {
                     run_id: owner.clone(),
                     parent_thread_id: NativeThreadId(thread.into()),
-                    parent_turn_id: NativeTurnId(parent_turn.into()),
+                    parent_turn_id: Some(NativeTurnId(parent_turn.into())),
+                    can_interrupt: false,
                     thread_id: NativeThreadId(target.into()),
                     turn_id: None,
                     path: item["agentPath"].as_str()?.into(),
@@ -69,7 +70,7 @@ impl Children {
             // Such a notification can arrive after the parent's turn has ended.
             let child = self.0.get_mut(target)?;
             if child.parent_thread_id.0 != thread
-                || child.parent_turn_id.0 != parent_turn
+                || child.parent_turn_id.as_ref()?.0 != parent_turn
                 || child.status != NativeChildStatus::Starting
             {
                 return None;
@@ -91,6 +92,7 @@ impl Children {
                 child.turn_id = Some(turn);
                 child.result = None;
                 child.status = NativeChildStatus::Running;
+                child.can_interrupt = true;
             }
             "item/completed" if item["type"] == "agentMessage" && item["phase"] != "commentary" => {
                 let text = item["text"].as_str()?;
@@ -115,6 +117,7 @@ impl Children {
                     "failed" => NativeChildStatus::Failed,
                     _ => return None,
                 };
+                child.can_interrupt = false;
             }
             _ => return None,
         }

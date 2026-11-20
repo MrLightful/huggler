@@ -82,7 +82,7 @@ async fn recorded_nested_children_retain_their_ancestry_and_results() {
             "/root/chain_level_1/chain_level_2/say_hello",
         ]) {
             assert_eq!(&child.parent_thread_id, parent);
-            assert_eq!(&child.parent_turn_id, parent_turn);
+            assert_eq!(child.parent_turn_id.as_ref(), Some(parent_turn));
             assert_eq!(&child.run_id, &run);
             assert_eq!(child.path, path);
             assert!(turns.insert(child.turn_id.clone().unwrap()));
@@ -356,7 +356,7 @@ async fn grandchild_approval_reaches_its_provider_turn_even_after_the_root_finis
             let owner = request.native_child.as_ref().unwrap();
             assert_eq!(request.run_id, run);
             assert_eq!(grandchild.thread_id, owner.thread_id);
-            assert_eq!(grandchild.turn_id.as_ref(), Some(&owner.turn_id));
+            assert_eq!(grandchild.turn_id.as_ref(), owner.turn_id.as_ref());
             assert_eq!(snapshot.permissions[0].id, request.id);
             assert!(
                 rt.respond_to_permission(
