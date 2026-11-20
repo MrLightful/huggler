@@ -31,7 +31,8 @@ def install(destination, *, identifier="dev.huggler.stage2", ui=None):
     info = {
         "CFBundleExecutable": "huggler-desktop", "CFBundleIdentifier": identifier,
         "CFBundleName": "Huggler", "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "1",
+        "CFBundleShortVersionString": json.loads((ROOT / "desktop/tauri.conf.json").read_text())["version"],
+        "CFBundleVersion": "1",
         "NSHighResolutionCapable": True, "LSMinimumSystemVersion": "11.0",
     }
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
