@@ -1,6 +1,6 @@
 # Run one durable conversation with Huggler
 
-The first consumer should be able to send a prompt, close the orchestrator after the answer, reopen the same state and continue on the original thread. This exercises the package boundary, the SQLite store, command handling and a real provider adapter in one scenario. A recorded Codex transport makes the expected provider calls repeatable. This guide covers the first case in [stages 1 and 2](extraction-plan.md#choose-a-stage).
+The first Rust consumer should send a prompt, close Huggler after the answer, reopen the same SQLite state and continue on the original thread. Repeat the flow through the Rust backend of an installed Tauri app. The recorded Codex transport makes the expected provider calls repeatable. A live installed-app run separately verifies provider discovery and desktop lifecycle. [Stages 1 and 2](extraction-plan.md#choose-a-stage)
 
 ## Inspect the expected provider calls
 
@@ -44,7 +44,7 @@ provider thread resume fixture first turn complete
 provider thread resume fixture second turn complete
 ```
 
-The last two lines form a single assistant answer. The resumed request carries the provider thread ID returned by the first start. The application’s durable thread ID is a separate value to check at the SDK boundary. [Recorded transport][recording] · [Thread and run identities](upstream-orchestration.md#which-identity-or-status-to-expose)
+The last two lines form a single assistant answer. The resumed request carries the provider thread ID returned by the first start. The application’s durable thread ID is a separate value to check at the crate boundary. [Recorded transport][recording] · [Thread and run identities](upstream-orchestration.md#which-identity-or-status-to-expose)
 
 ## Establish the runtime reference
 
@@ -68,12 +68,12 @@ Use the recovery **test** as the reference for reopening SQLite. The general fix
 
 | Change | Implement | Demonstrate before moving on |
 | --- | --- | --- |
-| 1. Port the reference case | Bring the two fixture prompts, recorded frames, deterministic IDs and clock, and temporary Git workspace into the package testkit. Drive the production Codex adapter through the replay transport. | The harness consumes the expected outbound calls and delivers both recorded answers. Keep the fixture revision and protocol version with the recording. [Replay harness][harness] |
-| 2. Open persistent state | Extract contracts, migrations, command dispatch, receipts, event projections and the effect worker. Compose one runtime per state directory and implement scoped shutdown. | The command-ID race and winner retry match the reference. Closing then reopening the same database preserves the first conversation. [Runtime wiring][wiring] · [Stage 2 dependencies](extraction-plan.md#2-extract-contracts-and-run-one-durable-thread) |
-| 3. Expose the conversation | Wire project open, root-workspace launch, send, wait, status, conversation history and subscription to the runtime. Preserve a returned thread ID across opens and correlate each wait with its own run. | After turn one, the consumer reads the first answer, closes the runtime and reads the answer after reopening. The next send returns a new run on the original thread. The final history, statuses and provider calls match the reference above. [Proposed interfaces](sdk-proposal.md#interface-contracts-for-the-sdk) |
-| 4. Exercise the installed build | Pack the ESM build and declarations, install the tarball in a clean application outside the monorepo, and run change 3 with `openHuggler` imported from `huggler`. Include the SQLite worker and the replay assets used by the consumer. | The consumer type-checks and exits after shutdown. A second thread in the same runtime receives only its own conversation updates. Keep the package revision, tarball file list and consumer test result beside the upstream test results. [Distribution checks](extraction-plan.md#7-validate-the-npm-distribution-and-future-upgrades) |
+| 1. Reuse the reference case | Use the two prompts, recorded JSON-RPC frames, deterministic IDs and clock, and temporary Git workspace in a Rust replay test. Drive the Codex adapter through its transport interface. | The adapter consumes the expected outbound calls and delivers both recorded answers. Keep the fixture revision and protocol version with the recording. [Upstream replay harness][harness] |
+| 2. Open persistent state | Add Huggler-owned SQLite migrations, command receipts, events and effects. Open one runtime per state directory and implement shutdown. | The command-ID race and winner retry match the reference behavior. A second runtime can read the first conversation. [Runtime reference][wiring] · [Stage 2](extraction-plan.md#2-build-the-rust-core-and-run-one-durable-thread) |
+| 3. Exercise the packaged crate | Run `cargo package`. Build an independent Cargo consumer from the packaged source. Use `Huggler::open` to launch, send, wait and subscribe. | After turn one, close and reopen the same directory. Read the first answer, then send a second prompt. The original Huggler thread ID survives, the second prompt gets a new run ID, and the adapter resumes the original Codex session. A second Huggler thread receives its own updates. [Proposed Rust API](sdk-proposal.md#public-api-behavior) |
+| 4. Install and reopen the desktop app | Embed the crate in Tauri and pass commands and events through the Rust backend. Install the app on a machine with a supported, authenticated Codex executable. Run with Node.js absent from PATH and the app bundle. | Send a live prompt, quit, reopen and continue from the UI. Check that state lands in app data and the previous app instance releases its resources. Record the installer target, provider version and result. [Tauri integration](sdk-proposal.md#embed-in-tauri) · [Release checks](extraction-plan.md#7-validate-cargo-and-tauri-releases) |
 
-When this passes, reuse the installed-consumer setup for Codex and Claude. The next stage needs two distinct observations. An independent reviewer can send a reply to the author’s thread. A delegated reviewer can finish an owned task and wake its idle parent. [Cross-harness scenarios](extraction-plan.md#3-prove-agent-to-agent-operation-with-two-harnesses)
+Next, drive a live approval from Claude or Cursor through the Tauri UI. Then use that second provider to verify peer reply and owned delegation. [Cross-harness scenarios](extraction-plan.md#3-prove-agent-to-agent-operation-with-two-harnesses)
 
 [recording]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/testkit/fixtures/provider_thread_resume/codex_transcript.ndjson
 [input]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/testkit/fixtures/provider_thread_resume/input.ts

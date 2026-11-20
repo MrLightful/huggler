@@ -1,6 +1,6 @@
 # How T3 Code orchestrates agents
 
-This analysis follows the server implementation at [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9). Source and test inspection establish the baseline. Live harness behavior, platform support and installability of an extracted package still require execution. File paths, symbols and tool names in this analysis identify upstream components. Use the [Huggler SDK proposal](sdk-proposal.md#naming) for package interfaces and the [parity inventory](parity-inventory.md#agent-facing-tools) for the upstream-to-Huggler tool mapping.
+This analysis follows the T3 Code server at [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9). Source and test inspection establish the baseline. Live harness behavior, platform support and installability still require execution. File paths, symbols and tool names here identify upstream components. Huggler targets equivalent user-visible workflows through a Rust crate and a Tauri host. [Crate proposal](sdk-proposal.md) · [Capability inventory](parity-inventory.md)
 
 ## The extraction boundary
 
@@ -26,14 +26,14 @@ flowchart TD
     N -. scoped tool call .-> G
 ```
 
-### Where to cut the server dependency
+### What the Rust runtime needs to own
 
 | Upstream entry point | What to carry into an embedded host |
 | --- | --- |
-| `orchestration-v2/runtimeLayer.ts` → `layer` | The command processor, management service, session manager, event and output services, worker and recovery share one Effect resource scope. Reuse the same event sink and viewer registry for reads and writes. This layer already takes dependencies on MCP App context and preview activity during run execution. A minimal host needs an implementation for the no-app or no-preview case. [Runtime composition][src-3] |
-| `orchestration-v2/runtimeLayer.ts` → `layerProduction` | This layer adds thread launch, managed folders, worktree sync, schedules, guests, secrets, continuation and usage-limit workers, imports, cleanup and pruning. Move root-workspace launch into the first SDK milestone. Add the remaining workers alongside the features whose state they maintain. [Runtime composition][src-3] |
-| `provider-core/server/ProviderHost` → `ProviderHostLive` | The provider packages already depend on a host interface. Implement it for the SDK using explicit paths, settings snapshots and subscriptions, credential bindings, background policy, compatibility lookup and attachment resolution. The server's implementation shows which readiness and port-discovery hooks are optional. [Host interface][src-55] · [Server implementation][src-83] |
-| `apps/server/src/server.ts` | Read the production wiring here to find dependencies still supplied from outside the orchestration directory. Trace the resource owner of each one. Huggler’s `openHuggler` must acquire those required by its profile, share them with the transports and release them on `close`, even when startup fails partway. [Server assembly][src-105] |
+| `orchestration-v2/runtimeLayer.ts` → `layer` | Upstream shares one Effect resource scope. Give the Rust runtime a single owner for command execution, session management, publication, workers and recovery. Share the event publisher and subscription registry across readers and writers. This layer already takes dependencies on MCP App context and preview activity during run execution. A minimal host needs an implementation for the no-app or no-preview case. [Runtime composition][src-3] |
+| `orchestration-v2/runtimeLayer.ts` → `layerProduction` | This layer adds thread launch, managed folders, worktree sync, schedules, guests, secrets, continuation and usage-limit workers, imports, cleanup and pruning. Implement root-workspace launch in the first crate milestone. Add the remaining workers alongside the features whose state they maintain. [Runtime composition][src-3] |
+| `provider-core/server/ProviderHost` → `ProviderHostLive` | The provider packages already depend on a host interface. Use it to design an explicit Rust host interface with explicit paths, settings snapshots and subscriptions, credential bindings, background policy, compatibility lookup and attachment resolution. The server's implementation shows which readiness and port-discovery hooks are optional. [Host interface][src-55] · [Server implementation][src-83] |
+| `apps/server/src/server.ts` | Read the production wiring here to find dependencies still supplied from outside the orchestration directory. Trace the resource owner of each one. Huggler’s `Huggler::open` must acquire those required by its profile, share them with the transports and release them on `close`, even when startup fails partway. [Server assembly][src-105] |
 
 ### Follow one message end to end
 
@@ -78,13 +78,13 @@ The registry wires **11 driver kinds**. Eight live in dedicated provider package
 | --- | --- | --- |
 | `codex` | JSON-RPC app-server. Preserve native fork, prior-turn boundaries, rollback, goals, subagent threads, approvals, developer instructions, native history injection where supported, and managed vs local auth/home paths. | [Adapter][src-32] · [Driver][src-33] |
 | `claudeAgent` | Agent SDK query stream. Preserve live tool callbacks, native fork/rollback, background tasks, nested agents and workflows that can wake an idle parent. A stored approval can lose its native callback on process loss. | [Adapter][src-34] · [Driver][src-35] |
-| `cursor` | Cursor SDK. Rollback and active steering are available. Steering takes text and can interrupt tools. Native fork is unavailable. Carry the SDK patch, executable/native assets and platform tests into the distribution audit. | [Adapter][src-36] · [SDK patches][src-37] |
+| `cursor` | Cursor SDK. Rollback and active steering are available. Steering takes text and can interrupt tools. Native fork is unavailable. Check the patch when comparing SDK behavior with another transport. | [Adapter][src-36] · [SDK patches][src-37] |
 | `grok` | ACP with Grok-specific steering, native child lineage and background command/monitor wakes. Test blocked commands and prompt errors. The implemented adapter advertises active steering. | [Adapter][src-38] · [Replay coverage][src-39] |
 | `fx` | ACP with backend/model selection per session, child lifecycle and shared machine login. Preserve early-stop behavior and propagation of child stop. Treat login sharing as a driver constraint when configuring instances. | [Adapter][src-40] · [Provider guide][src-41] |
 | `opencode` | One driver, two implementation paths. Managed 1.x runs a per-thread chat process. Managed 2.x shares a server per instance and registers MCP by directory with per-thread credentials/rules. The 2.x static MCP flag is false despite this managed registration path. External-server mode skips endpoint registration. Qualify both majors and both ownership modes. | [1.x adapter][src-42] · [2.x adapter][src-43] · [Provider guide][src-44] |
 | `antigravity` | Server-local ACP variant with profile, install and authentication behavior plus native child updates. It has adapter tests but no entry in the shared orchestration replay runner at this commit. Add a recorded end-to-end scenario before claiming the same replay coverage as the other ten drivers. | [Adapter][src-45] · [Driver][src-46] · [Replay registry][src-102] |
 | `kiro` | ACP variant with native prior-turn fork, active steering, compaction, model/effort configuration, permission modes and subagent interruption. Negotiated config can change which selection applies. | [Adapter][src-47] · [Replay coverage][src-48] |
-| `pi` | RPC process and native session files for fork, rewind and resume. A private extension bridges scoped MCP into Pi. Child results can be visible with no addressable provider child thread. Package the extension source and test its launch from the installed module. | [Adapter][src-49] · [MCP extension][src-50] |
+| `pi` | RPC process and native session files for fork, rewind and resume. A private extension bridges scoped MCP into Pi. Child results can be visible with no addressable provider child thread. Test the provider-specific extension when qualifying Pi tool support. | [Adapter][src-49] · [MCP extension][src-50] |
 | `muse` | MSP/SDK. Preserve workflow progress, child approval and stop, active steering and live callbacks. Native fork and native conversation rollback are unavailable. Higher-level portable operations have separate eligibility. | [Adapter][src-51] · [Replay coverage][src-52] |
 | `acpRegistry` | Generic ACP driver for configured registry agents. Shared ACP handles initialization, streams, session negotiation and replay-based rollback. Per-agent configuration and quirks change behavior. Test a representative registry agent and feature-denied paths. | [Registry adapter][src-53] · [Shared ACP][src-54] |
 
@@ -93,6 +93,19 @@ The registry wires **11 driver kinds**. Eight live in dedicated provider package
 A capability query should expose the instance's usable operations, constraints and evidence of availability. The schema covers **sessions, threads, turns, streaming, tools, approvals, planning, subagents, context, checkpointing, identity and runtime policy**. Combine the static declarations with the installed version, server ownership, handshake, cwd, model and live state. The selection policy can apply an option on the next turn, restart the session, create a handoff or reject the change. Preserve differences such as text-only steering and live-only approval callbacks. [Capability schemas][src-23] · [Selection transitions][src-57] · [MCP capability discovery][src-24]
 
 For shared ACP, inspect the capabilities again after initialization. The agent's `loadSession` enables thread and checkpoint conversation snapshots. A negotiated fork enables native fork, and prior-turn fork additionally requires support from the ACP flavor. Session setup or a known late-arriving model option can enable in-session model switching. A flavor that negotiates prompt-based steering can add active steering to the base declaration. The shared adapter marks MCP support available at this stage and selects the transport its flavor can use. Actual tools still depend on the session credential and host. [ACP negotiation and MCP transport][src-54]
+
+## Candidate Rust provider transports
+
+The routes below are candidates for Huggler. Qualify the selected release and operating mode through the crate before advertising capabilities.
+
+| Harness | Route to evaluate | Check early |
+| --- | --- | --- |
+| Codex | Local app-server JSON-RPC. | Resume the same native session after a restart, route approvals and map turn and child events. [Codex app-server](https://github.com/openai/codex/tree/main/codex-rs/app-server) |
+| Claude | Standalone Claude Agent ACP executable. Its release includes the Claude CLI and requires no separate Node.js install. | Live approvals, session resume, fork, steering and native child visibility vary with adapter version and protocol. Record the separate install footprint. [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp) |
+| Cursor | CLI ACP endpoint with documented streaming, session load, permission requests and cancellation. | Verify whether the chosen transport can provide steering and rollback equivalent to the upstream SDK path. [Cursor ACP](https://cursor.com/docs/cli/acp) |
+| ACP Registry, Grok, fx, Kiro and Antigravity | Shared ACP client with per-harness negotiation and extensions. | Check login, session options and capability differences per flavor. [ACP Rust SDK](https://github.com/agentclientprotocol/rust-sdk) · [T3 Code shared ACP][src-54] |
+| OpenCode and Pi | OpenCode server API and Pi process RPC. | Compare managed and external OpenCode behavior. Verify Pi's scoped tool extension separately from the core RPC path. [OpenCode provider guide][src-44] · [Pi adapter][src-49] |
+| Muse | Evaluate its MSP protocol and supported runtime entry points. | Prove workflow events, live requests, steering and child control. If a bridge is needed, keep its runtime requirements specific to Muse. [Muse adapter][src-51] · [Muse replay coverage][src-52] |
 
 ## Recovery, streams and context
 
@@ -121,7 +134,7 @@ For shared ACP, inspect the capabilities again after initialization. The agent's
 
 The trusted host, a provider acting as one thread, a guest, and an outside OAuth client have different authority. Issue scoped MCP credentials before the provider needs them. Bind environment, thread, provider session and instance, and preserve revocation/expiry. Re-evaluate live ownership and operation-specific read/write policy at invocation. `approval-required`, `auto-accept-edits`, `auto` and `full-access` are runtime modes. `default` and `plan` are interaction modes. Linked writes also obey the remote grant. `t3_pending_request` handles user questions and their answers. Human approval needs an authorized responder. Forwarded operations must preserve sender and request namespaces across retries and surface partial failures. Remote delegated worktree isolation is unsupported in this baseline. [Session registry][src-98] · [Invocation context][src-99] · [Thread access][src-100] · [Thread tools][src-101] · [Remote delegation][src-29]
 
-The package should own orchestration semantics and ship a reference implementation for each supported integration. The consuming application owns presentation, credentials, platform permissions and any external infrastructure it chooses to expose. That division lets a headless service run two collaborating agents while giving a desktop product a path to the full baseline.
+The crate owns orchestration semantics. Supported integrations can ship with the crate or be implemented by the host. The consuming application owns presentation, credentials, platform permissions and any external infrastructure it chooses to expose. That division lets a headless service run two collaborating agents while giving a desktop product a path to broader workflow coverage.
 
 [src-1]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/ThreadManagementService.ts
 [src-2]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/ThreadLaunchService.ts
