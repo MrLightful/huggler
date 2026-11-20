@@ -2,7 +2,9 @@
 """ACP harness using the HTTP MCP transport on both session/new and session/load."""
 import json
 import sys
+import time
 import uuid
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -96,6 +98,25 @@ for line in sys.stdin:
                 finish("Delegated for review")
         elif text == "held review":
             hold()
+        elif text.startswith("wait "):
+            case = text.removeprefix("wait ")
+            review = {"ready": "immediate review", "approval": "held review",
+                      "timeout": "gated review", "revoke": "gated review"}[case]
+            args = dict(clientRequestId="wait-review", task=review)
+            status = call("delegate_task", mode="wait", timeoutMs=20 if case == "timeout" else 4000, **args)
+            if case == "revoke":
+                assert status["code"] == "forbidden", status
+            else:
+                assert status["timedOut"] == (case == "timeout"), status
+                assert status["awaitingApproval"] == (case == "approval"), status
+                assert status["delivery"] == ("acknowledged" if case == "ready" else "pending"), status
+                assert call("delegate_task", mode="async", **args)["taskId"] == status["taskId"]
+            finish("wait returned " + case)
+        elif text in ("gated review", "immediate review"):
+            if text == "gated review":
+                while not Path("release-review").exists():
+                    time.sleep(0.02)
+            finish("2+2=4")
         elif text.startswith("inspect "):
             task_id = text.removeprefix("inspect ")
             assert call("task_status", taskId=task_id)["code"] == "forbidden"

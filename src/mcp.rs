@@ -47,7 +47,7 @@ struct AgentServer(Arc<Shared>);
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Send {
+struct PeerSend {
     thread_id: String,
     message: String,
     /// Use the same key and message when retrying a delivery.
@@ -74,6 +74,9 @@ pub(crate) struct Delegation {
     pub role: Option<String>,
     #[serde(default)]
     mode: TaskMode,
+    /// Maximum time in milliseconds for wait mode. Defaults to 30 seconds, capped at 45 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
     #[serde(default)]
     isolation: Isolation,
 }
@@ -89,6 +92,7 @@ pub(crate) struct Target {
 enum TaskMode {
     #[default]
     Async,
+    Wait,
 }
 
 #[derive(Default, Deserialize, Serialize, JsonSchema)]
@@ -114,14 +118,34 @@ fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
 #[tool_router]
 impl AgentServer {
     #[tool(
-        description = "Delegate a task asynchronously to a new child thread in the same checkout. Its final result wakes you when idle. Reuse clientRequestId to retry."
+        description = "Delegate a task to a new child thread in the same checkout. Default async completion wakes you when idle. With mode wait, return on completion, a human approval request or timeout. Reuse clientRequestId to retry."
     )]
-    fn delegate_task(
+    async fn delegate_task(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<Delegation>,
+        Parameters(mut input): Parameters<Delegation>,
     ) -> CallToolResult {
-        tool_result(bearer(&parts.headers).and_then(|token| self.0.delegate(token, input)))
+        let result: HostResult<_> = async {
+            let token = bearer(&parts.headers)?;
+            // Waiting is a property of this call. A retry may observe the same
+            // child with a different timeout or return immediately.
+            let mode = std::mem::take(&mut input.mode);
+            let timeout = input.timeout_ms.take();
+            let task = self.0.delegate(token, input)?;
+            match mode {
+                TaskMode::Async => Ok(json!(task)),
+                TaskMode::Wait => {
+                    let limit = std::time::Duration::from_millis(
+                        timeout.unwrap_or(30_000).clamp(1, 45_000),
+                    );
+                    Ok(json!(
+                        self.0.wait_for_task(token, &task.task_id, limit).await?
+                    ))
+                }
+            }
+        }
+        .await;
+        tool_result(result)
     }
 
     #[tool(
@@ -166,7 +190,7 @@ impl AgentServer {
     fn thread_send(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<Send>,
+        Parameters(input): Parameters<PeerSend>,
     ) -> CallToolResult {
         let DeliveryMode::Auto = input.mode;
         tool_result(bearer(&parts.headers).and_then(|token| {

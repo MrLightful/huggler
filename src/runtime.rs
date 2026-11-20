@@ -50,6 +50,15 @@ pub(crate) struct Shared {
     stop: watch::Sender<bool>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskWaitResult {
+    #[serde(flatten)]
+    task: DelegatedTask,
+    awaiting_approval: bool,
+    timed_out: bool,
+}
+
 impl Shared {
     pub(crate) fn access<T>(&self, f: impl FnOnce(&mut Database) -> Result<T>) -> Result<T> {
         let mut db = self.db.lock().unwrap();
@@ -114,6 +123,39 @@ impl Shared {
         let task = self.access(|db| db.task_status(token, id))?;
         self.changed.send_replace(());
         Ok(task)
+    }
+
+    pub(crate) async fn wait_for_task(
+        &self,
+        token: &str,
+        id: &TaskId,
+        limit: std::time::Duration,
+    ) -> Result<TaskWaitResult> {
+        let mut changes = self.changed.subscribe();
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            let (task, awaiting_approval) = self.access(|db| {
+                let task = db.task_status(token, id)?;
+                let approval =
+                    !task.status.terminal() && db.child_awaits_approval(&task.child_thread_id)?;
+                Ok((task, approval))
+            })?;
+            if task.status.terminal() {
+                self.changed.send_replace(());
+            }
+            let ready = task.status.terminal() || awaiting_approval;
+            if ready || tokio::time::Instant::now() >= deadline {
+                return Ok(TaskWaitResult {
+                    task,
+                    awaiting_approval,
+                    timed_out: !ready,
+                });
+            }
+            // Recheck ownership and the latest committed result even on a timeout.
+            if let Ok(closed) = tokio::time::timeout_at(deadline, changes.changed()).await {
+                closed.map_err(|_| Error::Closed)?;
+            }
+        }
     }
 
     pub(crate) fn cancel_task(self: &Arc<Self>, token: &str, id: &TaskId) -> Result<DelegatedTask> {
@@ -364,7 +406,11 @@ impl Huggler {
 
     /// Withdraw a live run's ability to call agent tools.
     pub fn revoke_agent_tools(&self, thread: &ThreadId, run: &RunId) -> Result<bool> {
-        self.shared.access(|db| db.revoke(thread, run))
+        let revoked = self.shared.access(|db| db.revoke(thread, run))?;
+        if revoked {
+            self.shared.changed.send_replace(());
+        }
+        Ok(revoked)
     }
 
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {

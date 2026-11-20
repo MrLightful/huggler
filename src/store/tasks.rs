@@ -128,6 +128,15 @@ impl Database {
         Ok(task)
     }
 
+    pub fn child_awaits_approval(&self, thread: &ThreadId) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM permission p JOIN run r ON r.id=p.run_id
+             WHERE r.thread_id=? AND p.expired=0 AND p.decision IS NULL)",
+            [&thread.0],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn cancel_task(&mut self, token: &str, id: &TaskId) -> Result<(DelegatedTask, Vec<RunId>)> {
         let (parent, _, _) = self.caller(token)?;
         let tx = self.db.transaction()?;

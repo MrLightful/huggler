@@ -32,24 +32,27 @@ async fn approve_peer_tools(
     }
 }
 
-async fn exchange(provider: Provider, live: bool) {
+async fn exchange(author_provider: Provider, reviewer_provider: Provider) {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("checkout");
     checkout(&repo);
     let mut options = HugglerOptions::new(dir.path().join("state"));
     options.agent_tools = true;
-    options.codex.request_approvals = live;
-    if !live {
-        options.claude_agent.executable =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
-    }
+    options.codex.request_approvals = true;
+    options.claude_agent.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
     let rt = Huggler::open(options.clone()).await.unwrap();
     let project = rt.open_project(&repo).unwrap();
-    let author = launch(&rt, &project, "author", provider);
-    let reviewer = launch(&rt, &project, "reviewer", provider);
+    let author = launch(&rt, &project, "author", author_provider);
+    let reviewer = launch(&rt, &project, "reviewer", reviewer_provider);
     let other = dir.path().join("other");
     checkout(&other);
-    let outside = launch(&rt, &rt.open_project(other).unwrap(), "outside", provider);
+    let outside = launch(
+        &rt,
+        &rt.open_project(other).unwrap(),
+        "outside",
+        author_provider,
+    );
     let (_, mut events) = rt.subscribe(&author, None).unwrap();
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let approvals = [&author, &reviewer].map(|thread| {
@@ -61,8 +64,20 @@ async fn exchange(provider: Provider, live: bool) {
         )
     });
     let conversation = async {
-        let first = rt.send(CommandId("ask".into()),author.clone(),
-        "Use the huggler MCP thread_list to find the reviewer. Use huggler thread_send with clientRequestId review-1 and this exact message: Review 2+2. Send your finding '2+2=4' to the sender thread from the origin, using huggler thread_send with clientRequestId reply-1. Call the same tool a second time with identical arguments, then put both returned messageIds in your final answer. After sending the review request, finish your own turn immediately. When the reply arrives simply acknowledge it.".into()).unwrap().run_id.unwrap();
+        let review = match reviewer_provider {
+            Provider::Codex => {
+                "Review 2+2. Send your finding '2+2=4' to the sender thread from the origin, using huggler thread_send with clientRequestId reply-1. Call the same tool a second time with identical arguments, then put both returned messageIds in your final answer."
+            }
+            Provider::ClaudeAgent => "Review 2+2",
+        };
+        let prompt = format!(
+            "Use the huggler MCP thread_list to find the reviewer. Use huggler thread_send once with clientRequestId review-1. Set message to exactly the following quoted text: \"{review}\". After sending the review request, finish your own turn immediately. When the reply arrives simply acknowledge it."
+        );
+        let first = rt
+            .send(CommandId("ask".into()), author.clone(), prompt)
+            .unwrap()
+            .run_id
+            .unwrap();
         completed(&rt, &author, &first).await;
         let request = rt
             .peer_receipt(&author, "review-1")
@@ -110,9 +125,18 @@ async fn exchange(provider: Provider, live: bool) {
     };
     let [a, b] = approvals;
     let ((first, request, reply), author_sends, reviewer_sends) = tokio::join!(conversation, a, b);
-    if live {
-        assert_eq!((author_sends, reviewer_sends), (1, 2));
-    }
+    assert_eq!(
+        author_sends,
+        usize::from(author_provider == Provider::Codex)
+    );
+    assert_eq!(
+        reviewer_sends,
+        if reviewer_provider == Provider::Codex {
+            2
+        } else {
+            0
+        }
+    );
     rt.close().await.unwrap();
     let rt = Huggler::open(options).await.unwrap();
     for (sender, source_run, key, receipt, recipient) in [
@@ -161,16 +185,30 @@ async fn exchange(provider: Provider, live: bool) {
 #[tokio::test]
 #[ignore = "uses two live Codex sessions with an authenticated local CLI"]
 async fn live_codex_peer_exchange() {
-    timeout(Duration::from_secs(240), exchange(Provider::Codex, true))
-        .await
-        .unwrap();
+    timeout(
+        Duration::from_secs(240),
+        exchange(Provider::Codex, Provider::Codex),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "uses a live Codex author with the scripted ACP reviewer"]
+async fn live_codex_to_acp_peer_exchange() {
+    timeout(
+        Duration::from_secs(240),
+        exchange(Provider::Codex, Provider::ClaudeAgent),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn acp_peer_exchange() {
     timeout(
         Duration::from_secs(15),
-        exchange(Provider::ClaudeAgent, false),
+        exchange(Provider::ClaudeAgent, Provider::ClaudeAgent),
     )
     .await
     .unwrap();

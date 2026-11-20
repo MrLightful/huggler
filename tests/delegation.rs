@@ -50,27 +50,34 @@ async fn task(
     }
 }
 
-const LIVE_PROMPT: &str = "Use the huggler delegate_task tool once with clientRequestId review, title Reviewer, target.providerInstanceId codex, mode async and isolation shared. Set its task to exactly: First call the huggler thread_list tool once, then return exactly 2+2=4 as your final answer. After delegation finish this turn immediately. When Huggler delivers the child result, reply with the finding.";
+fn options(state: &Path) -> HugglerOptions {
+    let mut options = HugglerOptions::new(state);
+    options.agent_tools = true;
+    options.codex.request_approvals = true;
+    options.claude_agent.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
+    options
+}
 
-async fn scenario(mode: &str, live: bool) {
+async fn scenario(mode: &str, parent_provider: Provider, child_provider: Provider) {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("checkout");
     checkout(&repo);
-    let mut options = HugglerOptions::new(dir.path().join("state"));
-    options.agent_tools = true;
-    options.codex.request_approvals = live;
-    options.claude_agent.executable =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
+    let options = options(&dir.path().join("state"));
     let rt = Huggler::open(options.clone()).await.unwrap();
     let project = rt.open_project(&repo).unwrap();
-    let provider = if live {
-        Provider::Codex
-    } else {
-        Provider::ClaudeAgent
-    };
-    let parent = launch(&rt, &project, "author", provider);
-    let prompt = if live {
-        LIVE_PROMPT.into()
+    let parent = launch(&rt, &project, "author", parent_provider);
+    let prompt = if parent_provider == Provider::Codex {
+        let (instance, review) = match child_provider {
+            Provider::Codex => (
+                "codex",
+                "First call the huggler thread_list tool once, then return exactly 2+2=4 as your final answer.",
+            ),
+            Provider::ClaudeAgent => ("claudeAgent", "held review"),
+        };
+        format!(
+            "Use the huggler delegate_task tool once with clientRequestId review, title Reviewer, target.providerInstanceId {instance}, mode async and isolation shared. Set its task to exactly the following quoted text: \"{review}\". After delegation finish this turn immediately. When Huggler delivers the child result, reply with the finding."
+        )
     } else {
         format!("delegate {mode}")
     };
@@ -79,13 +86,13 @@ async fn scenario(mode: &str, live: bool) {
         .unwrap()
         .run_id
         .unwrap();
-    if live {
+    if parent_provider == Provider::Codex {
         release(&rt, &parent, Some("delegate_task")).await;
     }
     let initial = task(&rt, &parent, 0, |_| true).await;
     assert_eq!(initial.parent_run_id, first);
     let child = &initial.child_thread_id;
-    assert_eq!(rt.read(child).unwrap().provider, provider);
+    assert_eq!(rt.read(child).unwrap().provider, child_provider);
     assert_eq!(rt.read(child).unwrap().project, project.id);
 
     match mode {
@@ -98,7 +105,12 @@ async fn scenario(mode: &str, live: bool) {
                 assert_eq!(task(&rt, &parent, 0, |_| true).await.result, None);
                 release(&rt, &grandchild.child_thread_id, None).await;
             } else {
-                release(&rt, child, live.then_some("thread_list")).await;
+                release(
+                    &rt,
+                    child,
+                    (child_provider == Provider::Codex).then_some("thread_list"),
+                )
+                .await;
             }
         }
         "cancel" => {
@@ -118,7 +130,7 @@ async fn scenario(mode: &str, live: bool) {
                 task(&rt, &parent, 1, |t| t.result.is_some()).await;
             }
             if mode == "ack" {
-                let stranger = launch(&rt, &project, "observer", provider);
+                let stranger = launch(&rt, &project, "observer", parent_provider);
                 let run = rt
                     .send(
                         CommandId("inspect".into()),
@@ -208,27 +220,104 @@ async fn scenario(mode: &str, live: bool) {
 }
 
 #[tokio::test]
+async fn waiting_for_a_task_handles_completion_timeout_approval_and_revocation() {
+    for case in ["ready", "timeout", "approval", "revoke"] {
+        timeout(Duration::from_secs(12), async {
+            let dir = tempfile::tempdir().unwrap();
+            let repo = dir.path().join("checkout");
+            checkout(&repo);
+            let rt = Huggler::open(options(&dir.path().join("state")))
+                .await
+                .unwrap();
+            let project = rt.open_project(&repo).unwrap();
+            let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
+            let run = rt
+                .send(
+                    CommandId("start".into()),
+                    parent.clone(),
+                    format!("wait {case}"),
+                )
+                .unwrap()
+                .run_id
+                .unwrap();
+            let child = task(&rt, &parent, 0, |_| true).await.child_thread_id;
+            if case == "revoke" {
+                assert!(rt.revoke_agent_tools(&parent, &run).unwrap());
+            }
+            completed(&rt, &parent, &run).await;
+            let snapshot = rt.read(&parent).unwrap();
+            assert_eq!(
+                snapshot.messages.last().unwrap().text,
+                format!("wait returned {case}")
+            );
+            assert_eq!(snapshot.tasks.len(), 1);
+            let delegated = &snapshot.tasks[0];
+            assert_eq!(snapshot.runs.len(), 1);
+            if case == "ready" {
+                assert_eq!(delegated.result.as_deref(), Some("2+2=4"));
+                assert_eq!(delegated.delivery, CompletionDelivery::Acknowledged);
+                assert!(delegated.wake_run_id.is_none());
+            } else {
+                assert_eq!(delegated.delivery, CompletionDelivery::Pending);
+                if case == "approval" {
+                    release(&rt, &child, None).await;
+                } else {
+                    std::fs::write(repo.join("release-review"), "").unwrap();
+                }
+                let settled = task(&rt, &parent, 0, |t| t.wake_run_id.is_some()).await;
+                completed(&rt, &parent, settled.wake_run_id.as_ref().unwrap()).await;
+                assert_eq!(settled.result.as_deref(), Some("2+2=4"));
+                assert_eq!(rt.read(&parent).unwrap().runs.len(), 2);
+            }
+            rt.close().await.unwrap();
+        })
+        .await
+        .expect(case);
+    }
+}
+
+#[tokio::test]
 async fn completion_wakes_once_after_idle_or_restart_and_groups_siblings() {
     for mode in ["idle", "recover", "siblings", "nested"] {
-        timeout(Duration::from_secs(15), scenario(mode, false))
-            .await
-            .expect(mode);
+        timeout(
+            Duration::from_secs(15),
+            scenario(mode, Provider::ClaudeAgent, Provider::ClaudeAgent),
+        )
+        .await
+        .expect(mode);
     }
 }
 
 #[tokio::test]
 async fn only_the_parent_can_acknowledge_or_cancel_delivery() {
     for mode in ["ack", "cancel"] {
-        timeout(Duration::from_secs(15), scenario(mode, false))
-            .await
-            .expect(mode);
+        timeout(
+            Duration::from_secs(15),
+            scenario(mode, Provider::ClaudeAgent, Provider::ClaudeAgent),
+        )
+        .await
+        .expect(mode);
     }
 }
 
 #[tokio::test]
 #[ignore = "uses two live Codex sessions with an authenticated local CLI"]
 async fn live_codex_delegation() {
-    timeout(Duration::from_secs(240), scenario("idle", true))
-        .await
-        .unwrap();
+    timeout(
+        Duration::from_secs(240),
+        scenario("idle", Provider::Codex, Provider::Codex),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "uses a live Codex parent with the scripted ACP reviewer"]
+async fn live_codex_to_acp_delegation() {
+    timeout(
+        Duration::from_secs(240),
+        scenario("idle", Provider::Codex, Provider::ClaudeAgent),
+    )
+    .await
+    .unwrap();
 }

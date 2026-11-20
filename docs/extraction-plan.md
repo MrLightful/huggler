@@ -12,9 +12,11 @@ Two live Codex CLI 0.170.0 threads discovered each other and exchanged a review 
 
 Two live Codex CLI 0.170.0 sessions used app-server stdio and Huggler's loopback MCP endpoint for asynchronous delegation in a shared checkout. After the parent went idle, the child's result started one parent run. The parent repeated the finding, and reopening preserved the result, run IDs and event cursor. Reproduce with `cargo test --locked --test delegation live_codex_delegation -- --ignored`. The offline ACP cases cover passive reads, owner acknowledgement, cancellation, pending delivery on reopen, siblings and a grandchild. [Delegation tests](../tests/delegation.rs)
 
-**Next action.** Exercise both peer messaging and delegation across adapters using a live Codex parent and the scripted ACP reviewer. Check the reply's sender and run, the selected child provider, and one parent wake after reopening. Live qualification with a second authenticated provider remains open. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+Live Codex CLI 0.170.0 over app-server stdio and a scripted ACP reviewer over stdio passed both cross-adapter cases through loopback MCP. The peer retry retained one reply and its sender and run. The delegated result woke its parent once and survived reopening. Run `cargo test --locked --test peers --test delegation live_codex_to_acp -- --ignored` with a signed-in Codex CLI. The offline `waiting_for_a_task` test covers completion, timeout, pending approval and revocation during `delegate_task(mode="wait")`. [Peer tests](../tests/peers.rs) · [Delegation tests](../tests/delegation.rs)
 
-**Branch recommendation.** Commit and continue Stage 3 on this branch. Same-provider delegation passes, with cross-adapter and native-child checks still open.
+**Next action.** Queue a follow-up in a busy child and check which run supplies its final result. Cancel a task with a grandchild and queued work, then check cancellation while a settled child is handling a later turn. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+
+**Branch recommendation.** Commit and continue Stage 3 on this branch. Native-child replay and live collaboration with a second authenticated provider remain open.
 
 ### Maintaining the handoff
 
