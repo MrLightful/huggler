@@ -1,0 +1,40 @@
+command_id | receipt | result_sequence | run
+command:fixture:provider_thread_resume:message-1:eb0c8710-ce93-4a66-a7a4-438c4bb1eece | accepted | 9 | 1
+command:fixture:provider_thread_resume:message-2:8478dfa5-4dc9-4a11-8643-f5bef8200b7d | accepted | 38 | 2
+
+sequence | event_type
+32 | provider-thread.updated
+33 | run.created
+34 | run-attempt.created
+35 | node.updated
+36 | checkpoint-scope.created
+37 | message.updated
+38 | turn-item.updated
+
+sequence | run | run_status
+4 | 1 | starting
+13 | 1 | running
+24 | 1 | waiting
+30 | 1 | completed
+33 | 2 | starting
+42 | 2 | running
+53 | 2 | waiting
+58 | 2 | completed
+
+run | app_thread | native_thread | native_turn
+1 | thread:fixture:provider_thread_resume:project:project%3Afixture%3Aprovider_thread_resume%3Af2604e9d-55b7-45de-a716-838867faae7e:0f2eb5a3-17c3-45d8-831a-e78b17f6c3d7 | 01a0d5ef-62bd-7c20-861b-0528ff7d86bd | 01a0d5ef-637e-7ba2-bf9a-5534a6f98a83
+2 | thread:fixture:provider_thread_resume:project:project%3Afixture%3Aprovider_thread_resume%3Af2604e9d-55b7-45de-a716-838867faae7e:0f2eb5a3-17c3-45d8-831a-e78b17f6c3d7 | 01a0d5ef-62bd-7c20-861b-0528ff7d86bd | 01a0d5ef-77e2-7e22-a198-4864f687b8b5
+
+ordinal | role | message
+1000001 | user | "Respond with exactly: provider thread resume fixture first turn complete"
+1000002 | assistant | "provider thread resume fixture first turn complete"
+2000001 | user | "Using the conversation history available in this resumed thread, first repeat the exact final answer you gave in the previous turn. Then on a new line write exactly: provider thread resume fixture second turn complete"
+2000002 | assistant | "provider thread resume fixture first turn complete\nprovider thread resume fixture second turn complete"
+
+checkpoint | status | files
+0 | ready | []
+1 | ready | []
+2 | ready | []
+
+provider_thread | provider_session | last_error
+idle | error | The provider event stream closed unexpectedly: the provider process exited with code 0. Check the server logs for the provider's output, then retry the turn.

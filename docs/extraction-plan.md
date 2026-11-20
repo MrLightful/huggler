@@ -2,13 +2,13 @@
 
 Start with a Rust consumer that resumes a Codex conversation after reopening its state. Then exercise the same flow in an installed Tauri app and qualify a second provider through a live approval and cross-provider collaboration. Use T3 Code as the behavioral reference across the broader capability inventory. The Rust crate can use its own API, schema and transports. Record whether each workflow is supported directly, through a documented fallback, or unavailable for the selected provider or host. [Crate proposal](sdk-proposal.md) · [Upstream architecture](upstream-orchestration.md) · [Capability inventory](parity-inventory.md)
 
-These are proposed implementation tasks and acceptance tests. The reference is T3 Code commit `338352dee2f43079482e054e8229a2ba055641d9`. Test results and live compatibility evidence belong to the implementation phase.
+Stage 1 is complete at T3 Code commit `338352dee2f43079482e054e8229a2ba055641d9`. The four upstream suites passed, and the Codex restart capture links both dispatch receipts to their projected runs and recorded turns. Stages 2–7 describe the planned Rust implementation and its qualification. [Stage 1 results and reproduction](reference/codex-resume/README.md)
 
 ## Choose a stage
 
 | Stage | Ready when | Evidence to keep |
 | --- | --- | --- |
-| [1. Capture the reference](#1-capture-the-upstream-reference) | A checkout contains the pinned source | Transcripts, expected projections and focused test results. Begin with the [Codex restart recipe](first-milestone.md). |
+| [1. Capture the reference](#1-capture-the-upstream-reference) | A checkout contains the pinned source | [Codex recording, expected projections and focused test results](reference/codex-resume/README.md). |
 | [2. Run one durable thread](#2-build-the-rust-core-and-run-one-durable-thread) | The reference case is reproducible | An installed consumer resumes the same conversation and a retried command returns its original receipt. |
 | [3. Connect two harnesses](#3-prove-agent-to-agent-operation-with-two-harnesses) | One driver works through the public API | A peer reply with sender identity and a delegated completion that wakes its parent. |
 | [4. Qualify all drivers](#4-qualify-every-provider-instance-and-capability) | Two harnesses share a conformance suite | Results per driver, provider version, instance configuration and supported operation. |
