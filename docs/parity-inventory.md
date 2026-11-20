@@ -1,4 +1,4 @@
-# T3 orchestration parity inventory
+# Huggler parity inventory for the T3 Code baseline
 
 Use this inventory when deciding whether the extracted runtime can replace the pinned server for a particular application. It counts the top-level discriminants in the checked-out schemas, the entries in the named RPC method map, the outbox classifications and the server’s MCP tool declarations. Nested actions, project mutations, provider-native tools and third-party MCP Apps have separate contracts. A declared operation can require a particular caller, integration, driver or live session.
 
@@ -104,9 +104,11 @@ Make the distinction visible in failure tests. A durable command receipt proves 
 
 ## Agent-facing tools
 
+The table records exact **upstream** names for source lookup and regression comparison. For the proposed `huggler` MCP server, remove a leading `t3_` from each baseline tool name and keep the other names as written. For example, upstream `t3_thread_send` maps to Huggler’s `thread_send`, and `delegate_task` maps to `delegate_task`. Compare input, result, authorization and side effects under the corresponding name. Apply this mapping only to this catalog of built-in tools. [Huggler naming conventions](sdk-proposal.md#naming)
+
 MCP is the agent’s interface to orchestration. For deferred discovery, the direct set is `orchestrator_capabilities`, `delegate_task`, `task_status` and `tool_search`, subject to caller eligibility. Searching can expose additional matching tools within the session. Tool visibility, write access, link permissions, target mode limits, handler capabilities and available host services all participate in the effective surface. An outside read-only client, a live author thread and a linked agent can receive different results. [Exposure][src-23] · [Invocation context][src-24] · [Access declarations][src-25]
 
-| Toolkit (declarations) | Exact tool names | Purpose and eligibility |
+| Toolkit (declarations) | Exact names in T3 Code | Purpose and eligibility |
 | --- | --- | --- |
 | [orchestrator][src-26] (20) | `orchestrator_capabilities`, `delegate_task`, `task_status`, `task_cancel`, `t3_workflow_stop`, `t3_background_wait`, `schedule_task`, `list_scheduled_tasks`, `delete_scheduled_task`, `request_secret`, `create_threads`, `t3_thread_list`, `t3_thread_read`, `t3_thread_update`, `t3_thread_send`, `t3_thread_wait`, `t3_thread_interrupt`, `t3_environment_links`, `t3_environment_link`, `t3_environment_unlink` | Capability/catalog lookup, owned delegation, status/cancel, workflow control, background waits, schedules, secrets, independent threads and linked environments. Delegation, task status/cancel, secret requests and batch thread creation require a live thread caller. Targeted writes and environment changes have their own checks. |
 | [thread][src-27] (7) | `t3_thread_organize`, `t3_queue`, `t3_pending_request`, `t3_thread_configure`, `t3_thread_transfer`, `t3_thread_search`, `run_scheduled_task_now` | Organize, inspect/change the queue, answer user questions, inspect/configure a model, fork/merge, search and trigger a schedule. Check access for each action of a multi-action tool. Model configuration preserves permission modes. |
@@ -124,7 +126,7 @@ MCP is the agent’s interface to orchestration. For deferred discovery, the dir
 | [theme][src-39] (2) | `t3_theme_read`, `t3_theme_set` | Read theme information or change an environment theme with the appropriate write authority. |
 | [toolSearch][src-40] (1) | `tool_search` | Discover deferred tools for this provider session. Listing a tool preserves its existing invocation checks. |
 
-**Three acceptance checks for callers.** A dashboard can inspect thread/child projections without acknowledging delivery. A live parent that calls `task_status` on its completed task can acknowledge its result. An agent can answer an eligible user question through `t3_pending_request`. A human decision on provider permissions goes through an authorized responder. Exercise positive and denied cases through the real handlers. [Orchestrator handlers][src-41] · [Thread handlers][src-42] · [Access race tests][src-43]
+**Three acceptance checks for Huggler callers.** A dashboard can inspect thread/child projections without acknowledging delivery. A live parent that calls `task_status` on its completed task can acknowledge its result. An agent can answer an eligible user question through `pending_request`. A human decision on provider permissions goes through an authorized responder. Exercise positive and denied cases through the real handlers. [Orchestrator handlers][src-41] · [Thread handlers][src-42] · [Access race tests][src-43]
 
 The [implementation plan](extraction-plan.md) pairs these names with upstream tests, raw frames and installed-consumer acceptance scenarios.
 

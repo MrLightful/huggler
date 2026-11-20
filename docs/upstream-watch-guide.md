@@ -1,6 +1,34 @@
 # Maintaining parity with T3 Code
 
-Use this guide when deciding whether an upstream change belongs in the npm package. The source map is pinned to **338352dee2f43079482e054e8229a2ba055641d9** on T3 Code’s `main` branch. The [watch list](t3code-watch.paths) contains Git pathspecs for comparing that revision with a later one. For the expected behavior of each operation, use the [capability inventory](parity-inventory.md). For the SDK that exposes it, see the [package overview](../README.md).
+Use this guide to decide which upstream changes to port to Huggler. The source map is pinned to **338352dee2f43079482e054e8229a2ba055641d9** on T3 Code’s `main` branch. The [watch list](upstream-watch.paths) contains Git pathspecs for comparing that revision with a later one. For the expected behavior of each operation, use the [capability inventory](parity-inventory.md). For the proposed application interface, see the [SDK reference](sdk-proposal.md).
+
+## Run a review
+
+From the package checkout, run these two commands with Git and Python 3. Fetching refreshes the clone’s remote-tracking ref. The review reads committed trees, prints the exact range and leaves both checkouts and the review record untouched.
+
+```sh
+upstream_repo="/Users/mrlightful/Projects/Personal/t3code"
+git -C "$upstream_repo" fetch origin
+python3 scripts/review-upstream.py "$upstream_repo"
+```
+
+The default range starts at `reviewedThrough` and ends at the local `origin/main`. The initial marker is the source revision analyzed for the proposal. For an offline trial, the following nine-commit range is already part of that revision’s history. [Review command](../scripts/review-upstream.py) · [Review record](upstream-review.json)
+
+```sh
+python3 scripts/review-upstream.py "$upstream_repo" --base ccc1feb15572 --to 338352dee2
+```
+
+In that range, four commits affect the runtime or host integrations. The settlement fix changes both `ThreadSettlementService` and the terminal manager. Treat them as one behavior to port. A CLI-only change that explains failed runs appears under supporting commits. The web spreadsheet scrollbar change is outside the default report. [Settlement patch](https://github.com/pingdotgg/t3code/commit/6cbda0cd0aa982b7cbf22d9790bd74e68b2d3dbe)
+
+| Report section | How to use it |
+| --- | --- |
+| Runtime and providers | Inspect command semantics, session and run state, MCP tools, provider registration and adapters, migrations, wire shapes, consuming reducers and replay assertions. New siblings under the engine and new `provider-*` packages match automatically. |
+| Host integrations and package distribution | Check the affected host capability or shipped artifact. An optional integration can change observable behavior in an otherwise identical core runtime. |
+| Supporting changes | Skim the commit subjects for new services, contracts, shared helpers, lockfile-only upgrades, CLI semantics and user-facing evidence. For example, an OpenCode scenario checks that a background result reaches a settled thread and can be read with the CLI. [Upstream scenario][background-scenario] |
+| Outside the watch list | Presentation-only CSS, translations, native client layout and marketing usually need no package work. For a client-reported behavior or a dependency outside the map, use `--all` for every commit and net changed path. Open an individual commit with `git -C "$upstream_repo" show --find-renames <sha>` to see its companion files. |
+| New component directories | Inspect new root directories and new immediate children of `apps/`, `apps/server/src/`, `packages/`, `infra/` and `evals/`. Promote relevant owners into the path list, then rerun the same range. Git-detected renames show both names when either side matches a focused path. |
+
+File sections show the net difference between the two trees. Commit lists also surface work introduced and reverted inside the interval. The map prioritizes locations. Features introduced entirely in existing unwatched files require the full-repository view, changed imports or upstream release notes to discover. Edit the first applicable section when an owner moves. [Watch paths](upstream-watch.paths)
 
 To browse newer commits on GitHub, start with the live histories for the component you maintain. [Engine history](https://github.com/pingdotgg/t3code/commits/main/apps/server/src/orchestration-v2) · [Agent tool history](https://github.com/pingdotgg/t3code/commits/main/apps/server/src/mcp) · [Driver registration history](https://github.com/pingdotgg/t3code/commits/main/apps/server/src/provider/builtInDrivers.ts)
 
@@ -16,7 +44,7 @@ Paths in the middle column are relative to the linked directories. Most engine s
 | SQLite, deduplication and restart behavior | In the [engine][apps/server/src/orchestration-v2], read `EventSink`, `EventStore`, `ProjectionStore`, `CommandReceiptStore`, `EffectOutbox`, `EffectWorker` and `ProviderRuntimeRecoveryService`. Read [persistence][apps/server/src/persistence] for `Migrations/`, migration registration and database initialization. Also watch [the SQLite worker][packages/shared/src/nodeSqliteClient.ts] and [legacy import][apps/server/src/orchestration-v2/legacy]. | Compare transactions, replay-safe effect kinds and process-bound effects. Upgrade a copy of an old database. Retry a committed command and simulate process loss around provider I/O. Check for duplicate turns, missing results and incorrect terminal states. |
 | Provider calls, streaming events, questions and approvals | In the [engine][apps/server/src/orchestration-v2], follow `ProviderSessionManager` → `ProviderTurnStartService` → driver adapter → `ProviderEventIngestor` and `ProviderCommitBatch`. `RuntimeRequestService` and `ProviderTurnControlService` handle responses and controls. | Replay the affected protocol frames through the real adapter. Compare output order, pending request IDs, callback delivery, cancellation and final state. |
 | Agents finding, messaging or delegating to each other | [OrchestratorMcpService.ts][apps/server/src/mcp/OrchestratorMcpService.ts] implements agent operations. [Toolkits][apps/server/src/mcp/toolkits] declare tools in `tools.ts` and bind them in `handlers.ts`. Read [threadAccess.ts][apps/server/src/mcp/threadAccess.ts], [McpSessionRegistry.ts][apps/server/src/mcp/McpSessionRegistry.ts] and [model-facing instructions][packages/provider-core/src/server/orchestrationInstructions.ts] together. | Exercise peer send/reply and parent-owned delegation through a scoped agent. Check the advertised schema and tool availability, sender provenance, duplicate request handling, and denial for another thread or an expired caller. |
-| Child completion, status and waking a parent | In the [engine][apps/server/src/orchestration-v2], inspect `RunFinalizationService`, `NotificationMailbox`, `DelegatedTaskQuestionReactor`, `NativeChildWorkQuery` and `ThreadSettlementService`. Both client and server depend on [pending background work][packages/shared/src/orchestrationV2PendingBackgroundWork.ts]. | Let a parent finish its turn before the child. Check what status a host observes, when the parent wakes, which run owns the result, and when a delivery is acknowledged. Include a native child and a T3-delegated child. |
+| Child completion, status and waking a parent | In the [engine][apps/server/src/orchestration-v2], inspect `RunFinalizationService`, `NotificationMailbox`, `DelegatedTaskQuestionReactor`, `NativeChildWorkQuery` and `ThreadSettlementService`. Both client and server depend on [pending background work][packages/shared/src/orchestrationV2PendingBackgroundWork.ts]. | Let a parent finish its turn before the child. Check what status a host observes, when the parent wakes, which run owns the result, and when a delivery is acknowledged. Include a native child and a child created through Huggler delegation. |
 | Resume, provider switch, fork, merge and rollback | In the [engine][apps/server/src/orchestration-v2], follow `ProviderContinuationService`, `ProviderSwitchService`, `ThreadForkService`, `ContextHandoffService`, `ContextHandoffDelivery` and `CheckpointRollbackService`. [Checkpointing][apps/server/src/checkpointing] owns the workspace side. | Compare retained conversation, continuation identity and actual files after a transfer or rewind. Exercise native and portable paths plus a refusal to restore a shared checkout. |
 | Status in a second application, history and reconnects | [ws.ts][apps/server/src/ws.ts] and [RPC authorization][apps/server/src/auth/RpcAuthorization.ts] expose scoped operations. In the [engine][apps/server/src/orchestration-v2], inspect `ShellStream`, `ThreadStream`, `WireProjection`, `CommandOutputHub` and `http.ts`. [Client state][packages/client-runtime/src/state] contains the consuming reducers, snapshot readers and history merge tests. | Compare a fresh snapshot with state reconstructed from deltas. Disconnect, resume with a recent cursor, then try an expired cursor and page older history. Verify both authorization and the status the app renders. |
 
@@ -44,51 +72,23 @@ A new driver registration calls for a new inventory row, install/status check an
 | Tests, recordings and intended behavior | [Engine testkit and fixtures][apps/server/src/orchestration-v2/testkit], [shared replay utilities][packages/provider-testing], [capture scripts][apps/server/scripts], [tool-use evals][evals/mcp-tool-use] and [architecture notes][docs/orchestration-v2]. | Preserve the recorded inputs and expected provider calls. At this revision Antigravity has adapter/protocol tests but lacks a shared replay-fixture runner entry. Capture that gap explicitly when qualifying it. |
 | npm distribution | [Server package][apps/server/package.json], [bundler][apps/server/vite.config.ts], [workspace dependency pins][pnpm-workspace.yaml], [lockfile][pnpm-lock.yaml], [patches][patches] and [release tooling][scripts]. | Compare exported types, bundled worker/bridge/extension assets, runtime version constraints and notices. Install the resulting tarball outside the monorepo and exercise the changed driver or host. |
 
-## Review changes since the last package update
+## Adapt and merge a relevant change
 
-Run the following in Bash or Zsh from the **package checkout**. Set `t3_repo` to your T3 Code clone. On the first review, use the analysis SHA below. On later reviews, use the last **reviewed** upstream SHA and carry forward the list of deferred changes. Keep a separate record of the last package release that incorporated each change.
-
-```bash
-watch_file="$(git rev-parse --show-toplevel)/docs/t3code-watch.paths"
-t3_repo="/Users/mrlightful/Projects/Personal/t3code"
-base=338352dee2f43079482e054e8229a2ba055641d9
-
-git -C "$t3_repo" fetch origin
-candidate="$(git -C "$t3_repo" rev-parse --verify 'refs/remotes/origin/main^{commit}')"
-git -C "$t3_repo" merge-base --is-ancestor "$base" "$candidate"
-```
-
-Continue after the ancestry check returns success. If it fails, verify the remote and previous SHA and inspect the divergence before selecting a new baseline. Fetching the remote-tracking branch works with local working-tree edits and leaves the checkout at its current revision.
-
-```bash
-watch_specs=()
-while IFS= read -r spec; do
-  case "$spec" in
-    ''|'#'*) continue ;;
-  esac
-  watch_specs+=("$spec")
-done < "$watch_file"
-
-git -C "$t3_repo" log --oneline "$base..$candidate" -- "${watch_specs[@]}"
-git -C "$t3_repo" diff --find-renames --name-status "$base" "$candidate" -- "${watch_specs[@]}"
-git -C "$t3_repo" diff --find-renames --name-status --diff-filter=ADR "$base" "$candidate"
-```
-
-The first command after the loop lists candidate commits. The second shows the net watched changes. The third scans the **whole repository** for added, deleted or renamed paths. Use it to spot a new driver family, a service moved out of the server, or fixtures added under a new root. Update the path list when ownership moves. The list intentionally includes the server and provider trees broadly so new siblings are picked up. Presentation-only edits elsewhere in the web, mobile and desktop clients generally fall outside this filter. For a change first reported in a client, inspect that client's path history directly.
-
-For each relevant commit, read the whole patch with `git -C "$t3_repo" show --find-renames <commit>`, replacing `<commit>` with the SHA from the log. Follow changed tests and imports outside the watch list. Compare the resulting behavior to a row in the [inventory](parity-inventory.md) and run the corresponding [extraction acceptance scenario](extraction-plan.md) against the candidate and the installed package. For wire, storage or shared protocol changes, include old data or another affected driver.
-
-Record the **upstream SHA, affected capability, disposition, package change or reason, and regression test**. Useful dispositions are *ported*, *already covered*, *host-only* and *deferred*. Link a deferred item to its outstanding work. Advance the review SHA after accounting for the range. Update the package's claimed parity baseline only to the extent supported by passing comparisons and documented exceptions.
+1. **Identify the observable change.** Open the full upstream patch. Find the assertion that distinguishes the old and new behavior and the identity that observes it (host, calling agent, parent or child). Look up the matching command, event, tool or integration. [Parity inventory](parity-inventory.md)
+2. **Follow the behavior across boundaries.** Check the contract and handler, adapter and replay fixture, or writer, projection and migration as applicable. If upstream only changes presentation, check whether the existing SDK already returns the underlying data. A tool description can change how an agent behaves even when the schema stays identical.
+3. **Port a coherent patch.** Record the upstream commit and the corresponding Huggler file or API in the package change. Apply the [Huggler naming conventions](sdk-proposal.md#naming) to new tools, prompts, files and exports. Preserve established Huggler names when upstream renames a component. Carry across self-contained code and its tests where the owners still align. Adapt server globals, paths, dependency injection and UI calls to the SDK or host surface where they differ. Bundle dependent upstream commits when a later fix corrects the first one. If implementation of that surface is still pending, add the new assertion to its extraction task.
+4. **Verify at the consumer boundary.** Run the upstream regression at the candidate. Drive the same observable case through the package and compare the result. Include prior persisted data for migrations, a second adapter for a shared protocol change, or a clean tarball install for dependency/asset changes. Record the package test and outcome with the patch. [Acceptance scenarios](extraction-plan.md)
+5. **Close the review interval.** In the package change or review notes, record the range, capability, and disposition (*ported*, *already covered*, *host-only* or *deferred*) with the package commit, test or reason. Set `reviewedThrough` to the full candidate SHA after accounting for the interval. For outstanding work, append an object to `deferred` with `upstream` (full commit SHA) and `followUp` (capability plus issue, task link or concrete pending check). The command prints those entries on subsequent runs, including empty ranges. Remove an entry once its disposition is recorded. Release parity claims use passing package evidence. [Review record](upstream-review.json)
 
 ### Worked example — a background child delegates after its parent finishes
 
 Upstream commit `3a60d0996a` changed which run can own a delegation. A native background subagent can still be working after its parent's foreground turn completes. The fix uses the matching pending background subagent and the latest owning run when the caller has no active foreground run. The registration and name of `delegate_task` stayed the same. [Upstream patch](https://github.com/pingdotgg/t3code/commit/3a60d0996ae483952aec13a1ec0d8654f17c1421)
 
-With the same `t3_repo` and `watch_specs` as above, compare the two views of this commit.
+To reproduce the classification and inspect the full patch, use the clone from the quick start.
 
-```bash
-git -C "$t3_repo" diff --name-only '3a60d0996a^' 3a60d0996a -- "${watch_specs[@]}"
-git -C "$t3_repo" diff --name-only '3a60d0996a^' 3a60d0996a
+```sh
+python3 scripts/review-upstream.py "$upstream_repo" --base '3a60d0996a^' --to 3a60d0996a
+git -C "$upstream_repo" show --find-renames 3a60d0996a
 ```
 
 Five files match the watch list — `OrchestratorMcpService.ts`, `threadAccess.ts`, `Orchestrator.ts`, `orchestrationV2PendingBackgroundWork.ts` and `TaskCancelNativeSubagent.integration.test.ts`. The whole diff also shows changes to the web timeline logic and its test. Port the caller check, owning-run selection and shared background-state predicate together. Use the regression named **“a native background subagent delegates after its parent's run completes”** to verify the package, then compare what a client shows for that child. [Upstream regression test][apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts]
@@ -164,3 +164,5 @@ Five files match the watch list — `OrchestratorMcpService.ts`, `threadAccess.t
 [pnpm-lock.yaml]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/pnpm-lock.yaml
 [scripts]: https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9/scripts
 [apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts
+
+[background-scenario]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/scripts/scenarios/opencode-background-result-wakes-thread.e2e.ts

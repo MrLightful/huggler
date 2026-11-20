@@ -1,6 +1,6 @@
 # How T3 Code orchestrates agents
 
-This analysis follows the server implementation at [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9). Source and test inspection establish the baseline. Live harness behavior, platform support and installability of an extracted package still require execution. The [package overview](../README.md) presents the proposed API. The [inventory](parity-inventory.md) indexes wire names.
+This analysis follows the server implementation at [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9). Source and test inspection establish the baseline. Live harness behavior, platform support and installability of an extracted package still require execution. File paths, symbols and tool names in this analysis identify upstream components. Use the [Huggler SDK proposal](sdk-proposal.md#naming) for package interfaces and the [parity inventory](parity-inventory.md#agent-facing-tools) for the upstream-to-Huggler tool mapping.
 
 ## The extraction boundary
 
@@ -33,7 +33,7 @@ flowchart TD
 | `orchestration-v2/runtimeLayer.ts` → `layer` | The command processor, management service, session manager, event and output services, worker and recovery share one Effect resource scope. Reuse the same event sink and viewer registry for reads and writes. This layer already takes dependencies on MCP App context and preview activity during run execution. A minimal host needs an implementation for the no-app or no-preview case. [Runtime composition][src-3] |
 | `orchestration-v2/runtimeLayer.ts` → `layerProduction` | This layer adds thread launch, managed folders, worktree sync, schedules, guests, secrets, continuation and usage-limit workers, imports, cleanup and pruning. Move root-workspace launch into the first SDK milestone. Add the remaining workers alongside the features whose state they maintain. [Runtime composition][src-3] |
 | `provider-core/server/ProviderHost` → `ProviderHostLive` | The provider packages already depend on a host interface. Implement it for the SDK using explicit paths, settings snapshots and subscriptions, credential bindings, background policy, compatibility lookup and attachment resolution. The server's implementation shows which readiness and port-discovery hooks are optional. [Host interface][src-55] · [Server implementation][src-83] |
-| `apps/server/src/server.ts` | Read the production wiring here to find dependencies still supplied from outside the orchestration directory. Trace the resource owner of each one. The SDK's `open` must acquire those required by its profile, share them with the transports and release them on `close`, even when startup fails partway. [Server assembly][src-105] |
+| `apps/server/src/server.ts` | Read the production wiring here to find dependencies still supplied from outside the orchestration directory. Trace the resource owner of each one. Huggler’s `openHuggler` must acquire those required by its profile, share them with the transports and release them on `close`, even when startup fails partway. [Server assembly][src-105] |
 
 ### Follow one message end to end
 
