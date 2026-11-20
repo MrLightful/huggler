@@ -19,8 +19,49 @@ id!(ThreadId);
 id!(RunId);
 id!(MessageId);
 id!(ProjectId);
+id!(RequestId);
 id!(NativeThreadId);
 id!(NativeTurnId);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Provider {
+    #[default]
+    Codex,
+    ClaudeAgent,
+}
+
+impl Provider {
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::ClaudeAgent => "claudeAgent",
+        }
+    }
+    pub(crate) fn from_key(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "codex" => Ok(Self::Codex),
+            "claudeAgent" => Ok(Self::ClaudeAgent),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionOption {
+    pub option_id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PermissionRequest {
+    pub id: RequestId,
+    pub run_id: RunId,
+    pub tool_call: serde_json::Value,
+    pub options: Vec<PermissionOption>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Project {
@@ -35,6 +76,12 @@ pub enum Action {
         project: ProjectId,
         name: String,
         model: Option<String>,
+    },
+    LaunchProvider {
+        project: ProjectId,
+        name: String,
+        model: Option<String>,
+        provider: Provider,
     },
     Send {
         text: String,
@@ -65,12 +112,13 @@ pub enum RunStatus {
     Starting,
     Running,
     Waiting,
+    Interrupted,
     Completed,
     Failed,
 }
 impl RunStatus {
     pub fn terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed)
+        matches!(self, Self::Completed | Self::Failed | Self::Interrupted)
     }
 }
 
@@ -102,6 +150,8 @@ pub struct ThreadSummary {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Thread {
+    pub provider: Provider,
+    pub permissions: Vec<PermissionRequest>,
     pub id: ThreadId,
     pub project: ProjectId,
     pub name: String,
@@ -115,10 +165,25 @@ pub struct Thread {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
     Launched,
-    ModelSelected { model: Option<String> },
-    Bound { native_thread: NativeThreadId },
-    Run { run: Run },
-    Message { message: Message },
+    PermissionRequested {
+        request: PermissionRequest,
+    },
+    PermissionClosed {
+        id: RequestId,
+        option: Option<String>,
+    },
+    ModelSelected {
+        model: Option<String>,
+    },
+    Bound {
+        native_thread: NativeThreadId,
+    },
+    Run {
+        run: Run,
+    },
+    Message {
+        message: Message,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
@@ -139,6 +204,8 @@ fn display_error<E: fmt::Display, S: serde::Serializer>(
 pub enum Error {
     #[error("state directory already has a runtime owner")]
     AlreadyOpen,
+    #[error("provider turn interrupted")]
+    Interrupted,
     #[error("runtime is closed")]
     Closed,
     #[error(
@@ -175,7 +242,7 @@ pub enum Error {
         #[serde(serialize_with = "display_error")]
         std::io::Error,
     ),
-    #[error("Codex: {0}")]
+    #[error("provider: {0}")]
     Provider(String),
     #[error("worker: {0}")]
     Worker(String),

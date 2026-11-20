@@ -1,95 +1,55 @@
 //! Codex app-server over newline-delimited JSON-RPC on a managed child's stdio.
-use crate::{Error, NativeThreadId, NativeTurnId, Result};
-use serde_json::{Value, json};
-use std::{collections::VecDeque, path::PathBuf, process::Stdio, time::Duration};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
-    process::{Child, ChildStdin, ChildStdout, Command},
-    sync::watch,
-    time::timeout,
+use super::{
+    Permissions, Turn, Update,
+    rpc::{Rpc, protocol},
 };
+use crate::{
+    Error, NativeThreadId, NativeTurnId, PermissionOption, PermissionRequest, RequestId, Result,
+};
+use serde_json::{Value, json};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
+use tokio::sync::watch;
 
 #[derive(Clone, Debug)]
 pub struct CodexOptions {
     pub executable: PathBuf,
+    /// Route explicit command or permission requests to the host.
+    pub request_approvals: bool,
 }
 
 impl Default for CodexOptions {
     fn default() -> Self {
         Self {
             executable: "codex".into(),
+            request_approvals: false,
         }
     }
 }
 
-pub(crate) struct Turn {
-    pub cwd: PathBuf,
-    pub name: String,
-    pub text: String,
-    pub model: Option<String>,
-    pub resume: Option<NativeThreadId>,
-}
-
-pub(crate) enum Update {
-    Bound(NativeThreadId),
-    Started(NativeTurnId),
-    Finalizing(String),
-}
-
 struct Client {
-    child: Child,
-    input: Option<ChildStdin>,
-    output: Lines<BufReader<ChildStdout>>,
+    rpc: Rpc,
     next_id: u64,
     early: VecDeque<Value>,
 }
 
-fn protocol(message: impl Into<String>) -> Error {
-    Error::Provider(message.into())
-}
-
 impl Client {
-    fn spawn(options: &CodexOptions, turn: &Turn) -> Result<Self> {
-        let mut command = Command::new(&options.executable);
-        command
-            .arg("app-server")
-            .current_dir(&turn.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        command.process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|e| protocol(format!("launch {}: {e}", options.executable.display())))?;
-        Ok(Self {
-            input: child.stdin.take(),
-            output: BufReader::new(child.stdout.take().unwrap()).lines(),
-            child,
-            next_id: 1,
-            early: VecDeque::new(),
-        })
-    }
-
-    async fn write(&mut self, frame: Value) -> Result<()> {
-        let mut line = serde_json::to_vec(&frame)?;
-        line.push(b'\n');
-        self.input.as_mut().unwrap().write_all(&line).await?;
-        Ok(())
-    }
-
     async fn read(&mut self) -> Result<Value> {
         loop {
-            let line = self
-                .output
-                .next_line()
-                .await?
-                .ok_or_else(|| protocol("app-server stdout closed before turn completion"))?;
-            let frame: Value = serde_json::from_str(&line)
-                .map_err(|e| protocol(format!("invalid JSON-RPC frame: {e}")))?;
+            let frame = self.rpc.read().await?;
             if frame.get("method").is_some() && frame.get("id").is_some() {
-                self.write(json!({"id":frame["id"],"error":{"code":-32601,"message":"Host request unsupported"}})).await?;
+                if matches!(
+                    frame["method"].as_str(),
+                    Some(
+                        "item/commandExecution/requestApproval"
+                            | "item/permissions/requestApproval"
+                    )
+                ) {
+                    return Ok(frame);
+                }
+                self.rpc.write(json!({"id":frame["id"],"error":{"code":-32601,"message":"Host request unsupported"}})).await?;
                 continue;
             }
             return Ok(frame);
@@ -99,11 +59,12 @@ impl Client {
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
-        self.write(json!({"id":id,"method":method,"params":params}))
+        self.rpc
+            .write(json!({"id":id,"method":method,"params":params}))
             .await?;
         loop {
             let frame = self.read().await?;
-            if frame.get("id").is_some() {
+            if frame.get("id").is_some() && frame.get("method").is_none() {
                 if frame["id"] != id {
                     return Err(protocol(format!("unexpected reply to {method}")));
                 }
@@ -118,7 +79,12 @@ impl Client {
             if method == "turn/start"
                 && matches!(
                     frame["method"].as_str(),
-                    Some("item/completed" | "turn/completed")
+                    Some(
+                        "item/completed"
+                            | "turn/completed"
+                            | "item/commandExecution/requestApproval"
+                            | "item/permissions/requestApproval"
+                    )
                 )
             {
                 self.early.push_back(frame);
@@ -126,12 +92,18 @@ impl Client {
         }
     }
 
-    async fn converse(&mut self, turn: Turn, update: impl Fn(Update) -> Result<()>) -> Result<()> {
+    async fn converse(
+        &mut self,
+        turn: Turn,
+        update: impl Fn(Update) -> Result<()>,
+        request_approvals: bool,
+        mut permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
+    ) -> Result<()> {
         self.request("initialize", json!({
             "clientInfo":{"name":"huggler","title":"Huggler","version":env!("CARGO_PKG_VERSION")},
             "capabilities":{"experimentalApi":true,"optOutNotificationMethods":["turn/diff/updated"]}
         })).await?;
-        self.write(json!({"method":"initialized"})).await?;
+        self.rpc.write(json!({"method":"initialized"})).await?;
         let read_config = json!({"cwd":turn.cwd,"includeLayers":false});
         let config = self.request("config/read", read_config.clone()).await?;
         let model = turn
@@ -142,6 +114,10 @@ impl Client {
             "tools.update_plan.enabled":true, "mcp_optional_startup_grace_ms":10000,
             "features.concurrent_reasoning_summaries":true
         }});
+        if request_approvals {
+            session["approvalPolicy"] = json!("on-request");
+            session["sandbox"] = json!("read-only");
+        }
         if let Some(model) = model {
             session["model"] = json!(model);
         }
@@ -170,6 +146,9 @@ impl Client {
         self.request("config/read", read_config).await?;
         let mut params = json!({"threadId":thread, "cwd":turn.cwd, "input":[{"type":"text","text":turn.text}],
             "approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly"},"summary":"auto"});
+        if request_approvals {
+            params["approvalPolicy"] = json!("on-request");
+        }
         if let Some(model) = model.or_else(|| response["model"].as_str()) {
             params["model"] = json!(model);
             params["collaborationMode"] = json!({"mode":"default","settings":{"model":model}});
@@ -179,14 +158,68 @@ impl Client {
             .pointer("/turn/id")
             .and_then(Value::as_str)
             .ok_or_else(|| protocol("missing native turn ID"))?;
-        update(Update::Started(NativeTurnId(id.to_owned())))?;
+        update(Update::Started(Some(NativeTurnId(id.to_owned()))))?;
         let mut answer = None;
+        let mut pending = HashMap::new();
         loop {
             let frame = match self.early.pop_front() {
                 Some(frame) => frame,
-                None => self.read().await?,
+                None => tokio::select! {
+                    frame = self.read() => frame?,
+                    decision = permissions.decisions.recv() => {
+                        let (request,option) = decision.ok_or(Error::Closed)?;
+                        let (wire_id, profile): (Value,Option<Value>) = pending.remove(&request).ok_or_else(||protocol("expired approval"))?;
+                        let result = match profile {
+                            Some(profile) => json!({"permissions":if option=="accept" {profile} else {json!({})},"scope":"turn"}),
+                            None => json!({"decision":option}),
+                        };
+                        self.rpc.write(json!({"id":wire_id,"result":result})).await?;
+                        continue;
+                    }
+                },
             };
             let p = &frame["params"];
+            if let Some(wire_id) = frame.get("id") {
+                if !request_approvals || p["threadId"] != thread || p["turnId"] != id {
+                    self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"No matching interactive run"}})).await?;
+                    continue;
+                }
+                let profile = (frame["method"] == "item/permissions/requestApproval")
+                    .then(|| p["permissions"].clone());
+                let request = RequestId(uuid::Uuid::new_v4().to_string());
+                let title = if profile.is_some() {
+                    "Grant permissions for this turn"
+                } else {
+                    "Run command outside the sandbox"
+                };
+                let options = [
+                    ("accept", "Allow", "allow_once"),
+                    ("decline", "Deny", "reject_once"),
+                    ("cancel", "Deny and stop turn", "reject_once"),
+                ]
+                .into_iter()
+                .filter(|(option, _, _)| {
+                    p["availableDecisions"]
+                        .as_array()
+                        .map_or(*option != "cancel", |allowed| {
+                            allowed.iter().any(|v| v == *option)
+                        })
+                })
+                .map(|(id, name, kind)| PermissionOption {
+                    option_id: id.into(),
+                    name: name.into(),
+                    kind: kind.into(),
+                })
+                .collect();
+                pending.insert(request.clone(), (wire_id.clone(), profile));
+                (permissions.publish)(PermissionRequest {
+                    id: request,
+                    run_id: permissions.run.clone(),
+                    tool_call: json!({"title":title,"rawInput":p}),
+                    options,
+                })?;
+                continue;
+            }
             if p["threadId"] != thread {
                 continue;
             }
@@ -199,6 +232,9 @@ impl Client {
                     answer = p["item"]["text"].as_str().map(str::to_owned);
                 }
                 Some("turn/completed") if p["turn"]["id"] == id => {
+                    if p["turn"]["status"] == "interrupted" {
+                        return Err(Error::Interrupted);
+                    }
                     if p["turn"]["status"] != "completed" {
                         return Err(protocol(format!(
                             "turn {}: {}",
@@ -213,26 +249,6 @@ impl Client {
             }
         }
     }
-
-    async fn shutdown(&mut self) -> Result<()> {
-        self.input.take();
-        match timeout(Duration::from_secs(2), self.child.wait()).await {
-            Ok(status) => {
-                status?;
-            }
-            Err(_) => {
-                #[cfg(unix)]
-                if let Some(pid) = self.child.id() {
-                    // spawn() gives the managed app-server its own process group.
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    }
-                }
-                self.child.kill().await?;
-            }
-        }
-        Ok(())
-    }
 }
 
 pub(crate) async fn execute(
@@ -240,16 +256,21 @@ pub(crate) async fn execute(
     turn: Turn,
     mut stop: watch::Receiver<bool>,
     update: impl Fn(Update) -> Result<()>,
+    permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
 ) -> Result<()> {
     if *stop.borrow() {
         return Err(Error::Closed);
     }
-    let mut client = Client::spawn(&options, &turn)?;
+    let mut client = Client {
+        rpc: Rpc::spawn(&options.executable, &["app-server"], &turn)?,
+        next_id: 1,
+        early: VecDeque::new(),
+    };
     let result = tokio::select! {
         biased;
         _ = stop.wait_for(|v| *v) => Err(Error::Closed),
-        answer = client.converse(turn, update) => answer,
+        answer = client.converse(turn, update,options.request_approvals,permissions) => answer,
     };
-    client.shutdown().await?;
+    client.rpc.shutdown().await?;
     result
 }

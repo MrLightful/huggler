@@ -19,3 +19,6 @@ article:first-child { margin-top: 1.6rem; }
 article[data-role=assistant] { border-color: #275644; }
 article p { margin: .35rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 #error { color: #912f26; }
+#permissions fieldset { margin-block: 1rem; }
+#permissions button { margin: .25rem; }
+#permissions pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }

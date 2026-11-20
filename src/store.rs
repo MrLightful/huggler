@@ -1,6 +1,6 @@
 use crate::{
     contracts::*,
-    providers::codex::{Turn, Update},
+    providers::{Turn, Update},
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use std::{
@@ -22,6 +22,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         "waiting" => RunStatus::Waiting,
         "completed" => RunStatus::Completed,
         "failed" => RunStatus::Failed,
+        "interrupted" => RunStatus::Interrupted,
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
     Ok(Run {
@@ -110,8 +111,12 @@ impl Database {
         db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;")?;
         let tx = db.transaction()?;
         match tx.query_row("PRAGMA user_version", [], |r| r.get(0))? {
-            0 => tx.execute_batch(include_str!("../migrations/001.sql"))?,
-            1 => {}
+            0 => {
+                tx.execute_batch(include_str!("../migrations/001.sql"))?;
+                tx.execute_batch(include_str!("../migrations/002.sql"))?;
+            }
+            1 => tx.execute_batch(include_str!("../migrations/002.sql"))?,
+            2 => {}
             n => return Err(Error::SchemaVersion(n)),
         }
         // Both pending and claimed starts belong to the old process. A send might
@@ -189,7 +194,12 @@ impl Database {
                 r.get::<_, Option<String>>(0)
             })
             .optional()?;
-        if selection.is_none() && !matches!(cmd.action, Action::Launch { .. }) {
+        if selection.is_none()
+            && !matches!(
+                cmd.action,
+                Action::Launch { .. } | Action::LaunchProvider { .. }
+            )
+        {
             return Err(Error::NotFound(thread.to_string()));
         }
         match &cmd.action {
@@ -197,15 +207,25 @@ impl Database {
                 project,
                 name,
                 model,
+            }
+            | Action::LaunchProvider {
+                project,
+                name,
+                model,
+                ..
             } => {
+                let provider = match cmd.action {
+                    Action::LaunchProvider { provider, .. } => provider,
+                    _ => Provider::Codex,
+                };
                 if name.trim().is_empty() {
                     return Err(Error::Invalid("empty thread name".into()));
                 }
                 if selection.is_some() {
                     return Err(Error::Invalid("thread already exists".into()));
                 }
-                let n = tx.execute("INSERT INTO thread(id,name,model,project) SELECT ?,?,?,id FROM project WHERE id=?",
-                    params![thread.0,name,model,project.0])?;
+                let n = tx.execute("INSERT INTO thread(id,name,model,provider,project) SELECT ?,?,?,?,id FROM project WHERE id=?",
+                    params![thread.0,name,model,provider.key(),project.0])?;
                 if n == 0 {
                     return Err(Error::NotFound(project.to_string()));
                 }
@@ -265,13 +285,14 @@ impl Database {
     pub fn claim(&mut self, id: &RunId) -> Result<Turn> {
         let tx = self.db.transaction()?;
         let turn = tx.query_row(
-            "SELECT p.root,t.name,m.text,e.model,t.native_thread FROM run r
+            "SELECT p.root,t.name,m.text,e.model,t.native_thread,t.provider FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
              JOIN message m ON m.run_id=r.id WHERE r.id=? AND m.role='user'",
             [&id.0],
             |r| {
                 Ok(Turn {
+                    provider: Provider::from_key(&r.get::<_, String>(5)?)?,
                     cwd: r.get::<_, String>(0)?.into(),
                     name: r.get(1)?,
                     text: r.get(2)?,
@@ -306,7 +327,7 @@ impl Database {
             Update::Started(turn) => {
                 tx.execute(
                     "UPDATE run SET status='running',native_turn=? WHERE id=?",
-                    params![turn.0, id.0],
+                    params![turn.map(|t| t.0), id.0],
                 )?;
                 run_event(&tx, thread, id)?;
             }
@@ -320,6 +341,52 @@ impl Database {
         Ok(())
     }
 
+    pub fn request_permission(
+        &mut self,
+        thread: &ThreadId,
+        request: PermissionRequest,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "INSERT INTO permission(id,run_id,request) VALUES(?,?,?)",
+            params![
+                request.id.0,
+                request.run_id.0,
+                serde_json::to_string(&request)?
+            ],
+        )?;
+        event(&tx, thread, Change::PermissionRequested { request })?;
+        Ok(tx.commit()?)
+    }
+
+    pub fn decide(
+        &mut self,
+        thread: &ThreadId,
+        run: &RunId,
+        id: &RequestId,
+        option: &str,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        let request: String = tx.query_row("SELECT p.request FROM permission p JOIN run r ON r.id=p.run_id WHERE p.id=? AND r.id=? AND r.thread_id=? AND p.expired=0 AND p.decision IS NULL",params![id.0,run.0,thread.0],|r|r.get(0)).optional()?.ok_or_else(|| Error::NotFound("pending permission".into()))?;
+        let request: PermissionRequest = serde_json::from_str(&request)?;
+        if !request.options.iter().any(|o| o.option_id == option) {
+            return Err(Error::Invalid("unknown permission option".into()));
+        }
+        tx.execute(
+            "UPDATE permission SET decision=? WHERE id=?",
+            params![option, id.0],
+        )?;
+        event(
+            &tx,
+            thread,
+            Change::PermissionClosed {
+                id: id.clone(),
+                option: Some(option.into()),
+            },
+        )?;
+        Ok(tx.commit()?)
+    }
+
     fn finish_tx(
         tx: &Transaction<'_>,
         thread: &ThreadId,
@@ -328,11 +395,20 @@ impl Database {
     ) -> Result<()> {
         // Waiting and the final answer commit together. A cleanup error or a
         // process exit after this point cannot undo provider completion.
+        let pending = tx
+            .prepare("SELECT id FROM permission WHERE run_id=? AND expired=0 AND decision IS NULL")?
+            .query_map([&id.0], |r| Ok(RequestId(r.get(0)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for id in pending {
+            tx.execute("UPDATE permission SET expired=1 WHERE id=?", [&id.0])?;
+            event(tx, thread, Change::PermissionClosed { id, option: None })?;
+        }
+        let interrupted = matches!(result, Err(Error::Interrupted));
         let error = result.err().map(|e| e.to_string());
         tx.execute(
-            "UPDATE run SET status=CASE WHEN status='waiting' OR ?1 IS NULL THEN 'completed' ELSE 'failed' END,
+            "UPDATE run SET status=CASE WHEN status='waiting' OR ?1 IS NULL THEN 'completed' WHEN ?3 THEN 'interrupted' ELSE 'failed' END,
                  error=CASE WHEN status='waiting' THEN NULL ELSE ?1 END WHERE id=?2",
-            params![error, id.0],
+            params![error, id.0,interrupted],
         )?;
         run_event(tx, thread, id)?;
         tx.execute("DELETE FROM turn_effect WHERE run_id=?", [&id.0])?;
@@ -362,10 +438,12 @@ impl Database {
         let mut thread = self
             .db
             .query_row(
-                "SELECT project,name,model,native_thread FROM thread WHERE id=?",
+                "SELECT project,name,model,native_thread,provider FROM thread WHERE id=?",
                 [&id.0],
                 |r| {
                     Ok(Thread {
+                        provider: Provider::from_key(&r.get::<_, String>(4)?)?,
+                        permissions: vec![],
                         id: id.clone(),
                         project: ProjectId(r.get(0)?),
                         name: r.get(1)?,
@@ -405,6 +483,7 @@ impl Database {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
+        thread.permissions = self.db.prepare("SELECT request FROM permission p JOIN run r ON p.run_id=r.id WHERE r.thread_id=? AND p.expired=0 AND p.decision IS NULL ORDER BY p.rowid")?.query_map([&id.0], |r|r.get::<_,String>(0))?.map(|row|Ok(serde_json::from_str(&row?)?)).collect::<Result<_>>()?;
         thread.cursor = self.db.query_row(
             "SELECT coalesce(max(sequence),0) FROM event WHERE thread_id=?",
             [&id.0],
@@ -468,7 +547,11 @@ mod tests {
         let (receipt, _) = db.dispatch(&send)?;
         let run = receipt.run_id.as_ref().unwrap();
         db.claim(run)?;
-        db.update(&thread, run, Update::Started(NativeTurnId("turn".into())))?;
+        db.update(
+            &thread,
+            run,
+            Update::Started(Some(NativeTurnId("turn".into()))),
+        )?;
         db.update(&thread, run, Update::Finalizing("answer".into()))?;
         let waiting_cursor = db.read(&thread)?.cursor;
         drop(db);

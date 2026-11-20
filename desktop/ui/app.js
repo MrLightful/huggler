@@ -20,21 +20,45 @@ function render() {
     const row = document.createElement("article");
     row.dataset.role = message.role;
     const who = document.createElement("strong");
-    who.textContent = message.role === "assistant" ? "Codex" : "You";
+    who.textContent = message.role === "assistant" ? (current.provider === "claudeAgent" ? "Claude" : "Codex") : "You";
     const text = document.createElement("p");
     text.textContent = message.text;
     row.append(who, text);
     return row;
   }));
+  el("permissions").replaceChildren(...current.permissions.map(request => {
+    const thread = current.id;
+    const panel = document.createElement("fieldset");
+    const title = document.createElement("legend");
+    title.textContent = request.tool_call.title || "Tool permission";
+    const details = document.createElement("pre");
+    details.textContent = JSON.stringify(request.tool_call.rawInput ?? request.tool_call, null, 2);
+    panel.append(title, details);
+    for (const option of request.options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.kind = option.kind;
+      button.textContent = option.name;
+      button.onclick = async () => {
+        panel.disabled = true;
+        try {
+          await invoke("respond_to_permission", {thread, run: request.run_id, request: request.id, option: option.optionId});
+        } catch (error) { report(error); panel.disabled = false; }
+      };
+      panel.append(button);
+    }
+    return panel;
+  }));
   el("status").textContent = run?.error || run?.status || "Ready";
   el("status").dataset.status = run?.status || "ready";
-  el("submit").disabled = busy || (run && !["completed", "failed"].includes(run.status));
+  el("submit").disabled = busy || (run && !["completed", "failed","interrupted"].includes(run.status));
 }
 async function view(id) {
   const version = ++generation;
   current = null;
   el("submit").disabled = true;
   el("messages").replaceChildren();
+  el("permissions").replaceChildren();
   el("status").textContent = "";
   el("status").dataset.status = "";
   const channel = new Channel();
@@ -45,6 +69,8 @@ async function view(id) {
       const { thread_id, change } = frame.value;
       if (!current || current.id !== thread_id) return;
       if (change.type === "message") current.messages.push(change.message);
+      if (change.type === "permission_requested") current.permissions.push(change.request);
+      if (change.type === "permission_closed") current.permissions = current.permissions.filter(p => p.id !== change.id);
       if (change.type === "run") {
         const index = current.runs.findIndex(run => run.id === change.run.id);
         if (index < 0) current.runs.push(change.run);
@@ -87,7 +113,7 @@ bind("launch", "submit", async () => {
   const project = await invoke("open_project", { root: el("root").value });
   const id = uuid();
   await invoke("dispatch", { command: { id: uuid(), thread_id: id,
-    action: { type: "launch", project: project.id, name: el("name").value, model: null } } });
+    action: { type: "launch_provider", provider: el("provider").value, project: project.id, name: el("name").value, model: null } } });
   await load(id);
 });
 bind("threads", "change", () => view(el("threads").value));

@@ -1,32 +1,42 @@
 use crate::{
     contracts::*,
-    providers::codex::{self, CodexOptions},
+    providers::{
+        claude_agent::{self, ClaudeAgentOptions},
+        codex::{self, CodexOptions},
+    },
     store::Database,
 };
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Command as Process,
     sync::{Arc, Mutex},
 };
-use tokio::{runtime::Handle, sync::watch, task::JoinSet};
+use tokio::{
+    runtime::Handle,
+    sync::{mpsc, watch},
+    task::JoinSet,
+};
 
 #[derive(Clone, Debug)]
 pub struct HugglerOptions {
     pub state_dir: PathBuf,
     pub codex: CodexOptions,
+    pub claude_agent: ClaudeAgentOptions,
 }
 impl HugglerOptions {
     pub fn new(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
             codex: CodexOptions::default(),
+            claude_agent: ClaudeAgentOptions::default(),
         }
     }
 }
 
 struct Shared {
     db: Mutex<Option<Database>>,
+    decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
     stop: watch::Sender<bool>,
@@ -44,16 +54,51 @@ impl Shared {
         f(db.as_mut().ok_or(Error::Closed)?)
     }
 
-    async fn execute(&self, codex: CodexOptions, thread: ThreadId, run: RunId) {
+    async fn execute(&self, options: HugglerOptions, thread: ThreadId, run: RunId) {
         let claim = self.access(|db| db.claim(&run));
         let result = match claim {
             Ok(turn) => {
-                codex::execute(codex, turn, self.stop.subscribe(), |update| {
-                    self.access(|db| db.update(&thread, &run, update))?;
+                let update = |change| {
+                    self.access(|db| db.update(&thread, &run, change))?;
                     self.changed.send_replace(());
                     Ok(())
-                })
-                .await
+                };
+                let (tx, decisions) = mpsc::unbounded_channel();
+                self.decisions.lock().unwrap().insert(run.clone(), tx);
+                let permissions = crate::providers::Permissions {
+                    run: run.clone(),
+                    decisions,
+                    publish: |request| {
+                        self.access(|db| db.request_permission(&thread, request))?;
+                        self.changed.send_replace(());
+                        Ok(())
+                    },
+                };
+                let result = match turn.provider {
+                    Provider::Codex => {
+                        codex::execute(
+                            options.codex,
+                            turn,
+                            self.stop.subscribe(),
+                            update,
+                            permissions,
+                        )
+                        .await
+                    }
+                    Provider::ClaudeAgent => {
+                        claude_agent::execute(
+                            &options.claude_agent,
+                            turn,
+                            serde_json::json!([]),
+                            self.stop.subscribe(),
+                            update,
+                            permissions,
+                        )
+                        .await
+                    }
+                };
+                self.decisions.lock().unwrap().remove(&run);
+                result
             }
             Err(e) => Err(e),
         };
@@ -70,7 +115,7 @@ impl Shared {
 /// The owner of a state directory. Share this handle via Arc inside the host.
 pub struct Huggler {
     shared: Arc<Shared>,
-    codex: CodexOptions,
+    options: HugglerOptions,
     handle: Handle,
     workers: Mutex<Option<JoinSet<()>>>,
     closed: watch::Sender<bool>,
@@ -79,17 +124,19 @@ pub struct Huggler {
 impl Huggler {
     /// Requires a Tokio runtime with I/O and time enabled.
     pub async fn open(options: HugglerOptions) -> Result<Self> {
-        let db = tokio::task::spawn_blocking(move || Database::open(&options.state_dir))
+        let dir = options.state_dir.clone();
+        let db = tokio::task::spawn_blocking(move || Database::open(&dir))
             .await
             .map_err(|e| Error::Worker(e.to_string()))??;
         Ok(Self {
             shared: Arc::new(Shared {
                 db: Mutex::new(Some(db)),
+                decisions: Mutex::default(),
                 fault: Mutex::default(),
                 changed: watch::channel(()).0,
                 stop: watch::channel(false).0,
             }),
-            codex: options.codex,
+            options,
             handle: Handle::current(),
             workers: Mutex::new(Some(JoinSet::new())),
             closed: watch::channel(false).0,
@@ -127,9 +174,9 @@ impl Huggler {
             self.shared.changed.send_replace(());
             if let Some(run) = receipt.run_id.clone() {
                 let shared = self.shared.clone();
-                let codex = self.codex.clone();
+                let options = self.options.clone();
                 workers.spawn_on(
-                    async move { shared.execute(codex, command.thread_id, run).await },
+                    async move { shared.execute(options, command.thread_id, run).await },
                     &self.handle,
                 );
             }
@@ -161,6 +208,25 @@ impl Huggler {
             thread_id: thread,
             action: Action::Send { text },
         })
+    }
+    /// Answer one live provider request on its owning thread and run.
+    pub fn respond_to_permission(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        id: &RequestId,
+        option: String,
+    ) -> Result<()> {
+        let decisions = self.shared.decisions.lock().unwrap();
+        let tx = decisions
+            .get(run)
+            .filter(|t| !t.is_closed())
+            .ok_or_else(|| Error::NotFound("live permission responder".into()))?;
+        self.shared
+            .access(|db| db.decide(thread, run, id, &option))?;
+        self.shared.changed.send_replace(());
+        tx.send((id.clone(), option))
+            .map_err(|_| Error::NotFound("live permission responder".into()))
     }
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {
         self.shared.access(|db| db.threads())

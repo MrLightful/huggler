@@ -1,5 +1,6 @@
 use huggler::{
-    Command, Event, Huggler, HugglerOptions, Project, Receipt, Thread, ThreadId, ThreadSummary,
+    Command, Event, Huggler, HugglerOptions, Project, Receipt, RequestId, RunId, Thread, ThreadId,
+    ThreadSummary,
 };
 use serde::Serialize;
 use std::{path::PathBuf, sync::Mutex};
@@ -30,6 +31,18 @@ async fn threads(host: State<'_, Host>) -> huggler::Result<Vec<ThreadSummary>> {
 #[tauri::command]
 async fn dispatch(host: State<'_, Host>, command: Command) -> huggler::Result<Receipt> {
     host.runtime.dispatch(command)
+}
+
+#[tauri::command]
+fn respond_to_permission(
+    host: State<'_, Host>,
+    thread: ThreadId,
+    run: RunId,
+    request: RequestId,
+    option: String,
+) -> huggler::Result<()> {
+    host.runtime
+        .respond_to_permission(&thread, &run, &request, option)
 }
 
 #[tauri::command]
@@ -75,8 +88,12 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let mut options = HugglerOptions::new(app.path().app_data_dir()?);
+            options.codex.request_approvals = true;
             if let Some(path) = std::env::var_os("HUGGLER_CODEX") {
                 options.codex.executable = path.into();
+            }
+            if let Some(path) = std::env::var_os("HUGGLER_CLAUDE_ACP") {
+                options.claude_agent.executable = path.into();
             }
             let runtime = tauri::async_runtime::block_on(Huggler::open(options))?;
             app.manage(Host {
@@ -89,6 +106,7 @@ fn main() {
             open_project,
             threads,
             dispatch,
+            respond_to_permission,
             subscribe,
             unsubscribe,
             quit

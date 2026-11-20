@@ -4,11 +4,13 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Completed through Stage 2.** An independent consumer of the packaged Rust crate replayed both Codex turns across a SQLite reopen and recovered the original dispatch receipt on retry. The installed macOS arm64 Tauri app resumed the same native thread with Codex CLI 0.170.0 and completed a third turn on an isolated sibling. The command-ID races and process-loss checks passed. [Stage 2 results and reproduction](stage-2.md) · [Stage 1 reference](reference/codex-resume/README.md)
+**Stage 3 is in progress.** The installed macOS arm64 Tauri app displayed a live Codex CLI 0.170.0 permission request. The scripted UI selected **Deny and stop turn**. The requesting run reported `interrupted` and the file was absent. Reproduce with `python3 scripts/check-permission.py codex` using a signed-in Codex CLI. [Qualification script](../scripts/check-permission.py) · [Stage 2 results](stage-2.md)
 
-**Resume at Stage 3.** Configure one second harness using Claude's standalone ACP adapter or Cursor CLI ACP. Trigger a live permission request, display it in Tauri and send the user's decision through the Rust host. Verify that the same provider run continues after approval or honors denial, and record the version and required executables. Then exercise peer reply and owned delegation. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+The standalone Claude ACP adapter 0.109.0 and its bundled Claude Code 2.1.328 initialized and created a session over stdio. Claude reported signed out. The ACP fixture verifies approval, denial, rejection of invalid or duplicate decisions, and continuation after reopening. The final Rust suite passed with `cargo test --locked`. Live cross-provider collaboration remains open. [Permission test](../tests/permissions.rs) · [ACP fixture](../tests/fixtures/permission-acp.py)
 
-**Branch recommendation.** Commit and merge Stage 2. The packaged consumer and installed app independently pass the restart check, and Stage 3 can build on the verified Rust API. After merge, start a workspace from updated `master` and prompt `continue`.
+**Next action.** Use two independent Codex threads on the existing subscription. Implement caller-scoped `thread_send` on the `huggler` MCP server. Have the reviewer reply to the sender address, retry that reply, and verify one delivery with the original sender, run IDs and receipt after reopening. Then exercise `delegate_task` and verify that a stored child result wakes its idle parent exactly once. Keep using the ACP fixture for repeatable second-adapter checks and revisit the live cross-provider case when a second authenticated harness is available within budget. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+
+**Branch recommendation.** Commit the verified permission work and continue Stage 3 on this branch. Peer messaging and delegation are still pending.
 
 ### Maintaining the handoff
 
