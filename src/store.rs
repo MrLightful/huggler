@@ -129,9 +129,20 @@ fn start_message(
     Ok((id, msg, vec![started, seq], delivery))
 }
 
+struct StateLock(File);
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        // A concurrent spawn can briefly inherit this descriptor before exec.
+        // Release ownership even when another descriptor still refers to the file.
+        let _ = self.0.unlock();
+    }
+}
+
 pub(crate) struct Database {
     db: Connection,
-    _lock: File,
+    // Drop after SQLite closes.
+    _lock: StateLock,
 }
 
 impl Database {
@@ -153,6 +164,7 @@ impl Database {
             std::fs::TryLockError::WouldBlock => Error::AlreadyOpen,
             std::fs::TryLockError::Error(e) => Error::Io(e),
         })?;
+        let lock = StateLock(lock);
         let mut db = Connection::open(dir.join("huggler.sqlite3"))?;
         db.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA temp_store=MEMORY;",
@@ -786,6 +798,23 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn reopen_while_a_spawn_still_holds_a_duplicate_lock_descriptor() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = Database::open(dir.path())?;
+        // Model the descriptor inherited between fork and exec on another thread.
+        let inherited = db._lock.0.try_clone()?;
+        assert!(matches!(
+            Database::open(dir.path()),
+            Err(Error::AlreadyOpen)
+        ));
+        drop(db);
+        let _reopened = Database::open(dir.path())?;
+        drop(inherited);
+        Ok(())
+    }
 
     #[test]
     fn upgrades_v2_messages_and_events_without_attribution() -> Result<()> {
