@@ -110,6 +110,15 @@ struct TaskLookup {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadInterrupt {
+    thread_id: String,
+    run_id: String,
+    client_request_id: String,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TaskCancel {
     task_id: String,
     /// Reuse this key for retries on this task, including from a later run.
@@ -252,6 +261,29 @@ impl AgentServer {
                 &TaskId(input.task_id),
                 input.client_request_id.as_deref(),
             )
+        }))
+    }
+
+    #[tool(
+        description = "Interrupt one starting or running turn in your project. Specify its threadId and runId. Queued turns can proceed. Reuse clientRequestId for retries. A settled run returns its terminal status."
+    )]
+    fn thread_interrupt(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<ThreadInterrupt>,
+    ) -> CallToolResult {
+        tool_result(bearer(&parts.headers).and_then(|token| {
+            let thread = ThreadId(input.thread_id);
+            let run = crate::RunId(input.run_id);
+            let terminal = self.0.interrupt_run(
+                token,
+                &thread,
+                &run,
+                &input.client_request_id,
+                input.reason.as_deref(),
+            )?;
+            let status = terminal.map_or_else(|| json!("interrupt_requested"), |s| json!(s));
+            Ok(json!({"threadId": thread, "runId": run, "status": status}))
         }))
     }
 

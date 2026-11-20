@@ -1,3 +1,4 @@
+mod interrupts;
 mod native_children;
 mod questions;
 mod tasks;
@@ -24,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/006.sql"),
     include_str!("../migrations/007.sql"),
     include_str!("../migrations/008.sql"),
+    include_str!("../migrations/009.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
@@ -469,7 +471,16 @@ impl Database {
         option: &str,
     ) -> Result<()> {
         let tx = self.db.transaction()?;
-        let request: String = tx.query_row("SELECT p.request FROM permission p JOIN run r ON r.id=p.run_id WHERE p.id=? AND r.id=? AND r.thread_id=? AND p.expired=0 AND p.decision IS NULL",params![id.0,run.0,thread.0],|r|r.get(0)).optional()?.ok_or_else(|| Error::NotFound("pending permission".into()))?;
+        let request: String = tx
+            .query_row(
+                "SELECT p.request FROM permission p JOIN run r ON r.id=p.run_id
+                 WHERE p.id=? AND r.id=? AND r.thread_id=? AND r.stop_requested=0
+                 AND p.expired=0 AND p.decision IS NULL",
+                params![id.0, run.0, thread.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound("pending permission".into()))?;
         let request: PermissionRequest = serde_json::from_str(&request)?;
         if !request.options.iter().any(|o| o.option_id == option) {
             return Err(Error::Invalid("unknown permission option".into()));
@@ -530,7 +541,7 @@ impl Database {
         let error = result.err().map(|e| e.to_string());
         tx.execute(
             "UPDATE run SET status=CASE WHEN status='waiting' THEN 'completed' WHEN stop_requested OR ?3 THEN 'interrupted' WHEN ?1 IS NULL THEN 'completed' ELSE 'failed' END,
-                 error=CASE WHEN status='waiting' THEN NULL WHEN stop_requested THEN 'task cancelled' ELSE ?1 END WHERE id=?2",
+                 error=CASE WHEN status='waiting' THEN NULL WHEN stop_requested THEN coalesce(stop_reason,'task cancelled') ELSE ?1 END WHERE id=?2",
             params![error, id.0,interrupted],
         )?;
         run_event(tx, thread, id)?;
@@ -606,6 +617,17 @@ impl Database {
         self.db.query_row("SELECT t.id,r.id,t.project FROM agent_grant g JOIN run r ON r.id=g.run_id JOIN thread t ON t.id=r.thread_id
             WHERE g.token=? AND r.stop_requested=0 AND r.status IN ('starting','running')", [token], |r| Ok((ThreadId(r.get(0)?),RunId(r.get(1)?),ProjectId(r.get(2)?))))
             .optional()?.ok_or(Error::Forbidden)
+    }
+
+    fn require_project_thread(&self, thread: &ThreadId, project: &ProjectId) -> Result<()> {
+        self.db
+            .query_row(
+                "SELECT 1 FROM thread WHERE id=? AND project=?",
+                params![thread.0, project.0],
+                |_| Ok(()),
+            )
+            .optional()?
+            .ok_or(Error::Forbidden)
     }
 
     pub fn peers(&self, token: &str) -> Result<Vec<ThreadSummary>> {

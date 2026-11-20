@@ -286,6 +286,12 @@ pub struct Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    RunInterruptRequested {
+        run_id: RunId,
+        caller_thread_id: ThreadId,
+        caller_run_id: RunId,
+        reason: Option<String>,
+    },
     QuestionRequested {
         request: UserInputRequest,
     },

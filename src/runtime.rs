@@ -177,6 +177,25 @@ impl Shared {
         })
     }
 
+    pub(crate) fn interrupt_run(
+        self: &Arc<Self>,
+        token: &str,
+        thread: &ThreadId,
+        run: &RunId,
+        key: &str,
+        reason: Option<&str>,
+    ) -> Result<Option<RunStatus>> {
+        self.schedule(|db| {
+            let terminal = db.interrupt_run(token, thread, run, key, reason)?;
+            if terminal.is_none()
+                && let Some(stop) = self.run_stops.lock().unwrap().get(run)
+            {
+                stop.send_replace(true);
+            }
+            Ok((terminal, None))
+        })
+    }
+
     fn spawn(self: &Arc<Self>, workers: &mut JoinSet<()>, thread: ThreadId, run: RunId) {
         let (stop, stopped) = watch::channel(false);
         self.run_stops.lock().unwrap().insert(run.clone(), stop);

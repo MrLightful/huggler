@@ -406,6 +406,118 @@ async fn owner_followups_keep_their_own_runs_receipts_and_results() {
 }
 
 #[tokio::test]
+async fn agent_interrupt_stops_only_the_addressed_followup() {
+    timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        let outside_repo = dir.path().join("other");
+        checkout(&repo);
+        checkout(&outside_repo);
+        let options = options(&dir.path().join("state"));
+        let rt = Huggler::open(options.clone()).await.unwrap();
+        let project = rt.open_project(&repo).unwrap();
+        let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
+        let outside = launch(
+            &rt,
+            &rt.open_project(&outside_repo).unwrap(),
+            "outsider",
+            Provider::ClaudeAgent,
+        );
+        let original = settled_review(&rt, &parent).await;
+        let child = &original.child_thread_id;
+        let owner_run = rt
+            .send(
+                CommandId("rounds".into()),
+                parent.clone(),
+                format!("interrupt followups {child}"),
+            )
+            .unwrap()
+            .run_id
+            .unwrap();
+        permission(&rt, &parent).await;
+        let first = permission(&rt, child).await.run_id;
+        let second = rt.peer_receipt(&parent, "next").unwrap().unwrap().run_id;
+        let before = rt.read(child).unwrap().cursor;
+
+        let denied = rt
+            .send(
+                CommandId("outside".into()),
+                outside.clone(),
+                format!("outside interrupt {child} {first}"),
+            )
+            .unwrap()
+            .run_id
+            .unwrap();
+        completed(&rt, &outside, &denied).await;
+        assert_eq!(rt.read(child).unwrap().cursor, before);
+        assert_eq!(permission(&rt, child).await.run_id, first);
+
+        release(&rt, &parent, None).await;
+        completed(&rt, &parent, &owner_run).await;
+        let result = rt.wait(child, &first).await.unwrap();
+        assert_eq!(result.status, RunStatus::Interrupted);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("Stopped by an agent: Continue with the second review")
+        );
+        assert_eq!(permission(&rt, child).await.run_id, second);
+        release(&rt, child, None).await;
+        let settled = task(&rt, &parent, 2, |t| t.wake_run_id.is_some()).await;
+        completed(&rt, &parent, settled.wake_run_id.as_ref().unwrap()).await;
+        assert_eq!(settled.result_run_id, Some(second.clone()));
+        assert_eq!(settled.result.as_deref(), Some("Second finding"));
+        rt.close().await.unwrap();
+
+        let rt = Huggler::open(options).await.unwrap();
+        let cursor = rt.read(child).unwrap().cursor;
+        let retry = rt
+            .send(
+                CommandId("retry".into()),
+                parent.clone(),
+                format!("retry interrupt {child} {first} {second}"),
+            )
+            .unwrap()
+            .run_id
+            .unwrap();
+        completed(&rt, &parent, &retry).await;
+        assert_eq!(rt.read(child).unwrap().cursor, cursor);
+        let tasks = rt.read(&parent).unwrap().tasks;
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0], original);
+        assert_eq!(tasks[1].status, RunStatus::Interrupted);
+        assert_eq!(tasks[1].result_run_id.as_ref(), Some(&first));
+        assert_eq!(tasks[1].result, result.error);
+        assert_eq!(tasks[2], settled);
+
+        let (_, mut events) = rt.subscribe(child, Some(before)).unwrap();
+        let mut requests = 0;
+        loop {
+            let event = events.next().await.unwrap();
+            if let Change::RunInterruptRequested {
+                run_id,
+                caller_thread_id,
+                caller_run_id,
+                reason,
+            } = event.change
+            {
+                assert_eq!(run_id, first);
+                assert_eq!(caller_thread_id, parent);
+                assert_eq!(caller_run_id, owner_run);
+                assert_eq!(reason.as_deref(), Some("Continue with the second review"));
+                requests += 1;
+            }
+            if event.sequence == cursor {
+                break;
+            }
+        }
+        assert_eq!(requests, 1);
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn nested_results_wake_only_the_followup_that_requested_them() {
     timeout(Duration::from_secs(15), async {
         let dir = tempfile::tempdir().unwrap();

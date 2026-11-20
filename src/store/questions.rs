@@ -69,14 +69,7 @@ impl Database {
     ) -> Result<(ThreadId, RunId)> {
         let (caller, run, project) = self.caller(token)?;
         let thread = target.unwrap_or(&caller);
-        let allowed = self.db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM thread WHERE id=? AND project=?)",
-            params![thread.0, project.0],
-            |r| r.get::<_, bool>(0),
-        )?;
-        if !allowed {
-            return Err(Error::Forbidden);
-        }
+        self.require_project_thread(thread, &project)?;
         Ok((thread.clone(), run))
     }
 

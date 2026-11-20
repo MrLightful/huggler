@@ -34,6 +34,11 @@ def deliver(thread, key, text, **extra):
     return call("thread_send", threadId=thread, clientRequestId=key, message=text, **extra)
 
 
+def interrupt(thread, run, key="stop-first"):
+    return call("thread_interrupt", threadId=thread, runId=run, clientRequestId=key,
+                reason="Continue with the second review")
+
+
 def delegate(task, key):
     args = dict(task=task, title="Reviewer", mode="async", isolation="shared",
                 target={"providerInstanceId": "claudeAgent"}, clientRequestId=key)
@@ -138,7 +143,16 @@ for line in sys.stdin:
             hold()
         elif text.startswith("report "):
             hold()
-        elif text.startswith(("followups ", "retry followups ")):
+        elif text.startswith("outside interrupt "):
+            target, run = text.split()[-2:]
+            assert interrupt(target, run)["code"] == "forbidden"
+            finish("Access denied")
+        elif text.startswith("retry interrupt "):
+            target, first, second = text.split()[-3:]
+            assert interrupt(target, first)["status"] == "interrupted"
+            assert interrupt(target, second)["code"] == "conflict"
+            finish("Interrupt retried")
+        elif text.startswith(("followups ", "retry followups ", "interrupt followups ")):
             target = text.split()[-1]
             running = deliver(target, "review", "interrupt this review")
             queued = deliver(target, "next", "second review")
@@ -238,6 +252,16 @@ for line in sys.stdin:
             assert call("task_cancel", taskId=task_id)["delivery"] == "disposed"
         elif text in ("delegate subtree", "delegate settled"):
             assert call("task_cancel", taskId=task_id, clientRequestId="stop-review")["delivery"] == "disposed"
+        elif text.startswith("interrupt followups "):
+            first, second = running["runId"], queued["runId"]
+            assert interrupt(target, second, "queued")["code"] == "invalid"
+            assert interrupt("author", first)["code"] == "not_found"
+            assert interrupt(target, first) == {"threadId": target, "runId": first,
+                                                "status": "interrupt_requested"}
+            while call("task_status", taskId=queued["taskId"])["status"] == "queued":
+                time.sleep(0.01)
+            assert interrupt(target, first)["status"] == "interrupted"
+            assert interrupt(target, second)["code"] == "conflict"
         if text.startswith("report "):
             finish(text.split()[-1])
         else:
