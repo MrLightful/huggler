@@ -1,0 +1,40 @@
+# Git pathspecs relative to the T3 Code repository root. One per line.
+# The server includes the engine, three local adapters, MCP, host integrations,
+# migrations, worker assets, build configuration and replay scenarios.
+apps/server/
+packages/contracts/
+packages/shared/
+packages/client-runtime/
+
+# Harness packages, protocol transports, replay utilities and host backends.
+:(top,glob)packages/provider-*/**
+:(top,glob)packages/effect-*/**
+:(top,glob)packages/source-control-*/**
+:(top,glob)packages/issue-tracker-*/**
+:(top,glob)packages/secret-provider-*/**
+packages/ssh/
+packages/tailscale/
+infra/relay/
+apps/desktop/src/preview/
+
+# Model-facing tool behavior, architecture notes and operational expectations.
+evals/mcp-tool-use/
+docs/orchestration-v2/
+docs/internals/
+docs/user/
+
+# Dependency resolution, published assets, release tooling and attribution.
+package.json
+pnpm-workspace.yaml
+pnpm-lock.yaml
+.pnpmfile.cjs
+patches/
+scripts/build-cli-archive.ts
+scripts/build-npm-launcher.ts
+scripts/lib/
+scripts/npm-launcher/
+scripts/release-smoke.ts
+scripts/smoke-cli-archive.ts
+LICENSE
+third-party-licenses.config.json
+third-party-licenses/
