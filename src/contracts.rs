@@ -63,8 +63,17 @@ pub struct PermissionOption {
 pub struct PermissionRequest {
     pub id: RequestId,
     pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_child: Option<NativeChildTurn>,
     pub tool_call: serde_json::Value,
     pub options: Vec<PermissionOption>,
+}
+
+/// The provider-native turn requesting a decision within the owning run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeChildTurn {
+    pub thread_id: NativeThreadId,
+    pub turn_id: NativeTurnId,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

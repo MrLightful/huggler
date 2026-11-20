@@ -31,6 +31,11 @@ function render() {
     const panel = document.createElement("fieldset");
     const title = document.createElement("legend");
     title.textContent = request.tool_call.title || "Tool permission";
+    if (request.native_child) {
+      const child = current.native_children.find(c =>
+        c.run_id === request.run_id && c.thread_id === request.native_child.thread_id);
+      title.textContent += ` (${child?.path || request.native_child.thread_id})`;
+    }
     const details = document.createElement("pre");
     details.textContent = JSON.stringify(request.tool_call.rawInput ?? request.tool_call, null, 2);
     panel.append(title, details);
@@ -69,6 +74,12 @@ async function view(id) {
       const { thread_id, change } = frame.value;
       if (!current || current.id !== thread_id) return;
       if (change.type === "message") current.messages.push(change.message);
+      if (change.type === "native_child") {
+        const child = change.child;
+        const index = current.native_children.findIndex(c => c.run_id === child.run_id && c.thread_id === child.thread_id);
+        if (index < 0) current.native_children.push(child);
+        else current.native_children[index] = child;
+      }
       if (change.type === "permission_requested") current.permissions.push(change.request);
       if (change.type === "permission_closed") current.permissions = current.permissions.filter(p => p.id !== change.id);
       if (change.type === "run") {

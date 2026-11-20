@@ -167,6 +167,7 @@ pub(crate) async fn execute(
                     let id = RequestId(uuid::Uuid::new_v4().to_string());
                     pending.insert(id.clone(), f["id"].clone());
                     (permissions.publish)(PermissionRequest {
+                        native_child: None,
                         id,
                         run_id: permissions.run.clone(),
                         tool_call: params["toolCall"].clone(),

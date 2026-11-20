@@ -5,7 +5,8 @@ use super::{
     rpc::{Rpc, protocol},
 };
 use crate::{
-    Error, NativeThreadId, NativeTurnId, PermissionOption, PermissionRequest, RequestId, Result,
+    Error, NativeChildTurn, NativeThreadId, NativeTurnId, PermissionOption, PermissionRequest,
+    RequestId, Result,
 };
 use children::Children;
 use serde_json::{Value, json};
@@ -41,6 +42,12 @@ enum Approval {
     Command,
     Permissions(Value),
     Mcp,
+}
+
+struct PendingApproval {
+    wire_id: Value,
+    approval: Approval,
+    child: Option<NativeChildTurn>,
 }
 
 struct Client {
@@ -185,7 +192,7 @@ impl Client {
             .ok_or_else(|| protocol("missing native turn ID"))?;
         update(Update::Started(Some(NativeTurnId(id.to_owned()))))?;
         let mut answer = None;
-        let mut pending = HashMap::new();
+        let mut pending = HashMap::<RequestId, PendingApproval>::new();
         let mut children = Children::default();
         let mut foreground_complete = false;
         let mut interrupt_replies = HashMap::<u64, oneshot::Sender<Result<()>>>::new();
@@ -213,7 +220,10 @@ impl Client {
                     }
                     decision = permissions.decisions.recv() => {
                         let (request,option) = decision.ok_or(Error::Closed)?;
-                        let (wire_id, approval) = pending.remove(&request).ok_or_else(||protocol("expired approval"))?;
+                        // A turn can end while a host decision is queued.
+                        let Some(PendingApproval { wire_id, approval, .. }) = pending.remove(&request) else {
+                            continue;
+                        };
                         let result = match approval {
                             Approval::Permissions(profile) => json!({"permissions":if option=="accept" {profile} else {json!({})},"scope":"turn"}),
                             Approval::Command => json!({"decision":option}),
@@ -242,11 +252,17 @@ impl Client {
                     }
                     continue;
                 }
-                if foreground_complete
-                    || !request_approvals
-                    || p["threadId"] != thread
-                    || p["turnId"] != id
-                {
+                let child = p["threadId"]
+                    .as_str()
+                    .zip(p["turnId"].as_str())
+                    .filter(|(t, u)| children.running(t, u))
+                    .map(|(t, u)| NativeChildTurn {
+                        thread_id: NativeThreadId(t.into()),
+                        turn_id: NativeTurnId(u.into()),
+                    });
+                let root_request =
+                    !foreground_complete && p["threadId"] == thread && p["turnId"] == id;
+                if !request_approvals || (!root_request && child.is_none()) {
                     self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"No matching interactive run"}})).await?;
                     continue;
                 }
@@ -294,10 +310,18 @@ impl Client {
                     kind: kind.into(),
                 })
                 .collect();
-                pending.insert(request.clone(), (wire_id.clone(), approval));
+                pending.insert(
+                    request.clone(),
+                    PendingApproval {
+                        wire_id: wire_id.clone(),
+                        approval,
+                        child: child.clone(),
+                    },
+                );
                 (permissions.publish)(PermissionRequest {
                     id: request,
                     run_id: permissions.run.clone(),
+                    native_child: child,
                     tool_call: json!({"title":title,"rawInput":p}),
                     options,
                 })?;
@@ -305,6 +329,12 @@ impl Client {
             }
             if let Some(child) = children.observe(thread, id, &permissions.run, &frame) {
                 update(Update::NativeChild(child))?;
+                pending.retain(|_, request| {
+                    request
+                        .child
+                        .as_ref()
+                        .is_none_or(|owner| children.running(&owner.thread_id.0, &owner.turn_id.0))
+                });
             }
             if foreground_complete || p["threadId"] != thread {
                 continue;
@@ -336,6 +366,7 @@ impl Client {
                     }
                     update(Update::ForegroundComplete)?;
                     foreground_complete = true;
+                    pending.retain(|_, request| request.child.is_some());
                 }
                 _ => {}
             }

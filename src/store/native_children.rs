@@ -10,6 +10,18 @@ pub(super) fn record(tx: &Transaction, thread: &ThreadId, child: NativeChild) ->
             serde_json::to_string(&child)?
         ],
     )?;
+    let active_turn = if child.status == NativeChildStatus::Running {
+        child.turn_id.as_ref()
+    } else {
+        None
+    };
+    Database::expire_permissions(
+        tx,
+        thread,
+        &child.run_id,
+        Some(&child.thread_id),
+        active_turn,
+    )?;
     event(tx, thread, Change::NativeChild { child })?;
     Ok(())
 }

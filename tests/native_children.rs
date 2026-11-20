@@ -7,7 +7,11 @@ use tokio::time::timeout;
 const TRANSCRIPT: &str = include_str!("fixtures/codex-subagents/codex_transcript.ndjson");
 
 fn recording() -> Vec<Value> {
-    TRANSCRIPT
+    parse(TRANSCRIPT)
+}
+
+fn parse(transcript: &str) -> Vec<Value> {
+    transcript
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
@@ -31,13 +35,15 @@ fn config(dir: &Path, records: &[Value]) -> HugglerOptions {
             .join("\n"),
     )
     .unwrap();
+    let approvals = records[0]["scenario"] == "subagent_v2_nested_approval";
     fs::write(
         dir.join("case.json"),
-        json!({"fixture":fixture,"version":env!("CARGO_PKG_VERSION"),"start":1}).to_string(),
+        json!({"fixture":fixture,"version":env!("CARGO_PKG_VERSION"),"start":1,"approvals":approvals}).to_string(),
     )
     .unwrap();
     let mut options = HugglerOptions::new(dir.join("state"));
     options.codex.executable = executable;
+    options.codex.request_approvals = approvals;
     options
 }
 
@@ -63,7 +69,10 @@ async fn start(dir: &Path, records: &[Value]) -> (HugglerOptions, Huggler, Threa
         CommandId("launch".into()),
         thread.clone(),
         project.id,
-        "Replay fixture: subagent_v2_nested".into(),
+        format!(
+            "Replay fixture: {}",
+            records[0]["scenario"].as_str().unwrap()
+        ),
         Some("gpt-6-luna".into()),
     )
     .unwrap();
@@ -252,38 +261,165 @@ async fn background_child_can_finish_or_be_interrupted_after_root_completion() {
 }
 
 #[tokio::test]
-async fn losing_a_background_provider_preserves_the_foreground_result() {
+async fn provider_loss_closes_a_background_approval_and_preserves_the_root_result() {
     timeout(Duration::from_secs(15), async {
         let dir = tempfile::tempdir().unwrap();
-        let mut records = after_root(false);
-        let gate = records
-            .iter()
-            .position(|r| r["type"] == "await_release")
-            .unwrap();
-        records.truncate(gate + 1);
+        let mut records = approval_recording(Some("emit_inbound"));
+        // A request on the right native thread but the wrong turn must be
+        // rejected on the wire before the real one reaches the host.
+        let index = approval_index(&records, "emit_inbound");
+        let mut stale = records[index].clone();
+        stale["frame"]["id"] = json!(17);
+        stale["frame"]["params"]["turnId"] = json!("stale-turn");
+        let rejected = json!({"type":"expect_outbound","frame":{"id":17,"error":{
+            "code":-32602,"message":"No matching interactive run"
+        }}});
+        records.splice(index..index, [stale, rejected]);
+        let reply_index = approval_index(&records, "expect_outbound");
+        records.truncate(reply_index);
+        records.push(json!({"type":"await_release"}));
         records.push(json!({"type":"runtime_exit"}));
         let (options, rt, thread, run) = start(dir.path(), &records).await;
         let root = rt.wait(&thread, &run).await.unwrap();
         assert_eq!(root.status, RunStatus::Completed);
-        let (snapshot, mut events) = rt.subscribe(&thread, None).unwrap();
+        let (snapshot, mut events) = rt.subscribe(&thread, Some(0)).unwrap();
+        let request = loop {
+            if let Change::PermissionRequested { request } = events.next().await.unwrap().change {
+                break request;
+            }
+        };
+        assert_eq!(snapshot.native_children.len(), 2);
         assert_eq!(
-            snapshot.native_children[0].status,
-            NativeChildStatus::Running
+            request.native_child.as_ref().unwrap().thread_id,
+            snapshot.native_children[1].thread_id
         );
         fs::write(dir.path().join("release"), "").unwrap();
-        let Change::NativeChild { child } = events.next().await.unwrap().change else {
-            panic!("expected a disconnected child");
-        };
-        assert_eq!(child.status, NativeChildStatus::Disconnected);
-        assert!(child.result.is_none());
+        loop {
+            if let Change::PermissionClosed { id, option } = events.next().await.unwrap().change {
+                assert_eq!(id, request.id);
+                assert!(option.is_none());
+                break;
+            }
+        }
+        assert!(matches!(
+            rt.respond_to_permission(&thread, &run, &request.id, "accept".into()),
+            Err(Error::NotFound(_))
+        ));
+        assert!(rt.read(&thread).unwrap().permissions.is_empty());
         rt.close().await.unwrap();
         let rt = Huggler::open(options).await.unwrap();
         let thread = rt.read(&thread).unwrap();
         assert_eq!(thread.runs, [root]);
         assert_eq!(thread.messages, snapshot.messages);
-        assert_eq!(thread.native_children, [child]);
+        assert!(thread.permissions.is_empty());
+        assert_eq!(thread.native_children.len(), 2);
+        for child in thread.native_children {
+            assert_eq!(child.status, NativeChildStatus::Disconnected);
+            assert!(child.result.is_none());
+        }
         rt.close().await.unwrap();
     })
     .await
     .unwrap();
+}
+
+fn approval_index(records: &[Value], direction: &str) -> usize {
+    records
+        .iter()
+        .position(|r| {
+            r["type"] == direction && r["label"] == "item/commandExecution/requestApproval"
+        })
+        .unwrap()
+}
+
+// Optionally move foreground completion immediately before the request or its reply.
+fn approval_recording(finish_root_before: Option<&str>) -> Vec<Value> {
+    let mut records = parse(include_str!(
+        "fixtures/codex-subagents/nested-approval.ndjson"
+    ));
+    if let Some(direction) = finish_root_before {
+        let root = records
+            .iter()
+            .find(|r| r["label"] == "turn/started")
+            .unwrap()["frame"]["params"]["threadId"]
+            .clone();
+        let root_answer: Vec<_> = records
+            .extract_if(.., |r| {
+                let p = &r["frame"]["params"];
+                p["threadId"] == root
+                    && (r["label"] == "turn/completed"
+                        || (r["label"] == "item/completed" && p["item"]["phase"] == "final_answer"))
+            })
+            .collect();
+        assert_eq!(root_answer.len(), 2);
+        let index = approval_index(&records, direction);
+        records.splice(index..index, root_answer);
+    }
+    records
+}
+
+#[tokio::test]
+async fn grandchild_approval_reaches_its_provider_turn_even_after_the_root_finishes() {
+    for finish_root_before in [None, Some("expect_outbound")] {
+        timeout(Duration::from_secs(15), async {
+            let dir = tempfile::tempdir().unwrap();
+            let records = approval_recording(finish_root_before);
+            let (options, rt, thread, run) = start(dir.path(), &records).await;
+            let (_, mut events) = rt.subscribe(&thread, Some(0)).unwrap();
+            let request = loop {
+                if let Change::PermissionRequested { request } = events.next().await.unwrap().change
+                {
+                    break request;
+                }
+            };
+            if finish_root_before.is_some() {
+                assert_eq!(
+                    rt.wait(&thread, &run).await.unwrap().status,
+                    RunStatus::Completed
+                );
+            }
+            let snapshot = rt.read(&thread).unwrap();
+            assert_eq!(snapshot.native_children.len(), 2);
+            let grandchild = &snapshot.native_children[1];
+            let owner = request.native_child.as_ref().unwrap();
+            assert_eq!(request.run_id, run);
+            assert_eq!(grandchild.thread_id, owner.thread_id);
+            assert_eq!(grandchild.turn_id.as_ref(), Some(&owner.turn_id));
+            assert_eq!(snapshot.permissions[0].id, request.id);
+            assert!(
+                rt.respond_to_permission(
+                    &thread,
+                    &RunId("other".into()),
+                    &request.id,
+                    "accept".into()
+                )
+                .is_err()
+            );
+            rt.respond_to_permission(&thread, &run, &request.id, "accept".into())
+                .unwrap();
+            let root = rt.wait(&thread, &run).await.unwrap();
+            assert_eq!(root.status, RunStatus::Completed, "{:?}", root.error);
+            loop {
+                if let Change::NativeChild { child } = events.next().await.unwrap().change
+                    && child.thread_id == snapshot.native_children[0].thread_id
+                    && child.status == NativeChildStatus::Completed
+                {
+                    break;
+                }
+            }
+            rt.close().await.unwrap();
+            let rt = Huggler::open(options).await.unwrap();
+            let state = rt.read(&thread).unwrap();
+            assert!(state.permissions.is_empty());
+            assert_eq!(state.runs, [root]);
+            assert_eq!(state.native_children.len(), 2);
+            for child in &state.native_children {
+                assert_eq!(child.status, NativeChildStatus::Completed);
+                assert_eq!(child.result.as_deref(), Some("Written."));
+            }
+            rt.close().await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }

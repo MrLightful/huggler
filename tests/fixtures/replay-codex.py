@@ -39,27 +39,33 @@ while True:
     frame = substitute(entry["frame"])
     if entry["type"] == "expect_outbound":
         actual = json.loads(sys.stdin.readline())
-        if "id" in frame:
+        method = frame.get("method")
+        # Provider-initiated requests use their own IDs, echoed by the host.
+        if method and "id" in frame:
             assert isinstance(actual["id"], int) and actual["id"] not in ids.values()
             ids[frame["id"]] = actual["id"]
             frame["id"] = actual["id"]
-        if frame["method"] == "initialize":
+        if method == "initialize":
             # Huggler identifies its own client and doesn't register an MCP Apps renderer.
             frame["params"]["clientInfo"] = {
                 "name": "huggler", "title": "Huggler", "version": case["version"]
             }
             del frame["params"]["capabilities"]["extensions"]
-        if frame["method"] == "turn/start":
+        if method == "turn/start":
             # This consumer explicitly runs read-only turns.
             frame["params"]["sandboxPolicy"] = {"type": "readOnly"}
-        if frame["method"] == "thread/start":
+            if case.get("approvals"):
+                frame["params"]["approvalPolicy"] = "on-request"
+        if method == "thread/start":
+            if case.get("approvals"):
+                frame["params"].update(approvalPolicy="on-request", sandbox="read-only")
             # The recorder raised this limit to capture a three-level spawn.
             for key in records[0].get("metadata", {}).get("recorderThreadConfigKeys", []):
                 del frame["params"]["config"][key]
         assert actual == frame, (index, actual, frame)
     else:
         assert entry["type"] == "emit_inbound"
-        if "id" in frame:
+        if "id" in frame and "method" not in frame:
             frame["id"] = ids[frame["id"]]
         print(json.dumps(frame), flush=True)
     index += 1

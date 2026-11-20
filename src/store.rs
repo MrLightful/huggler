@@ -453,22 +453,42 @@ impl Database {
         Ok(tx.commit()?)
     }
 
+    // A child approval can outlive the foreground. Close requests for the
+    // owner that settled, keeping any that belong to its current running turn.
+    fn expire_permissions(
+        tx: &Transaction<'_>,
+        thread: &ThreadId,
+        id: &RunId,
+        child: Option<&NativeThreadId>,
+        keep_turn: Option<&NativeTurnId>,
+    ) -> Result<()> {
+        let pending = tx
+            .prepare(
+                "UPDATE permission SET expired=1 WHERE run_id=?1 AND expired=0 AND decision IS NULL
+                AND json_extract(request,'$.native_child.thread_id') IS ?2
+                AND (?3 IS NULL OR json_extract(request,'$.native_child.turn_id') IS NOT ?3)
+                RETURNING id",
+            )?
+            .query_map(
+                params![id.0, child.map(|t| &t.0), keep_turn.map(|t| &t.0)],
+                |r| Ok(RequestId(r.get(0)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for id in pending {
+            event(tx, thread, Change::PermissionClosed { id, option: None })?;
+        }
+        Ok(())
+    }
+
     fn finish_tx(
         tx: &Transaction<'_>,
         thread: &ThreadId,
         id: &RunId,
         result: Result<()>,
     ) -> Result<()> {
+        Self::expire_permissions(tx, thread, id, None, None)?;
         // Waiting and the final answer commit together. A cleanup error or a
         // process exit after this point cannot undo provider completion.
-        let pending = tx
-            .prepare("SELECT id FROM permission WHERE run_id=? AND expired=0 AND decision IS NULL")?
-            .query_map([&id.0], |r| Ok(RequestId(r.get(0)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for id in pending {
-            tx.execute("UPDATE permission SET expired=1 WHERE id=?", [&id.0])?;
-            event(tx, thread, Change::PermissionClosed { id, option: None })?;
-        }
         let interrupted = matches!(result, Err(Error::Interrupted));
         let error = result.err().map(|e| e.to_string());
         tx.execute(
