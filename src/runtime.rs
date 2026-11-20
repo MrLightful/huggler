@@ -158,9 +158,14 @@ impl Shared {
         }
     }
 
-    pub(crate) fn cancel_task(self: &Arc<Self>, token: &str, id: &TaskId) -> Result<DelegatedTask> {
+    pub(crate) fn cancel_task(
+        self: &Arc<Self>,
+        token: &str,
+        id: &TaskId,
+        key: Option<&str>,
+    ) -> Result<DelegatedTask> {
         self.schedule(|db| {
-            let (task, runs) = db.cancel_task(token, id)?;
+            let (task, runs) = db.cancel_task(token, id, key)?;
             let stops = self.run_stops.lock().unwrap();
             for id in runs {
                 if let Some(stop) = stops.get(&id) {

@@ -137,31 +137,47 @@ impl Database {
         )?)
     }
 
-    pub fn cancel_task(&mut self, token: &str, id: &TaskId) -> Result<(DelegatedTask, Vec<RunId>)> {
-        let (parent, _, _) = self.caller(token)?;
+    pub fn cancel_task(
+        &mut self,
+        token: &str,
+        id: &TaskId,
+        key: Option<&str>,
+    ) -> Result<(DelegatedTask, Vec<RunId>)> {
+        let (parent, caller_run, _) = self.caller(token)?;
         let tx = self.db.transaction()?;
-        owned(&tx, &parent, id)?;
-        // A finished task retains its result. Its pending notification can still be disposed.
+        let task = owned(&tx, &parent, id)?;
+        let request_key = match key {
+            Some(k) if k.trim().is_empty() => {
+                return Err(Error::Invalid("empty clientRequestId".into()));
+            }
+            Some(k) => format!("request:{k}"),
+            None => format!("run:{caller_run}"),
+        };
+        if tx.execute(
+            "INSERT INTO task_cancel_receipt(task_id,request_key) VALUES(?,?)
+                       ON CONFLICT(task_id,request_key) DO NOTHING",
+            params![id.0, request_key],
+        )? == 0
+        {
+            return Ok((task, Vec::new()));
+        }
+        // The tree belongs to the parent even after a task returns its result.
+        // A later turn in any of these threads can have more work in flight.
         let subtree = tx
             .prepare(
-                "WITH RECURSIVE family(id,child_thread,open) AS (
-            SELECT id,child_thread,result_run IS NULL FROM delegated_task WHERE id=?1
-            UNION ALL SELECT t.id,t.child_thread,t.result_run IS NULL FROM delegated_task t JOIN family f
-            ON f.open AND t.parent_thread=f.child_thread
-        ) SELECT t.id,t.parent_thread,t.child_thread,t.result_run IS NULL FROM delegated_task t
-        JOIN family f ON f.id=t.id",
+                "WITH RECURSIVE family(id,parent_thread,child_thread) AS (
+                    SELECT id,parent_thread,child_thread FROM delegated_task WHERE id=?1
+                    UNION ALL
+                    SELECT t.id,t.parent_thread,t.child_thread FROM delegated_task t
+                    JOIN family f ON t.parent_thread=f.child_thread
+                ) SELECT id,parent_thread,child_thread FROM family",
             )?
             .query_map([&id.0], |r| {
-                Ok((
-                    TaskId(r.get(0)?),
-                    ThreadId(r.get(1)?),
-                    ThreadId(r.get(2)?),
-                    r.get::<_, bool>(3)?,
-                ))
+                Ok((TaskId(r.get(0)?), ThreadId(r.get(1)?), ThreadId(r.get(2)?)))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stops = Vec::new();
-        for (subtask, owner, child, active) in subtree {
+        for (subtask, owner, child) in subtree {
             if tx.execute(
                 "UPDATE delegated_task SET delivery='disposed',cancelled=(result_run IS NULL AND
                     (EXISTS (SELECT 1 FROM run WHERE thread_id=child_thread AND status IN ('starting','running','queued'))
@@ -172,9 +188,6 @@ impl Database {
             )? != 0
             {
                 publish(&tx, &owner, &subtask)?;
-            }
-            if !active {
-                continue;
             }
             let runs = tx.prepare("SELECT id,status FROM run WHERE thread_id=? AND status IN ('starting','running','queued')")?
                 .query_map([&child.0],|r|Ok((RunId(r.get(0)?),r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;

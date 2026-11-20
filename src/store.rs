@@ -162,6 +162,7 @@ impl Database {
             include_str!("../migrations/002.sql"),
             include_str!("../migrations/003.sql"),
             include_str!("../migrations/004.sql"),
+            include_str!("../migrations/005.sql"),
         ];
         if !(0..=migrations.len() as i64).contains(&version) {
             return Err(Error::SchemaVersion(version));
@@ -379,8 +380,14 @@ impl Database {
                 run_event(&tx, thread, id)?;
             }
             Update::Finalizing(text) => {
+                if tx.execute(
+                    "UPDATE run SET status='waiting' WHERE id=? AND stop_requested=0",
+                    [&id.0],
+                )? == 0
+                {
+                    return Err(Error::Interrupted);
+                }
                 message(&tx, thread, id, Role::Assistant, None, text)?;
-                tx.execute("UPDATE run SET status='waiting' WHERE id=?", [&id.0])?;
                 run_event(&tx, thread, id)?;
             }
         }
@@ -394,14 +401,18 @@ impl Database {
         request: PermissionRequest,
     ) -> Result<()> {
         let tx = self.db.transaction()?;
-        tx.execute(
-            "INSERT INTO permission(id,run_id,request) VALUES(?,?,?)",
+        if tx.execute(
+            "INSERT INTO permission(id,run_id,request)
+             SELECT ?1,id,?3 FROM run WHERE id=?2 AND stop_requested=0",
             params![
                 request.id.0,
                 request.run_id.0,
                 serde_json::to_string(&request)?
             ],
-        )?;
+        )? == 0
+        {
+            return Err(Error::Interrupted);
+        }
         event(&tx, thread, Change::PermissionRequested { request })?;
         Ok(tx.commit()?)
     }

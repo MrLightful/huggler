@@ -39,7 +39,7 @@ def delegate(task, key):
     created = call("delegate_task", **args)
     assert call("delegate_task", **args)["taskId"] == created["taskId"]
     assert call("delegate_task", **{**args, "task": "different"})["code"] == "conflict"
-    return created["taskId"]
+    return created
 
 
 def hold():
@@ -88,14 +88,23 @@ for line in sys.stdin:
             finish("Review requested")
         elif text.startswith("delegate "):
             action = text.removeprefix("delegate ")
-            child = "delegate leaf" if action == "nested" else "held review"
-            task_id = delegate(child, "review")
+            child = {"nested": "delegate leaf", "subtree": "branch review",
+                     "settled": "immediate review"}.get(action, "held review")
+            task = delegate(child, "review")
+            task_id = task["taskId"]
             if action == "siblings":
                 delegate("held review", "review-again")
-            if action in ("ack", "cancel", "recover", "siblings"):
+            if action == "followup":
+                followup = deliver(task["childThreadId"], "revise", "revised finding")
+                assert followup["delivery"] == "queued"
+            if action in ("ack", "cancel", "recover", "siblings", "subtree", "settled"):
                 hold()
             else:
                 finish("Delegated for review")
+        elif text == "branch review":
+            leaf = delegate("held review", "leaf")
+            assert deliver(leaf["childThreadId"], "revise", "revised finding")["delivery"] == "queued"
+            hold()
         elif text == "held review":
             hold()
         elif text.startswith("wait "):
@@ -122,6 +131,10 @@ for line in sys.stdin:
             assert call("task_status", taskId=task_id)["code"] == "forbidden"
             assert call("task_cancel", taskId=task_id)["code"] == "forbidden"
             finish("Access denied")
+        elif text.startswith("retry stop "):
+            task_id = text.removeprefix("retry stop ")
+            assert call("task_cancel", taskId=task_id, clientRequestId="stop-review")["delivery"] == "disposed"
+            finish("Stop retried")
         elif text.startswith("Huggler delegated task results\n"):
             results = json.loads(text.split("\n", 1)[1])
             finish("Received: " + ", ".join(r["result"] for r in results))
@@ -157,4 +170,6 @@ for line in sys.stdin:
             assert status["result"] == "2+2=4" and status["delivery"] == "acknowledged"
         elif text == "delegate cancel":
             assert call("task_cancel", taskId=task_id)["delivery"] == "disposed"
+        elif text in ("delegate subtree", "delegate settled"):
+            assert call("task_cancel", taskId=task_id, clientRequestId="stop-review")["delivery"] == "disposed"
         finish("2+2=4" if text == "held review" else "released")

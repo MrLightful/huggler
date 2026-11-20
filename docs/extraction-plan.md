@@ -14,7 +14,9 @@ Two live Codex CLI 0.170.0 sessions used app-server stdio and Huggler's loopback
 
 Live Codex CLI 0.170.0 over app-server stdio and a scripted ACP reviewer over stdio passed both cross-adapter cases through loopback MCP. The peer retry retained one reply and its sender and run. The delegated result woke its parent once and survived reopening. Run `cargo test --locked --test peers --test delegation live_codex_to_acp -- --ignored` with a signed-in Codex CLI. The offline `waiting_for_a_task` test covers completion, timeout, pending approval and revocation during `delegate_task(mode="wait")`. [Peer tests](../tests/peers.rs) · [Delegation tests](../tests/delegation.rs)
 
-**Next action.** Queue a follow-up in a busy child and check which run supplies its final result. Cancel a task with a grandchild and queued work, then check cancellation while a settled child is handling a later turn. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
+With the scripted ACP peer, a follow-up queued before settlement supplied the task's final result and woke the parent once. Cancelling the owned subtree interrupted active descendants and queued work, including work started after the original task settled. A retry with the same cancellation key after reopening preserved later work. Run `cargo test --locked --test delegation` for both regressions. Upstream also tracks owner-sent follow-ups as individual tasks with separate results. That case remains open. [Delegation tests](../tests/delegation.rs)
+
+**Next action.** Replay the recorded three-level Codex subagent tree. Check each child's native parent, owning application run and result, then exercise a child that outlives its root turn and a targeted child interrupt. [Stage 3 acceptance](#3-prove-agent-to-agent-operation-with-two-harnesses)
 
 **Branch recommendation.** Commit and continue Stage 3 on this branch. Native-child replay and live collaboration with a second authenticated provider remain open.
 

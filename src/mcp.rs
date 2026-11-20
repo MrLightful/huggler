@@ -108,6 +108,14 @@ struct TaskLookup {
     task_id: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskCancel {
+    task_id: String,
+    /// Reuse this key for retries on this task, including from a later run.
+    client_request_id: Option<String>,
+}
+
 fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
     match value {
         Ok(value) => CallToolResult::structured(json!(value)),
@@ -163,17 +171,20 @@ impl AgentServer {
     }
 
     #[tool(
-        description = "Stop your delegated task and its open descendants, and discard pending completion notifications."
+        description = "Stop current and queued work in your delegated child's subtree. A settled task keeps its result. Reuse clientRequestId to retry the same stop."
     )]
     fn task_cancel(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<TaskLookup>,
+        Parameters(input): Parameters<TaskCancel>,
     ) -> CallToolResult {
-        tool_result(
-            bearer(&parts.headers)
-                .and_then(|token| self.0.cancel_task(token, &TaskId(input.task_id))),
-        )
+        tool_result(bearer(&parts.headers).and_then(|token| {
+            self.0.cancel_task(
+                token,
+                &TaskId(input.task_id),
+                input.client_request_id.as_deref(),
+            )
+        }))
     }
 
     #[tool(description = "List other Huggler threads in your project and their addresses.")]

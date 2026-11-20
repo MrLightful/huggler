@@ -220,6 +220,152 @@ async fn scenario(mode: &str, parent_provider: Provider, child_provider: Provide
 }
 
 #[tokio::test]
+async fn queued_followup_supplies_the_final_result_once() {
+    timeout(Duration::from_secs(12), async {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        checkout(&repo);
+        let options = options(&dir.path().join("state"));
+        let rt = Huggler::open(options.clone()).await.unwrap();
+        let project = rt.open_project(&repo).unwrap();
+        let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
+        let first = rt
+            .send(
+                CommandId("start".into()),
+                parent.clone(),
+                "delegate followup".into(),
+            )
+            .unwrap()
+            .run_id
+            .unwrap();
+        completed(&rt, &parent, &first).await;
+        let initial = rt.read(&parent).unwrap().tasks.remove(0);
+        let followup = rt.peer_receipt(&parent, "revise").unwrap().unwrap();
+        assert_eq!(followup.thread_id, initial.child_thread_id);
+        assert_eq!(followup.delivery, PeerDelivery::Queued);
+        assert!(initial.result_run_id.is_none());
+        release(&rt, &initial.child_thread_id, None).await;
+        let settled = task(&rt, &parent, 0, |t| t.wake_run_id.is_some()).await;
+        completed(&rt, &parent, settled.wake_run_id.as_ref().unwrap()).await;
+        assert_eq!(settled.result_run_id, Some(followup.run_id.clone()));
+        assert_eq!(settled.result.as_deref(), Some("Received revised finding"));
+        assert_ne!(initial.child_run_id, followup.run_id);
+        rt.close().await.unwrap();
+        let rt = Huggler::open(options).await.unwrap();
+        let reopened = rt.read(&parent).unwrap();
+        assert_eq!(reopened.tasks, [settled]);
+        assert_eq!(reopened.runs.len(), 2);
+        assert_eq!(
+            reopened.messages.last().unwrap().text,
+            "Received: Received revised finding"
+        );
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_reaches_grandchildren_and_queued_work_even_after_a_result() {
+    for mode in ["subtree", "settled"] {
+        timeout(Duration::from_secs(8), async {
+            let dir = tempfile::tempdir().unwrap();
+            let repo = dir.path().join("checkout");
+            checkout(&repo);
+            let options = options(&dir.path().join("state"));
+            let rt = Huggler::open(options.clone()).await.unwrap();
+            let project = rt.open_project(&repo).unwrap();
+            let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
+            let first = rt
+                .send(
+                    CommandId("start".into()),
+                    parent.clone(),
+                    format!("delegate {mode}"),
+                )
+                .unwrap()
+                .run_id
+                .unwrap();
+            let original = task(&rt, &parent, 0, |t| {
+                mode == "subtree" || t.status.terminal()
+            })
+            .await;
+            let child = &original.child_thread_id;
+            let branch_run = if mode == "settled" {
+                rt.send(
+                    CommandId("more".into()),
+                    child.clone(),
+                    "branch review".into(),
+                )
+                .unwrap()
+                .run_id
+                .unwrap()
+            } else {
+                original.child_run_id.clone()
+            };
+            let leaf = task(&rt, child, 0, |_| true).await;
+            permission(&rt, child).await;
+            permission(&rt, &leaf.child_thread_id).await;
+            let queued = rt.peer_receipt(child, "revise").unwrap().unwrap();
+            assert_eq!(queued.delivery, PeerDelivery::Queued);
+            release(&rt, &parent, None).await;
+            completed(&rt, &parent, &first).await;
+            for (thread, run) in [
+                (child, &branch_run),
+                (&leaf.child_thread_id, &leaf.child_run_id),
+                (&leaf.child_thread_id, &queued.run_id),
+            ] {
+                assert_eq!(
+                    rt.wait(thread, run).await.unwrap().status,
+                    RunStatus::Interrupted
+                );
+            }
+            let nested = task(&rt, child, 0, |t| t.status.terminal()).await;
+            assert_eq!(nested.delivery, CompletionDelivery::Disposed);
+            assert_eq!(nested.status, RunStatus::Interrupted);
+            let settled = task(&rt, &parent, 0, |t| t.status.terminal()).await;
+            assert_eq!(settled.delivery, CompletionDelivery::Disposed);
+            if mode == "settled" {
+                assert_eq!(settled.result_run_id, original.result_run_id);
+                assert_eq!(settled.result.as_deref(), Some("2+2=4"));
+                assert_eq!(settled.status, RunStatus::Completed);
+            } else {
+                assert_eq!(settled.status, RunStatus::Interrupted);
+            }
+            rt.close().await.unwrap();
+            let rt = Huggler::open(options).await.unwrap();
+            assert_eq!(rt.read(&parent).unwrap().runs.len(), 1);
+            assert_eq!(rt.read(&parent).unwrap().tasks, [settled.clone()]);
+            assert_eq!(rt.read(child).unwrap().tasks, [nested]);
+            let leaf_thread = rt.read(&leaf.child_thread_id).unwrap();
+            assert!(leaf_thread.permissions.is_empty());
+            assert!(leaf_thread.messages.iter().all(|m| m.role == Role::User));
+            // An old cancel retried after restart must leave newly accepted work alone.
+            let later = rt
+                .send(CommandId("later".into()), child.clone(), "hold".into())
+                .unwrap()
+                .run_id
+                .unwrap();
+            permission(&rt, child).await;
+            let retry = rt
+                .send(
+                    CommandId("retry".into()),
+                    parent.clone(),
+                    format!("retry stop {}", settled.task_id),
+                )
+                .unwrap()
+                .run_id
+                .unwrap();
+            completed(&rt, &parent, &retry).await;
+            release(&rt, child, None).await;
+            completed(&rt, child, &later).await;
+            rt.close().await.unwrap();
+        })
+        .await
+        .expect(mode);
+    }
+}
+
+#[tokio::test]
 async fn waiting_for_a_task_handles_completion_timeout_approval_and_revocation() {
     for case in ["ready", "timeout", "approval", "revoke"] {
         timeout(Duration::from_secs(12), async {
