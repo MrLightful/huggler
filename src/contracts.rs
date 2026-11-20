@@ -286,6 +286,11 @@ pub struct Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    /// Recorded on the thread whose agent created an independent peer.
+    PeerCreated {
+        caller_run_id: RunId,
+        peer_thread_id: ThreadId,
+    },
     RunInterruptRequested {
         run_id: RunId,
         caller_thread_id: ThreadId,

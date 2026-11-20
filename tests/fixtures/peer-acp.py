@@ -92,6 +92,14 @@ for line in sys.stdin:
             assert "error" in bad or bad["result"]["isError"]
             deliver(peers[0]["id"], "review-1", "Review 2+2")
             finish("Review requested")
+        elif text.startswith("create peers "):
+            assert "create_threads" in {t["name"] for t in tools}
+            args = json.loads(text.removeprefix("create peers "))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                calls = [pool.submit(call, "create_threads", **args) for _ in range(2)]
+                first, retry = [c.result() for c in calls]
+            assert first == retry, (first, retry)
+            finish(json.dumps(first))
         elif text.startswith("check question "):
             case = json.loads(text.removeprefix("check question "))
             target = {"threadId": "planner"}
@@ -211,7 +219,9 @@ for line in sys.stdin:
         elif text.startswith("Peer message from Huggler "):
             attribution, message = text.split("\n\n", 1)
             sender = json.loads(attribution.removeprefix("Peer message from Huggler "))["thread_id"]
-            if message.startswith("nested "):
+            if message == "read batch marker":
+                finish(Path("batch-marker").read_text())
+            elif message.startswith("nested "):
                 label = message.split()[-1]
                 delegate("report " + label, label)
                 hold()

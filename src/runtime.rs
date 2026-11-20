@@ -5,7 +5,7 @@ use crate::{
         claude_agent::{self, ClaudeAgentOptions},
         codex::{self, CodexOptions},
     },
-    store::Database,
+    store::{Database, RunJob},
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -75,9 +75,9 @@ impl Shared {
 
     // Hold the intake gate through commit and worker registration. Shutdown
     // takes this same gate before taking ownership of all registered workers.
-    fn schedule<T>(
+    fn schedule<T, Jobs: IntoIterator<Item = RunJob>>(
         self: &Arc<Self>,
-        write: impl FnOnce(&mut Database) -> Result<(T, Option<(ThreadId, RunId)>)>,
+        write: impl FnOnce(&mut Database) -> Result<(T, Jobs)>,
     ) -> Result<T> {
         let mut gate = self.workers.lock().unwrap();
         let workers = gate.as_mut().ok_or(Error::Closed)?;
@@ -86,12 +86,20 @@ impl Shared {
                 return Err(Error::Worker(e.to_string()));
             }
         }
-        let (value, job) = self.access(write)?;
+        let (value, jobs) = self.access(write)?;
         self.changed.send_replace(());
-        if let Some((thread, run)) = job {
+        for (thread, run) in jobs {
             self.spawn(workers, thread, run);
         }
         Ok(value)
+    }
+
+    pub(crate) fn create_threads(
+        self: &Arc<Self>,
+        token: &str,
+        input: crate::mcp::CreateThreads,
+    ) -> Result<Vec<crate::mcp::CreatedPeer>> {
+        self.schedule(|db| db.create_threads(token, input))
     }
 
     pub(crate) fn send_peer(

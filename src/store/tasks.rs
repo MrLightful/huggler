@@ -101,7 +101,7 @@ pub(super) fn record_followup(
 
 impl Database {
     pub fn delegate(&mut self, token: &str, input: Delegation) -> Result<(DelegatedTask, bool)> {
-        let (parent, parent_run, project) = self.caller(token)?;
+        let (parent, parent_run, _) = self.caller(token)?;
         if input.client_request_id.trim().is_empty() || input.task.trim().is_empty() {
             return Err(Error::Invalid("expected a task and clientRequestId".into()));
         }
@@ -125,17 +125,9 @@ impl Database {
             return Ok((owned(&tx, &parent, &id)?, false));
         }
         let id = TaskId(new_id());
-        let child = ThreadId(new_id());
-        let provider = input.target.map(|t| t.provider_instance_id.key());
+        let provider = input.target.map(|t| t.provider_instance_id);
         let name = input.title.as_deref().unwrap_or("Delegated task");
-        // The configured provider is inherited unless the caller selects another instance.
-        tx.execute(
-            "INSERT INTO thread(id,project,name,provider,model)
-            SELECT ?1,?2,?3,coalesce(?4,provider),CASE WHEN ?4 IS NULL OR ?4=provider THEN model END
-            FROM thread WHERE id=?5",
-            params![child.0, project.0, name, provider, parent.0],
-        )?;
-        event(&tx, &child, Change::Launched)?;
+        let child = creation::create_agent_thread(&tx, &parent, name, provider)?;
         let model = tx.query_row("SELECT model FROM thread WHERE id=?", [&child.0], |r| {
             r.get(0)
         })?;

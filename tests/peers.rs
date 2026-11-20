@@ -3,6 +3,7 @@ use huggler::*;
 #[path = "support/agents.rs"]
 mod agents;
 use agents::*;
+use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 use tokio::time::timeout;
 
@@ -211,6 +212,140 @@ async fn acp_peer_exchange() {
         Duration::from_secs(15),
         exchange(Provider::ClaudeAgent, Provider::ClaudeAgent),
     )
+    .await
+    .unwrap();
+}
+
+#[derive(serde::Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct CreatedPeer {
+    thread_id: ThreadId,
+    run_id: Option<RunId>,
+}
+
+async fn batch(
+    rt: &Huggler,
+    caller: &ThreadId,
+    command: &str,
+    entries: &Value,
+) -> (RunId, Vec<CreatedPeer>) {
+    let input = json!({"threads": entries, "clientRequestId": "peer-batch"});
+    let run = rt
+        .send(
+            CommandId(command.into()),
+            caller.clone(),
+            format!("create peers {input}"),
+        )
+        .unwrap()
+        .run_id
+        .unwrap();
+    completed(rt, caller, &run).await;
+    let snapshot = rt.read(caller).unwrap();
+    let reply: Value = serde_json::from_str(&snapshot.messages.last().unwrap().text).unwrap();
+    (
+        run,
+        serde_json::from_value(reply["threads"].clone()).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn batch_creation_retries_after_reopen_and_accepts_a_late_prompt() {
+    timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir().unwrap();
+        checkout(dir.path());
+        std::fs::write(dir.path().join("batch-marker"), "shared checkout").unwrap();
+        let mut options = HugglerOptions::new(dir.path().join("state"));
+        options.agent_tools = true;
+        options.claude_agent.executable =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
+        let rt = Huggler::open(options.clone()).await.unwrap();
+        let project = rt.open_project(dir.path()).unwrap();
+        let author = launch(&rt, &project, "author", Provider::ClaudeAgent);
+        let mut entries = json!([
+            {"title":"Reviewer","prompt":"read batch marker"},
+            {"title":"Writer","target":{"providerInstanceId":"claudeAgent"}}
+        ]);
+        let (creator_run, peers) = batch(&rt, &author, "create", &entries).await;
+        let [reviewer, writer] = peers.as_slice() else {
+            panic!("expected two peers")
+        };
+        let review_run = reviewer.run_id.as_ref().unwrap();
+        completed(&rt, &reviewer.thread_id, review_run).await;
+        assert_ne!(reviewer.thread_id, writer.thread_id);
+        assert!(writer.run_id.is_none());
+        rt.close().await.unwrap();
+
+        let rt = Huggler::open(options).await.unwrap();
+        let (_, replay) = batch(&rt, &author, "replay", &entries).await;
+        assert_eq!(replay, peers);
+        let reviewed = rt.read(&reviewer.thread_id).unwrap();
+        let idle = rt.read(&writer.thread_id).unwrap();
+        assert_eq!(rt.threads().unwrap().len(), 3);
+        for thread in [&reviewed, &idle] {
+            assert_eq!(thread.project, project.id);
+            assert_eq!(thread.provider, Provider::ClaudeAgent);
+            assert!(thread.tasks.is_empty());
+        }
+        let parent = rt.read(&author).unwrap();
+        assert!(parent.tasks.is_empty());
+        assert_eq!(parent.runs.len(), 2);
+        let (_, mut events) = rt.subscribe(&author, Some(0)).unwrap();
+        let mut created = Vec::new();
+        loop {
+            let event = events.next().await.unwrap();
+            if let Change::PeerCreated {
+                caller_run_id,
+                peer_thread_id,
+            } = event.change
+            {
+                assert_eq!(caller_run_id, creator_run);
+                created.push(peer_thread_id);
+            }
+            if event.sequence == parent.cursor {
+                break;
+            }
+        }
+        assert_eq!(
+            created,
+            [reviewer.thread_id.clone(), writer.thread_id.clone()]
+        );
+        assert_eq!(reviewed.runs.len(), 1);
+        assert_eq!(reviewed.messages.len(), 2);
+        assert_eq!(reviewed.messages[0].run_id, *review_run);
+        assert_eq!(
+            reviewed.messages[0].origin.as_ref().unwrap(),
+            &MessageOrigin {
+                thread_id: author.clone(),
+                run_id: creator_run,
+                request_key: "peer-batch".into(),
+            }
+        );
+        assert_eq!(reviewed.messages[1].text, "shared checkout");
+        assert!(idle.runs.is_empty() && idle.messages.is_empty());
+        assert_eq!(
+            (reviewed.name.as_str(), idle.name.as_str()),
+            ("Reviewer", "Writer")
+        );
+
+        entries[1]["prompt"] = json!("read batch marker");
+        let (later, prompted) = batch(&rt, &author, "late-prompt", &entries).await;
+        assert_eq!(prompted[0], *reviewer);
+        assert_eq!(prompted[1].thread_id, writer.thread_id);
+        completed(&rt, &writer.thread_id, prompted[1].run_id.as_ref().unwrap()).await;
+        let started = rt.read(&writer.thread_id).unwrap();
+        assert_eq!(started.runs.len(), 1);
+        assert_eq!(started.messages[0].origin.as_ref().unwrap().run_id, later);
+        assert_eq!(started.messages[1].text, "shared checkout");
+
+        // A different caller can use the same key for a fresh, fully prompted batch.
+        let (_, other) = batch(&rt, &writer.thread_id, "both-prompted", &entries).await;
+        for peer in other {
+            completed(&rt, &peer.thread_id, peer.run_id.as_ref().unwrap()).await;
+            assert_eq!(rt.read(&peer.thread_id).unwrap().runs.len(), 1);
+        }
+        assert_eq!(rt.threads().unwrap().len(), 5);
+        rt.close().await.unwrap();
+    })
     .await
     .unwrap();
 }

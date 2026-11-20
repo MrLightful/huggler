@@ -1,3 +1,4 @@
+mod creation;
 mod interrupts;
 mod native_children;
 mod questions;
@@ -16,6 +17,8 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+pub(crate) type RunJob = (ThreadId, RunId);
+
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/001.sql"),
     include_str!("../migrations/002.sql"),
@@ -26,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/007.sql"),
     include_str!("../migrations/008.sql"),
     include_str!("../migrations/009.sql"),
+    include_str!("../migrations/010.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
@@ -198,13 +202,12 @@ impl Database {
         tx.execute_batch(
             "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
         )?;
-        // Both pending and claimed starts belong to the old process. A send might
-        // have reached Codex before its reply was persisted. Never issue it twice.
-        // A task launch or wake still pending at this point never reached a provider.
-        // Put it back in order; claimed provider effects keep the recovery policy below.
+        // Queue unclaimed task launches, wakes and peer creations for a new worker.
+        // A claimed effect may already have reached the provider.
         tx.execute("UPDATE run SET status='queued' WHERE status='starting' AND stop_requested=0
             AND id IN (SELECT run_id FROM turn_effect WHERE state='pending')
-            AND (id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task))", [])?;
+            AND (id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task)
+                OR id IN (SELECT initial_run FROM peer_creation))", [])?;
         let lost = tx
             .prepare(
                 "SELECT r.id, r.thread_id FROM turn_effect e
@@ -580,7 +583,7 @@ impl Database {
     }
 
     /// Reserve runnable continuations under the same transaction as their delivery receipts.
-    pub fn ready_jobs(&mut self) -> Result<Vec<(ThreadId, RunId)>> {
+    pub fn ready_jobs(&mut self) -> Result<Vec<RunJob>> {
         let tx = self.db.transaction()?;
         let threads = tx
             .prepare("SELECT DISTINCT thread_id FROM run WHERE status='queued'")?
