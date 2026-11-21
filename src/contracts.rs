@@ -291,6 +291,11 @@ pub enum Action {
         text: String,
         files: Vec<TextAttachment>,
     },
+    /// Enqueue a message with captured files, starting immediately when idle.
+    EnqueueFiles {
+        text: String,
+        files: Vec<Attachment>,
+    },
     /// Send one message in Codex plan mode.
     SendPlan {
         text: String,
@@ -460,6 +465,14 @@ pub struct HistoryCursor {
 pub struct TextAttachment {
     pub name: String,
     pub content: String,
+}
+
+/// An original file and its media type. File bytes are read separately from history.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Attachment {
+    pub name: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
 }
 
 /// Bounded caption and filenames in selection order. Read file bodies on demand.

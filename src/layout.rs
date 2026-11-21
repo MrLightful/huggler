@@ -19,7 +19,8 @@ pub enum WorktreeRoot {
 #[derive(Clone, Debug)]
 pub struct StorageLayout {
     /// SQLite file, absolute or relative to the state directory. The owner lock
-    /// sits beside it. SQLite creates any journal, WAL and shared-memory files there.
+    /// and attachment cache sit beside it. SQLite creates any journal, WAL and
+    /// shared-memory files there.
     pub database_path: PathBuf,
     /// Directory shared by isolated delegations, checkpoint forks and allocated workspaces.
     pub worktree_root: WorktreeRoot,

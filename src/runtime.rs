@@ -310,7 +310,7 @@ impl Shared {
                 self.access(|db| db.worktree_ready(&worktree.path))?;
             }
         }
-        let turn = self.access(|db| {
+        let mut turn = self.access(|db| {
             let mut turn = db.claim(run)?;
             turn.sample_suggestion = self.prompt_suggestions
                 && turn.provider == Provider::Codex
@@ -325,6 +325,13 @@ impl Shared {
             }
             Ok(turn)
         })?;
+        if !turn.files.pending.is_empty() {
+            let files = std::mem::take(&mut turn.files);
+            let text = std::mem::take(&mut turn.text);
+            (turn.files, turn.text) = tokio::task::spawn_blocking(move || files.prepare(text))
+                .await
+                .map_err(|e| Error::Worker(e.to_string()))??;
+        }
         let update = |change| {
             if matches!(change, crate::providers::Update::ForegroundComplete) {
                 return self.advance(|db| db.update(thread, run, change));
@@ -807,7 +814,7 @@ impl Huggler {
         }
     }
 
-    /// Stage up to 64 KiB of UTF-8 plain text for one thread.
+    /// Stage a captured file for one thread. See the limits on [`Attachment`].
     pub fn prepare_upload(
         &self,
         thread: &ThreadId,
@@ -848,8 +855,25 @@ impl Huggler {
         message: &MessageId,
         position: usize,
     ) -> Result<String> {
+        let file = self.read_attachment_file(thread, message, position)?;
+        if matches!(file.mime.as_str(), "text/plain") {
+            return String::from_utf8(file.bytes)
+                .map_err(|_| Error::Invalid("text attachment requires UTF-8".into()));
+        }
+        file.text()
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Unsupported("use read_attachment_file for binary files".into()))
+    }
+
+    /// Read the original bytes, name and media type at a zero-based attachment position.
+    pub fn read_attachment_file(
+        &self,
+        thread: &ThreadId,
+        message: &MessageId,
+        position: usize,
+    ) -> Result<Attachment> {
         self.shared
-            .access(|db| db.read_attachment(thread, message, position))
+            .access(|db| db.read_attachment_file(thread, message, position))
     }
 
     /// Expand a message preview to its complete stored text.

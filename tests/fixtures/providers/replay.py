@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic provider peers. Recorded inbound frames keep provider IDs and model data."""
+import base64
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,10 @@ from urllib.request import Request, urlopen
 def frames(name):
     source = Path(__file__).resolve().with_name(name + ".ndjson")
     return [json.loads(row)["frame"] for row in source.read_text().splitlines()]
+
+
+def attachment(name):
+    return (Path(__file__).resolve().parent.parent / "attachments" / name).read_bytes()
 
 
 def emit(frame):
@@ -144,7 +149,12 @@ def pi():
             if msg["message"] == "hold":
                 Path("holding").touch()
                 input()
-            assert (msg["message"] == "fresh") == ("--session" not in sys.argv)
+            if msg["message"].startswith("Attachment fixture"):
+                payload, = msg["images"]
+                assert payload["type"] == "image" and payload["mimeType"] == "image/png"
+                assert base64.b64decode(payload["data"]) == attachment("diagram.png")
+            else:
+                assert (msg["message"] == "fresh") == ("--session" not in sys.argv)
             if "--extension" in sys.argv:
                 subprocess.run(["node", str(Path(__file__).with_name("check-extension.mjs")),
                                 sys.argv[sys.argv.index("--extension") + 1]], check=True, stdout=sys.stderr)
@@ -190,7 +200,13 @@ def muse():
             result = rows[1]["result"]
         elif method == "turn/start":
             prompt = p["input"][0]["text"]
-            assert p["sessionId"] == session["sessionId"] and (prompt == "fresh") == (opened == "session/start")
+            assert p["sessionId"] == session["sessionId"]
+            if prompt.startswith("Attachment fixture"):
+                payload = p["input"][1]
+                assert payload["type"] == "image" and payload["mediaType"] == "image/png"
+                assert base64.b64decode(payload["base64Data"]) == attachment("diagram.png")
+            else:
+                assert (prompt == "fresh") == (opened == "session/start")
             if prompt == "hold":
                 Path("holding").touch()
                 input()

@@ -62,6 +62,38 @@ async fn turn(rt: &Huggler, thread: &ThreadId, prompt: &str) -> Run {
     .unwrap()
 }
 
+async fn send_attachment_fixture(rt: &Huggler, thread: &ThreadId) {
+    let receipt = rt
+        .dispatch(Command {
+            id: CommandId(uuid::Uuid::new_v4().to_string()),
+            thread_id: thread.clone(),
+            action: Action::EnqueueFiles {
+                text: "Attachment fixture".into(),
+                files: vec![
+                    Attachment::from_bytes(
+                        "diagram.png".into(),
+                        include_bytes!("fixtures/attachments/diagram.png").to_vec(),
+                    )
+                    .unwrap(),
+                    Attachment::from_bytes(
+                        "report.pdf".into(),
+                        include_bytes!("fixtures/attachments/report.pdf").to_vec(),
+                    )
+                    .unwrap(),
+                ],
+            },
+        })
+        .unwrap();
+    let run = timeout(
+        Duration::from_secs(10),
+        rt.wait(thread, receipt.run_id.as_ref().unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+}
+
 async fn answer(rt: &Huggler, thread: &ThreadId, prompt: &str) -> String {
     let run = turn(rt, thread, prompt).await;
     assert_eq!(run.status, RunStatus::Completed, "{run:?}");
@@ -524,6 +556,25 @@ async fn pi_extension_calls_scoped_tool() {
 }
 
 #[tokio::test]
+async fn pi_and_muse_receive_native_image_parts() {
+    let (dir, root) = checkout();
+    let mut opts = HugglerOptions::new(dir.path().join("state"));
+    opts.agent_tools = true;
+    opts.instances
+        .push(peer(dir.path(), "muse", Provider::Muse));
+    let mut pi = peer(dir.path(), "pi", Provider::Pi);
+    pi.home = Some(dir.path().join("pi-home"));
+    opts.instances.push(pi);
+    let rt = Huggler::open(opts).await.unwrap();
+    for provider in ["pi", "muse"] {
+        let report = rt.probe_provider(provider, &root).await.unwrap();
+        let thread = launch(&rt, &root, provider, report.models.first().cloned());
+        send_attachment_fixture(&rt, &thread).await;
+    }
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn muse_observes_early_events_and_rejects_unhandled_dialogs() {
     let (dir, root) = checkout();
     let mut opts = HugglerOptions::new(dir.path().join("state"));
@@ -719,6 +770,7 @@ async fn opencode_both_generations_in_managed_and_external_modes() {
                     (2, 1142, 18)
                 );
             }
+            send_attachment_fixture(&rt, &thread).await;
             if !v2 {
                 assert!(
                     turn(&rt, &thread, "refused")

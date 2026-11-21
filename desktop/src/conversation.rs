@@ -54,7 +54,7 @@ pub struct Desktop {
     before: Option<HistoryCursor>,
     subscription: Option<Task<()>>,
     command_log: Option<CommandLog>,
-    file_preview: Option<((huggler::MessageId, usize), String)>,
+    file_preview: Option<((huggler::MessageId, usize), attachments::FilePreview)>,
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
     checkout: Entity<InputState>,
@@ -767,6 +767,7 @@ impl Desktop {
                 |name| format!("What should we build in {name}?"),
             );
             let composer = v_flex()
+                .on_drop(cx.listener(Self::drop_attachments))
                 .capture_action(cx.listener(|view, action: &Enter, window, cx| {
                     if action.secondary {
                         cx.stop_propagation();
@@ -853,6 +854,7 @@ impl Desktop {
                 .into_any_element();
         }
         let launcher = v_flex()
+            .on_drop(cx.listener(Self::drop_attachments))
             .w_full()
             .p_3()
             .gap_3()
@@ -1351,6 +1353,7 @@ impl Desktop {
         })
         .child(
             v_flex()
+                .on_drop(cx.listener(Self::drop_attachments))
                 .mx_4().mb_3().p_3().rounded_xl().bg(cx.theme().muted.opacity(0.55))
                 .gap_2()
                 .border_1()

@@ -33,9 +33,13 @@ Start with pending requests from the snapshot. Handle `Change::PermissionRequest
 - For a question, call `respond_to_question` with `UserAnswers` keyed by the supplied question IDs. Use `respond_with_attachments` for uploads keyed by question ID, or `dismiss_question` when the provider supports dismissal.
 - Remove closed requests from the host UI. Provider loss can close an unanswered request. Refresh the thread when a response races with closure.
 
-## Attach text to a message
+## Attach files to a message
 
-Call `prepare_upload(&thread, name, "text/plain", bytes)` for UTF-8 text of up to 64 KiB. Submit up to eight staged uploads in one `SendAttachments` command. A successful send claims the files for that message. Use `discard_upload` to clean up files that were staged and left unused.
+Create an `Attachment` with `Attachment::from_bytes(name, bytes)` to infer its media type, then dispatch `Action::EnqueueFiles { text, files }`. The caption can be empty. Attach up to eight files, totaling up to 50 MiB. PNG, JPEG, GIF, and WebP images can be up to 10 MiB each and 20 MiB together.
+
+To stage files for an existing thread, call `prepare_upload(&thread, name, mime, bytes)` and pass the returned IDs in `Action::SendAttachments`. A successful send claims those uploads for the message. Use `discard_upload` for unused uploads. Question responses accept UTF-8 text uploads up to 64 KiB each.
+
+The runtime inlines small UTF-8 files, adds a text excerpt for PDFs with a readable text layer, and gives the local provider a path to the original file when it needs one. Providers with native input support also receive common image formats directly. Use `read_attachment_file` with a thread, message, and zero-based position to retrieve the original bytes and media type from history.
 
 ## Resume a subscription
 
