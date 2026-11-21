@@ -11,15 +11,10 @@ macro_rules! control {
 }
 
 mod changes;
-mod checks;
 mod git;
-mod publish;
 mod questions;
 mod settings;
 mod ui;
-
-/// Editable context to bring from a checkout tool into the conversation.
-struct FollowUp(String);
 
 mod conversation;
 #[cfg(all(feature = "qualification", target_os = "macos"))]
@@ -33,7 +28,15 @@ use huggler::{Huggler, HugglerOptions};
 use std::{path::PathBuf, sync::Arc};
 
 const APP_ID: &str = "dev.huggler.stage2";
-actions!(huggler_desktop, [Quit, OpenSettings, NewConversation]);
+actions!(
+    huggler_desktop,
+    [
+        Quit,
+        OpenSettings,
+        NewConversation,
+        NewConversationWithSetup
+    ]
+);
 
 fn main() -> Result<()> {
     let state = std::env::var_os("HUGGLER_STATE_DIR")
@@ -91,11 +94,13 @@ fn main() -> Result<()> {
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-,", OpenSettings, None),
             KeyBinding::new("secondary-n", NewConversation, None),
+            KeyBinding::new("secondary-shift-n", NewConversationWithSetup, None),
         ]);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),
             items: vec![
-                MenuItem::action("New conversation", NewConversation),
+                MenuItem::action("Create", NewConversation),
+                MenuItem::action("Create with Setup…", NewConversationWithSetup),
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::separator(),
                 MenuItem::action("Quit Huggler", Quit),
@@ -119,7 +124,7 @@ fn main() -> Result<()> {
         })
         .detach();
 
-        let bounds = Bounds::centered(None, size(px(900.), px(660.)), cx);
+        let bounds = Bounds::centered(None, size(px(1120.), px(740.)), cx);
         let _window = cx
             .open_window(
                 WindowOptions {

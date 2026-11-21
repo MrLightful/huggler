@@ -11,30 +11,36 @@ from desktop_check import ROOT, isolated_env, launch_thread, run_window, send_me
 
 
 def check_models(executable, tmp, env):
-    checkout = tmp / "model-checkout"
+    checkout = tmp.resolve() / "model-checkout"
     state = tmp / "model-state"
     subprocess.run(["git", "init", "--quiet", checkout], check=True)
     env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
     default = "model/Provider default"
     run_window(executable, state, [
-        {"click": "Git checkout"}, {"type": str(checkout)}, {"click": default},
+        {"click": default}, {"click": "provider/available"}, {"click": "provider/Codex"}, {"key": "escape"}, {"click": "First message"},
+        {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
+        {"see": "provider-status/Codex app-server · version unknown · login unverified · 2 models"},
+        {"click": default},
         {"see": "model-option/fixture-fast"}, {"type": "deep"},
         {"absent": "model-option/fixture-fast"}, {"key": "enter"}, {"see": "model/fixture-deep"},
-        {"click": "available"}, {"see": default}, {"click": default},
+        {"click": "model/fixture-deep"}, {"click": "provider/available"}, {"see": default},
         {"see": "model-option/grok-build"}, {"absent": "model-option/fixture-deep"},
-        {"key": "escape"}, {"click": "Codex"}, {"click": default},
+        {"key": "escape"}, {"click": default}, {"click": "provider/Codex"},
         {"click": "model-option/fixture-deep"}, {"click": "Conversation name"}, {"type": "Models"},
         {"click": "Open conversation"}, {"see": "status/Ready"}, {"see": "model/fixture-deep"},
-        *send_message("First turn"), {"see": "status/Completed"},
+        *send_message("First turn"), {"see": "Ready/Models/Completed"},
         {"click": "Message"}, {"type": "Second turn"}, {"click": "model/fixture-deep"},
         {"click": "model-option/fixture-fast"}, {"see": "model/fixture-fast"},
-        {"click": "Send"}, {"see": "Codex/reply Second turn"}, {"see": "status/Completed"},
+        {"click": "Send"}, {"see": "Codex/reply Second turn"}, {"see": "Ready/Models/Completed"},
     ], env)
+    frames_path = checkout / "frames.ndjson"
+    frames = [json.loads(line) for line in frames_path.read_text().splitlines()]
+    assert sum(frame.get("method") == "model/list" for frame in frames) == 1
     run_window(executable, state, [
         {"see": "model/fixture-fast"}, {"click": "model/fixture-fast"},
         {"click": "model-option/Provider default"}, {"see": default},
         *send_message("Default turn"), {"see": "Codex/reply Default turn"},
-        {"see": "status/Completed"},
+        {"see": "Ready/Models/Completed"},
     ], env)
     frames = [json.loads(line) for line in (checkout / "frames.ndjson").read_text().splitlines()]
     for methods in (("thread/start", "thread/resume"), ("turn/start",)):
@@ -45,7 +51,7 @@ def check_models(executable, tmp, env):
         {"click": default}, {"see": "model-status/This provider listed no models."},
         {"see": "Retry models"}, {"click": "model-option/Provider default"},
         *send_message("Empty catalog"), {"see": "Codex/reply Empty catalog"},
-        {"see": "status/Completed"},
+        {"see": "Ready/Models/Completed"},
     ], env)
 
 
@@ -62,12 +68,12 @@ def main():
         ]))
         status = "provider-status/"
         steps = [
-            {"click": "Git checkout"}, {"type": str(tmp)},
-            {"click": "unavailable"}, {"click": "Check provider"},
+            {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(tmp)},
+            {"click": "model/Provider default"}, {"click": "provider/unavailable"}, {"click": "model-option/Provider default"}, {"absent": "model-option/Provider default"}, {"click": "Check provider"},
             {"see": status + "install the provider executable or configure its path: " + str(missing)},
             {"click": "model/Provider default"}, {"see": "Retry models"},
             {"click": "Retry models"}, {"see": "model-option/Provider default"}, {"key": "escape"},
-            {"click": "available"}, {"click": "Check provider"},
+            {"click": "model/Provider default"}, {"click": "provider/available"}, {"click": "model-option/Provider default"}, {"absent": "model-option/Provider default"}, {"click": "Check provider"},
             {"see": status + "ACP v1 · 1 · login unverified · 2 models"},
         ]
         env = dict(isolated_env(tmp), HUGGLER_PROVIDERS=str(config), HUGGLER_CODEX=str(missing))
@@ -93,12 +99,11 @@ def main():
             {"see": "Checkout unavailable"}, {"see": "You/Try Codex"},
         ], env)
         # Removing the inner .git leaves a directory inside a valid parent checkout.
-        # Review and publication must both report the missing inner repository.
+        # The sidebar must report the missing inner repository.
         (moved / ".git").rename(tmp / "disconnected-git")
         run_window(executable, state, [
-            {"click": "thread/Recovered"}, {"click": "Changes"},
-            {"contains": "not a git repository"}, {"absent": "Stage file"}, {"click": "Publish"},
-            {"contains": "not a git repository"}, {"absent": "Push branch"},
+            {"click": "thread/Recovered"},
+            {"contains": "not a git repository"},
         ], dict(env, LC_ALL="C"))
     print("Native window provider discovery passed")
 

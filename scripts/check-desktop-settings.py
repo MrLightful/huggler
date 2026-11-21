@@ -20,8 +20,7 @@ def check(executable):
         prefs = state / "preferences.json"
         run_window(executable, state, [
             *launch_thread(checkout, "Original"),
-            {"key": "cmd-n"}, {"click": "Conversation name"}, {"type": "New default"},
-            {"key": "cmd-n"},
+            {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "New default"},
             {"key": "cmd-,"}, {"click": "Dark"}, {"click": "default/claudeAgent"},
             {"click": "Codex executable"}, {"type": "relative/path"}, {"click": "Save path"},
             {"see": "settings-error/Enter the full path to the Codex executable."},
@@ -50,17 +49,18 @@ exec /usr/bin/git "$@"
         git.chmod(0o755)
         run_window(executable, state, [
             {"resize": [640, 440]}, {"key": "cmd-n"},
-            {"click": "Git checkout"}, {"type": str(checkout)},
+            {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
             {"click": "Conversation name"}, {"type": "After restart"},
             {"click": "Open conversation"}, {"key": "cmd-,"}, {"click": "Light"},
             {"see": "thread/After restart"}, {"click": "Done"}, {"see": "status/Ready"},
             {"click": "Settings"}, {"click": "Dark"}, {"click": "Done"},
-            {"key": "cmd-n"}, {"click": "Conversation name"}, {"type": "Background"},
+            {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Background"},
             {"click": "Open conversation"}, {"click": "thread/Original"},
             {"click": "Settings"}, {"click": "Light"}, {"see": "thread/Background"}, {"click": "Done"},
             {"click": "Message"}, {"type": "Review my draft"},
-            {"click": "Changes"}, {"click": "Settings"}, {"click": "Done"},
-            {"see": "Working tree clean"}, {"click": "Conversation"}, {"click": "Send"},
+            {"click": "Settings"}, {"click": "Done"},
+            {"click": "Show changes"}, {"see": "Working tree clean"},
+            {"click": "Hide changes"}, {"absent": "Refresh changes"}, {"click": "Send"},
             {"see": "Codex/reply Review my draft"},
         ], dict(env, PATH=f"{root}:{env['PATH']}"))
         with sqlite3.connect(state / "huggler.sqlite3") as db:

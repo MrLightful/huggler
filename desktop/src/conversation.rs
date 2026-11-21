@@ -1,21 +1,22 @@
+mod attachments;
 mod models;
+mod project_actions;
 mod sidebar;
 
-use models::ProviderCatalog;
+use attachments::Attachments;
+use gpui_component::list::ListState;
+use models::{Models, ProviderCatalog};
 
 use crate::{
-    FollowUp,
     changes::Changes,
-    checks::Checks,
     git,
-    publish::Publish,
     questions::Questions,
     settings::{Preferences, Settings, SettingsEvent},
-    ui::{choice, field, heading, hint, label, section_title},
+    ui::{field, hint, label},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Selectable,
+    ActiveTheme, Disableable, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Enter, Input, InputEvent, InputState},
@@ -23,55 +24,52 @@ use gpui_component::{
 };
 use huggler::{
     Action, Command, CommandId, ConversationDetail, ConversationSummary, HistoryCursor, Huggler,
-    PermissionRequest, Provider, ProviderInstanceId, Role, RunId, ThreadId,
+    PermissionRequest, ProviderInstanceId, Role, RunId, ThreadId,
 };
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Conversation,
-    Changes,
-    Checks,
-    Publish,
-}
-
 struct Workspace {
     root: PathBuf,
     changes: Entity<Changes>,
-    checks: Entity<Checks>,
-    publish: Entity<Publish>,
     draft: Entity<InputState>,
+    attachments: Attachments,
     questions: HashMap<huggler::RequestId, Entity<Questions>>,
 }
 
 pub struct Desktop {
     settings: Entity<Settings>,
     show_settings: bool,
+    navigation: sidebar::Sidebar,
+    changes_sidebar: sidebar::Sidebar,
     focus: FocusHandle,
-    tab: Tab,
     workspaces: HashMap<ThreadId, Workspace>,
     runtime: Arc<Huggler>,
     selection_file: PathBuf,
+    scratch_root: PathBuf,
     threads: Vec<ConversationSummary>,
-    show_working: bool,
+    expanded_sections: HashMap<sidebar::Section, bool>,
     current: Option<ConversationDetail>,
     checkout_unavailable: bool,
     before: Option<HistoryCursor>,
-    search: Entity<InputState>,
-    query: String,
     subscription: Option<Task<()>>,
     command_log: Option<CommandLog>,
+    file_preview: Option<((huggler::MessageId, usize), String)>,
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
     checkout: Entity<InputState>,
     branch: Entity<InputState>,
     launching: Option<ThreadId>,
     name: Entity<InputState>,
+    starter: Entity<InputState>,
+    starter_attachments: Attachments,
+    launch_setup: bool,
     prompt: Entity<InputState>,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
-    provider_check: Option<Entity<ProviderCatalog>>,
+    model_picker: Option<Entity<ListState<Models>>>,
+    model_catalogs: HashMap<(ProviderInstanceId, PathBuf), Entity<ProviderCatalog>>,
+    checkout_preload: Option<Task<()>>,
     error: Option<String>,
 }
 
@@ -111,7 +109,7 @@ impl Desktop {
                         view.focus_workspace(window, cx);
                     }
                     SettingsEvent::DefaultProvider(id) => {
-                        view.choose_provider(id);
+                        view.choose_provider(id, cx);
                     }
                 }
                 cx.notify();
@@ -122,44 +120,76 @@ impl Desktop {
         let mut view = Self {
             settings,
             show_settings: false,
+            navigation: sidebar::Sidebar::new(256.),
+            changes_sidebar: sidebar::Sidebar::new(300.),
             focus: cx.focus_handle(),
-            tab: Tab::Conversation,
             workspaces: HashMap::new(),
             runtime,
+            scratch_root: state.join("scratch"),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
-            show_working: false,
+            expanded_sections: HashMap::new(),
             current: None,
             checkout_unavailable: false,
             before: None,
-            search: cx.new(|cx| InputState::new(window, cx).placeholder("Search messages")),
-            query: String::new(),
             subscription: None,
             command_log: None,
+            file_preview: None,
             thread_updates: None,
             history_scroll: ScrollHandle::new(),
-            checkout: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/project")),
+            checkout: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(
+                        std::env::current_dir()
+                            .ok()
+                            .filter(|root| root.join(".git").exists())
+                            .map(|root| root.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    )
+                    .placeholder("/path/to/project")
+            }),
             branch: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("Leave blank to use this checkout")
             }),
             launching: None,
-            name: cx
-                .new(|cx| InputState::new(window, cx).placeholder("e.g. Fix checkout validation")),
+            name: cx.new(|cx| InputState::new(window, cx).placeholder("Name this conversation…")),
+            launch_setup: false,
+            starter_attachments: Attachments::default(),
+            starter: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .auto_grow(3, 7)
+                    .placeholder("Describe a task or ask a question…")
+            }),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
             instance,
             launch_model: None,
-            provider_check: None,
+            model_picker: None,
+            model_catalogs: HashMap::new(),
+            checkout_preload: None,
             error: None,
         };
         cx.subscribe(&view.checkout, |view, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 view.launch_model = None;
-                view.provider_check = None;
+                view.model_picker = None;
+                let delay = cx
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(300));
+                view.checkout_preload = Some(cx.spawn(async move |view, cx| {
+                    delay.await;
+                    let _ = view.update(cx, |view, cx| view.preload_models(cx));
+                }));
                 cx.notify();
             }
         })
         .detach();
         cx.subscribe(&view.name, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe(&view.starter, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
@@ -210,7 +240,8 @@ impl Desktop {
         if let Some(thread) = selected {
             self.select(thread.id.clone(), window, cx)?;
         } else {
-            self.checkout.focus_handle(cx).focus(window);
+            self.starter.focus_handle(cx).focus(window);
+            self.preload_models(cx);
         }
         Ok(list.revision)
     }
@@ -222,6 +253,10 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> huggler::Result<()> {
         self.launching = None;
+        self.ensure_workspace(&id, window, cx)?;
+        self.workspaces[&id]
+            .changes
+            .update(cx, |panel, cx| panel.refresh(cx));
         if self.current.as_ref().is_some_and(|thread| thread.id == id) {
             self.focus_workspace(window, cx);
             self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
@@ -229,19 +264,68 @@ impl Desktop {
         }
         let snapshot = self.runtime.detail(&id, None, "", 32)?;
         let mut cursor = snapshot.history.sequence;
-        if !self.workspaces.contains_key(&id) {
-            let root = self.runtime.thread_checkout(&id)?;
-            let changes = cx.new(|cx| Changes::new(root.clone(), window, cx));
-            let checks = cx.new(|cx| Checks::new(self.runtime.clone(), id.clone(), window, cx));
-            let publish = cx.new(|_| Publish::new(root.clone()));
-            cx.subscribe_in(&changes, window, |v, _, msg: &FollowUp, w, cx| {
-                v.follow_up(msg, w, cx)
-            })
-            .detach();
-            cx.subscribe_in(&checks, window, |v, _, msg: &FollowUp, w, cx| {
-                v.follow_up(msg, w, cx)
-            })
-            .detach();
+        self.file_preview = None;
+        self.command_log = None;
+        self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
+        self.prompt = self.workspaces[&id].draft.clone();
+        self.model_picker = None;
+        self.current = Some(snapshot);
+        self.preload_models(cx);
+        self.before = None;
+        self.focus_workspace(window, cx);
+        self.history_scroll.scroll_to_bottom();
+        let runtime = self.runtime.clone();
+        let selected = id.clone();
+        self.subscription = Some(cx.spawn(async move |view, cx| {
+            loop {
+                let change = runtime.wait_for_change(&selected, cursor).await;
+                match view.update(cx, |view, cx| -> Option<i64> {
+                    if view.current.as_ref()?.id != selected {
+                        return None;
+                    }
+                    let old = view.current.as_ref()?;
+                    let foreground = old.foreground_run.as_ref().map(|r| r.id.clone());
+                    let latest = old.latest_run.as_ref().map(|r| (r.id.clone(), r.status));
+                    let result = change.and_then(|_| view.refresh());
+                    if let Err(error) = result {
+                        view.report(Err(error), cx);
+                        return None;
+                    }
+                    cx.notify();
+                    let thread = view.current.as_ref()?;
+                    let finished = foreground.is_some()
+                        && foreground.as_ref() != thread.foreground_run.as_ref().map(|r| &r.id);
+                    let latest_finished = thread.latest_run.as_ref().is_some_and(|r| {
+                        r.status.terminal()
+                            && latest
+                                .as_ref()
+                                .is_none_or(|(id, status)| id != &r.id || *status != r.status)
+                    });
+                    if finished || latest_finished {
+                        view.workspaces[&selected]
+                            .changes
+                            .update(cx, |panel, cx| panel.refresh(cx));
+                    }
+                    Some(thread.history.sequence)
+                }) {
+                    Ok(Some(next)) => cursor = next,
+                    _ => break,
+                }
+            }
+        }));
+        fs::write(&self.selection_file, id.0)?;
+        Ok(())
+    }
+
+    fn ensure_workspace(
+        &mut self,
+        id: &ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> huggler::Result<()> {
+        if !self.workspaces.contains_key(id) {
+            let root = self.runtime.thread_checkout(id)?;
+            let changes = cx.new(|_| Changes::new(root.clone()));
             let draft = cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(2, 5)
@@ -258,59 +342,21 @@ impl Desktop {
                 Workspace {
                     root,
                     changes,
-                    checks,
-                    publish,
                     draft,
+                    attachments: Attachments::default(),
                     questions: HashMap::new(),
                 },
             );
         }
-        self.tab = Tab::Conversation;
-        self.command_log = None;
-        self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
-        self.prompt = self.workspaces[&id].draft.clone();
-        self.current = Some(snapshot);
-        self.before = None;
-        self.query.clear();
-        self.search
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.focus_workspace(window, cx);
-        self.history_scroll.scroll_to_bottom();
-        let runtime = self.runtime.clone();
-        let selected = id.clone();
-        self.subscription = Some(cx.spawn(async move |view, cx| {
-            loop {
-                let change = runtime.wait_for_change(&selected, cursor).await;
-                match view.update(cx, |view, cx| -> Option<i64> {
-                    if view.current.as_ref()?.id != selected {
-                        return None;
-                    }
-                    let result = change.and_then(|_| view.refresh());
-                    if let Err(error) = result {
-                        view.report(Err(error), cx);
-                        return None;
-                    }
-                    cx.notify();
-                    Some(view.current.as_ref()?.history.sequence)
-                }) {
-                    Ok(Some(next)) => cursor = next,
-                    _ => break,
-                }
-            }
-        }));
-        fs::write(&self.selection_file, id.0)?;
         Ok(())
     }
 
     fn refresh(&mut self) -> huggler::Result<()> {
         if let Some(old) = &self.current {
-            let thread = match self
-                .runtime
-                .detail(&old.id, self.before.as_ref(), &self.query, 32)
-            {
+            let thread = match self.runtime.detail(&old.id, self.before.as_ref(), "", 32) {
                 Err(huggler::Error::HistoryChanged) => {
                     self.before = None;
-                    self.runtime.detail(&old.id, None, &self.query, 32)?
+                    self.runtime.detail(&old.id, None, "", 32)?
                 }
                 result => result?,
             };
@@ -344,27 +390,6 @@ impl Desktop {
         Ok(())
     }
 
-    fn search_messages(&mut self, cx: &mut Context<Self>) {
-        self.query = self.search.read(cx).value().to_string();
-        self.before = None;
-        let result = self.refresh();
-        self.report(result, cx);
-    }
-
-    fn follow_up(&mut self, msg: &FollowUp, window: &mut Window, cx: &mut Context<Self>) {
-        let draft = self.prompt.read(cx).value();
-        let text = if draft.is_empty() {
-            msg.0.clone()
-        } else {
-            format!("{draft}\n\n{}", msg.0)
-        };
-        self.prompt
-            .update(cx, |s, cx| s.set_value(text, window, cx));
-        self.tab = Tab::Conversation;
-        self.prompt.focus_handle(cx).focus(window);
-        cx.notify();
-    }
-
     fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let choice = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -381,7 +406,7 @@ impl Desktop {
                             v.checkout.update(cx, |s, cx| {
                                 s.set_value(path.to_string_lossy().into_owned(), window, cx)
                             });
-                            v.name.focus_handle(cx).focus(window);
+                            v.focus_workspace(window, cx);
                         }
                     }
                     Ok(Err(e)) => v.error = Some(e.to_string()),
@@ -394,6 +419,7 @@ impl Desktop {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.model_picker = None;
         self.show_settings = true;
         self.settings.read(cx).focus.focus(window);
         cx.notify();
@@ -404,15 +430,20 @@ impl Desktop {
             self.settings.read(cx).focus.focus(window);
             return;
         }
-        match (&self.current, self.tab) {
-            (None, _) if self.launching.is_none() => self.checkout.focus_handle(cx).focus(window),
-            (Some(_), Tab::Conversation) => self.prompt.focus_handle(cx).focus(window),
+        match &self.current {
+            None if self.launch_setup && self.launching.is_none() => {
+                self.name.focus_handle(cx).focus(window)
+            }
+            None if self.launching.is_none() => self.starter.focus_handle(cx).focus(window),
+            Some(_) => self.prompt.focus_handle(cx).focus(window),
             _ => self.focus.focus(window),
         }
     }
 
-    fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.model_picker = None;
         self.show_settings = false;
+        self.launch_setup = setup;
         if self.current.is_none() {
             self.focus_workspace(window, cx);
             cx.notify();
@@ -420,39 +451,47 @@ impl Desktop {
         }
         self.launch_model = None;
         self.instance = self.settings.read(cx).default_provider();
-        self.provider_check = None;
         self.subscription = None;
         self.command_log = None;
         self.current = None;
+        self.preload_models(cx);
         self.error = None;
         self.name
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.branch
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.checkout.focus_handle(cx).focus(window);
+        self.focus_workspace(window, cx);
         cx.notify();
     }
 
     fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.launching.is_some() {
+        if self.launching.is_some() || self.starter_attachments.loading {
             return;
         }
-        let name = self.name.read(cx).value().to_string();
-        if name.trim().is_empty() {
-            self.report(
-                Err(huggler::Error::Invalid("enter a conversation name".into())),
-                cx,
-            );
+        let message = self.starter.read(cx).value().to_string();
+        let explicit_name = self.name.read(cx).value();
+        let name = if explicit_name.trim().is_empty() {
+            let mut chars = message.trim().lines().next().unwrap_or("").chars();
+            let mut title: String = chars.by_ref().take(72).collect();
+            if chars.next().is_some() {
+                title.push('…');
+            }
+            if title.is_empty() {
+                self.starter_attachments
+                    .first_name()
+                    .unwrap_or("")
+                    .to_owned()
+            } else {
+                title
+            }
+        } else {
+            explicit_name.trim().to_owned()
+        };
+        if name.is_empty() {
             return;
         }
         let checkout = self.checkout.read(cx).value();
-        if checkout.trim().is_empty() {
-            self.report(
-                Err(huggler::Error::Invalid("choose a Git checkout".into())),
-                cx,
-            );
-            return;
-        }
+        let scratch_root = self.scratch_root.clone();
         let branch = self.branch.read(cx).value();
         let model = self.launch_model.clone();
         let instance = self.instance.clone();
@@ -463,10 +502,21 @@ impl Desktop {
         self.error = None;
         cx.notify();
         let thread = id.clone();
+        self.starter
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        let attachments = std::mem::take(&mut self.starter_attachments);
+        let first_message = (!message.trim().is_empty() || !attachments.is_empty())
+            .then(|| attachments.action(message.clone()));
         let launch_name = name.clone();
         let launch = cx.background_spawn(async move {
-            let source = runtime.open_project(checkout.as_str())?;
-            let branch = branch.trim();
+            let scratch = checkout.trim().is_empty();
+            let source = if scratch {
+                fs::create_dir_all(&scratch_root)?;
+                runtime.create_scratch(&scratch_root.join(&thread.0))?
+            } else {
+                runtime.open_project(checkout.trim())?
+            };
+            let branch = if scratch { "" } else { branch.trim() };
             let project = if branch.is_empty() {
                 source
             } else {
@@ -480,7 +530,7 @@ impl Desktop {
             };
             if let Err(error) = runtime.dispatch(Command {
                 id: CommandId(Uuid::new_v4().to_string()),
-                thread_id: thread,
+                thread_id: thread.clone(),
                 action: Action::LaunchInstance {
                     project: project.id.clone(),
                     instance,
@@ -493,7 +543,18 @@ impl Desktop {
                 }
                 return Err(error.into());
             }
-            anyhow::Ok(())
+            let sent = if let Some(action) = first_message {
+                runtime
+                    .dispatch(Command {
+                        id: CommandId(Uuid::new_v4().to_string()),
+                        thread_id: thread,
+                        action,
+                    })
+                    .map(|_| ())
+            } else {
+                Ok(())
+            };
+            anyhow::Ok(sent)
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = launch.await;
@@ -503,17 +564,34 @@ impl Desktop {
                     v.launching = None;
                 }
                 match result {
-                    Ok(()) if still_open => {
-                        let selected = v.select(id, w, cx);
-                        v.report(selected, cx);
+                    Ok(sent) => {
+                        let result = (|| {
+                            if sent.is_err() {
+                                v.ensure_workspace(&id, w, cx)?;
+                                v.workspaces.get_mut(&id).unwrap().attachments = attachments;
+                                v.workspaces[&id]
+                                    .draft
+                                    .update(cx, |input, cx| input.set_value(message, w, cx));
+                            }
+                            if still_open {
+                                v.select(id, w, cx)?;
+                            }
+                            sent
+                        })();
+                        v.report(result, cx);
                     }
                     Err(error) => {
+                        if v.starter.read(cx).value().is_empty() && v.starter_attachments.is_empty()
+                        {
+                            v.starter_attachments = attachments;
+                            v.starter
+                                .update(cx, |input, cx| input.set_value(message, w, cx));
+                        }
                         v.error = Some(format!("Could not open {launch_name}. {error}"));
                         if still_open {
                             v.focus_workspace(w, cx);
                         }
                     }
-                    Ok(()) => {}
                 }
                 cx.notify();
             });
@@ -521,17 +599,16 @@ impl Desktop {
         .detach();
     }
 
-    fn send(
-        &mut self,
-        plan: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> huggler::Result<()> {
+    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) -> huggler::Result<()> {
         let Some(thread) = &self.current else {
             return Ok(());
         };
         let text = self.prompt.read(cx).value().to_string();
-        if text.trim().is_empty() {
+        let attachments = &self.workspaces[&thread.id].attachments;
+        if attachments.loading {
+            return Ok(());
+        }
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(huggler::Error::Invalid("enter a message".into()));
         }
         if thread.foreground_run.is_none() && thread.queued_count == 0 {
@@ -546,132 +623,363 @@ impl Desktop {
         self.runtime.dispatch(Command {
             id: CommandId(Uuid::new_v4().to_string()),
             thread_id: thread.id.clone(),
-            action: if plan {
-                Action::SendPlan { text }
-            } else {
-                Action::Enqueue { text }
-            },
+            action: attachments.action(text),
         })?;
+        self.workspaces.get_mut(&thread.id).unwrap().attachments = Attachments::default();
         self.prompt
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.refresh()
     }
 
-    fn choose_provider(&mut self, id: &ProviderInstanceId) {
+    fn choose_provider(&mut self, id: &ProviderInstanceId, cx: &mut Context<Self>) {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
-            self.provider_check = None;
+            self.preload_models(cx);
         }
     }
 
-    fn launch_form(&self, compact: bool, cx: &Context<Self>) -> Div {
-        if self.launching.is_some() {
-            return v_flex().p_5().child(label("Opening conversation…"));
-        }
-        let check = self.provider_check.as_ref().map(|check| check.read(cx));
-        let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
-        let providers = self.runtime.provider_instances().map(|instance| {
-            let id = instance.id.clone();
-            let name =
-                SharedString::from(self.runtime.output().provider_label(id.as_str()).to_owned());
-            control!(
-                name.clone(),
-                choice(
-                    SharedString::from(format!("provider-{id}")),
-                    name,
-                    id == self.instance
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.choose_provider(&id);
-                    cx.notify();
-                }))
-            )
-        });
-        let check_button = Button::new("check-provider")
-            .label("Check provider")
-            .disabled(checkout_empty || check.is_some_and(ProviderCatalog::loading))
-            .on_click(cx.listener(|view, _, _, cx| {
-                view.catalog(true, cx);
-            }));
-        let provider_section = v_flex()
+    fn workspace_header(&self, changes_open: bool, cx: &Context<Self>) -> Div {
+        let checkout = self.checkout.read(cx).value();
+        let (root, title) = match &self.current {
+            Some(thread) => (
+                self.workspaces[&thread.id].root.as_path(),
+                thread.name.as_str(),
+            ),
+            None => (std::path::Path::new(checkout.as_str()), "Create"),
+        };
+        let project = root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Workspace");
+        let crumb = h_flex()
+            .ml_2()
+            .flex_1()
+            .min_w_0()
             .gap_2()
-            .pt_3()
-            .border_t_1()
+            .text_sm()
+            .child(IconName::Folder)
+            .child(
+                div()
+                    .max_w(relative(0.40))
+                    .truncate()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(project.to_owned()),
+            )
+            .child(div().text_color(cx.theme().muted_foreground).child("/"))
+            .child(div().min_w_0().truncate().child(title.to_owned()));
+        h_flex()
+            .h_10()
+            .flex_shrink_0()
+            .px_4()
+            .border_b_1()
             .border_color(cx.theme().border)
-            .child(section_title("Coding provider"))
+            .gap_2()
+            .child({
+                let open = self.navigation.is_open(true);
+                let action = if open {
+                    "Hide conversations"
+                } else {
+                    "Show conversations"
+                };
+                control!(
+                    action,
+                    Button::new("toggle-navigation")
+                        .ghost()
+                        .small()
+                        .icon(IconName::PanelLeft)
+                        .selected(open)
+                        .tooltip(action)
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.navigation.toggle(open);
+                            cx.notify();
+                        }))
+                )
+            })
+            .when(!self.show_settings, |header| header.child(crumb))
+            .when(self.current.is_some() && !self.show_settings, |header| {
+                let action = if changes_open {
+                    "Hide changes"
+                } else {
+                    "Show changes"
+                };
+                header.child(self.project_actions(cx)).child(control!(
+                    action,
+                    Button::new("toggle-changes")
+                        .ghost()
+                        .small()
+                        .icon(IconName::PanelRight)
+                        .selected(changes_open)
+                        .tooltip(action)
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.changes_sidebar.toggle(changes_open);
+                            cx.notify();
+                        }))
+                ))
+            })
+    }
+
+    fn send_controls(
+        &self,
+        attachments: &Attachments,
+        _name: &'static str,
+        button: Button,
+        cx: &Context<Self>,
+    ) -> Div {
+        h_flex()
+            .gap_2()
+            .flex_shrink_0()
+            .child(self.attach_button(attachments, cx))
+            .child(control!(_name, button.primary()))
+    }
+
+    fn send_icon(id: &'static str, tooltip: &'static str) -> Button {
+        Button::new(id)
+            .large()
+            .rounded(px(999.))
+            .icon(IconName::ArrowUp)
+            .tooltip(tooltip)
+    }
+
+    fn launch_form(&self, compact: bool, cx: &Context<Self>) -> AnyElement {
+        if self.launching.is_some() {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(label("Opening conversation…"))
+                .into_any_element();
+        }
+        let check = self
+            .model_catalogs
+            .get(&self.model_source(cx))
+            .map(|check| check.read(cx));
+        let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
+        let empty_message =
+            self.starter.read(cx).value().trim().is_empty() && self.starter_attachments.is_empty();
+        if !self.launch_setup {
+            let checkout = self.checkout.read(cx).value();
+            let project = std::path::Path::new(checkout.trim())
+                .file_name()
+                .and_then(|name| name.to_str());
+            let heading = project.map_or_else(
+                || "What should we build?".into(),
+                |name| format!("What should we build in {name}?"),
+            );
+            let composer = v_flex()
+                .capture_action(cx.listener(|view, action: &Enter, window, cx| {
+                    if action.secondary {
+                        cx.stop_propagation();
+                        if !view.starter.read(cx).value().trim().is_empty()
+                            || !view.starter_attachments.is_empty()
+                        {
+                            view.launch(window, cx);
+                        }
+                    }
+                }))
+                .w_full()
+                .p_3()
+                .gap_2()
+                .rounded_xl()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted.opacity(0.55))
+                .children(self.attachment_list(&self.starter_attachments, cx))
+                .child(control!(
+                    "First message",
+                    Input::new(&self.starter).appearance(false)
+                ))
+                .child(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(self.model_control(cx))
+                        .child(
+                            self.send_controls(
+                                &self.starter_attachments,
+                                "Send first message",
+                                Self::send_icon("send-first", "Send first message (⌘Enter)")
+                                    .disabled(empty_message || self.starter_attachments.loading)
+                                    .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
+                                cx,
+                            ),
+                        ),
+                );
+            let body = v_flex()
+                .w_full()
+                .max_w(px(780.))
+                .p_4()
+                .gap_3()
+                .items_center()
+                .child(
+                    div()
+                        .w_full()
+                        .text_center()
+                        .text_3xl()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(heading),
+                )
+                .when(!checkout_empty, |body| {
+                    body.child(control!(
+                        "Start without a project",
+                        Button::new("projectless")
+                            .small()
+                            .ghost()
+                            .label("or start without a project")
+                            .on_click(cx.listener(|v, _, w, cx| {
+                                v.checkout.update(cx, |s, cx| s.set_value("", w, cx));
+                                v.branch.update(cx, |s, cx| s.set_value("", w, cx));
+                                v.focus_workspace(w, cx);
+                            }))
+                    ))
+                })
+                .child(composer)
+                .child(h_flex().w_full().justify_between().child(control!(
+                            "Choose project",
+                            Button::new("project")
+                                .ghost()
+                                .small()
+                                .icon(IconName::FolderOpen)
+                                .label(project.unwrap_or("Choose project").to_owned())
+                                .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
+                        )));
+            return v_flex()
+                .id("starter")
+                .flex_1()
+                .min_h_0()
+                .items_center()
+                .overflow_y_scroll()
+                .child(body.flex_shrink_0().my_auto())
+                .into_any_element();
+        }
+        let launcher = v_flex()
+            .w_full()
+            .p_3()
+            .gap_3()
+            .rounded_xl()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted.opacity(0.55))
+            .children(self.attachment_list(&self.starter_attachments, cx))
+            .child(control!(
+                "Conversation name",
+                Input::new(&self.name).appearance(false)
+            ))
             .child(
                 h_flex()
                     .gap_2()
                     .justify_between()
                     .flex_wrap()
-                    .child(h_flex().gap_1().flex_wrap().children(providers))
-                    .child(control!("Check provider", check_button)),
+                    .child(self.model_control(cx))
+                    .child(
+                        self.send_controls(
+                            &self.starter_attachments,
+                            if empty_message {
+                                "Open conversation"
+                            } else {
+                                "Send first message"
+                            },
+                            (if empty_message {
+                                Button::new("launch")
+                                    .small()
+                                    .label("Open conversation")
+                                    .icon(IconName::ArrowRight)
+                            } else {
+                                Self::send_icon("launch", "Send first message")
+                            })
+                            .disabled(
+                                self.starter_attachments.loading
+                                    || (empty_message
+                                        && self.name.read(cx).value().trim().is_empty()),
+                            )
+                            .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
+                            cx,
+                        ),
+                    ),
+            );
+        let context = h_flex()
+            .items_end()
+            .gap_3()
+            .when(compact, |row| row.flex_col().items_start())
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .when(compact, |field| field.w_full().flex_none())
+                    .child(label("Git checkout"))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(control!("Git checkout", Input::new(&self.checkout))),
+                            )
+                            .child(control!(
+                                "Browse",
+                                Button::new("browse")
+                                    .ghost()
+                                    .icon(IconName::FolderOpen)
+                                    .tooltip("Browse for a checkout")
+                                    .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
+                            )),
+                    ),
             )
-            .child(self.model_control(self.launch_model.as_deref(), checkout_empty, cx))
-            .when_some(check, |panel, check| {
-                let status = check.status();
-                panel.child(control!(
-                    format!("provider-status/{status}"),
-                    hint(status, cx)
-                ))
-            });
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(compact, |field| field.w_full().flex_none())
+                    .child(field("New worktree branch (optional)", &self.branch)),
+            );
         let body = v_flex()
             .w_full()
-            .max_w(px(720.))
-            .p_5()
-            .gap_4()
-            .when(compact, |form| form.p_3().gap_2())
-            .child(heading("New conversation"))
+            .max_w(px(736.))
+            .p_4()
+            .gap_3()
+            .child(control!(
+                "Back to message",
+                Button::new("back-to-message")
+                    .small()
+                    .ghost()
+                    .label("Back to message")
+                    .on_click(cx.listener(|v, _, w, cx| v.new_conversation(false, w, cx)))
+            ))
+            .child(launcher)
+            .child(context)
             .child(
                 h_flex()
                     .gap_2()
-                    .items_end()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(field("Git checkout", &self.checkout)),
-                    )
+                    .flex_wrap()
                     .child(control!(
-                        "Browse",
-                        Button::new("browse")
-                            .label("Browse…")
-                            .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
-                    )),
-            )
-            .child(field("Conversation name", &self.name))
-            .child(field("New worktree branch (optional)", &self.branch))
-            .child(provider_section);
+                        "Check provider",
+                        Button::new("check-provider")
+                            .small()
+                            .ghost()
+                            .label("Check provider")
+                            .disabled(checkout_empty || check.is_some_and(ProviderCatalog::loading))
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.catalog(true, cx);
+                            }))
+                    ))
+                    .when_some(check, |row, check| {
+                        let status = check.status();
+                        row.child(control!(
+                            format!("provider-status/{status}"),
+                            hint(status, cx)
+                        ))
+                    }),
+            );
         v_flex()
-            .size_full()
+            .id("launch-form")
+            .flex_1()
             .min_h_0()
-            .child(
-                div()
-                    .id("launch-form")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(body),
-            )
-            .child(
-                h_flex()
-                    .px_5()
-                    .py_3()
-                    .flex_shrink_0()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(control!(
-                        "Open conversation",
-                        Button::new("launch")
-                            .primary()
-                            .label("Open conversation")
-                            .disabled(
-                                checkout_empty || self.name.read(cx).value().trim().is_empty()
-                            )
-                            .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
-                    )),
-            )
+            .items_center()
+            .overflow_y_scroll()
+            .child(body.flex_shrink_0().my_auto())
+            .into_any_element()
     }
 
     fn permission(
@@ -882,131 +1190,43 @@ impl Desktop {
             .as_ref()
             .or(thread.latest_run.as_ref());
         let busy = thread.foreground_run.is_some() || thread.queued_count > 0;
-        let empty_draft = self.prompt.read(cx).value().trim().is_empty();
-        let status = last_run.map_or_else(|| "Ready".to_owned(), |run| format!("{:?}", run.status));
+        let attachments = &self.workspaces[&thread.id].attachments;
+        let empty_draft = attachments.loading
+            || (self.prompt.read(cx).value().trim().is_empty() && attachments.is_empty());
+        let status = match last_run.map(|run| run.status) {
+            Some(huggler::RunStatus::Completed) => None,
+            Some(status) => Some(format!("{status:?}")),
+            None => Some("Ready".to_owned()),
+        };
         let workspace = &self.workspaces[&thread.id];
         let pending = thread.permissions.len() + thread.questions.len();
-        let mut page = v_flex().size_full().min_h_0().child(
-            v_flex()
-                .px_4()
-                .pt_2()
-                .gap_1()
-                .flex_shrink_0()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .justify_between()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_lg()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(thread.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(provider.clone()),
-                        ),
-                )
-                .child(
+        let page = v_flex().flex_1().min_h_0();
+        let fresh = last_run.is_none()
+            && thread.history.messages.is_empty()
+            && self.before.is_none()
+            && pending == 0
+            && !busy;
+        let column = v_flex()
+            .w_full()
+            .max_w(px(800.))
+            .mx_auto()
+            .flex_1()
+            .min_h_0()
+            .when(fresh, |column| column.justify_center())
+            .when(fresh, |column| {
+                column.child(
                     div()
-                        .truncate()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(workspace.root.display().to_string()),
+                        .mb_3()
+                        .text_center()
+                        .text_2xl()
+                        .child("What should we build?"),
                 )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .pb_1()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .children(
-                            [
-                                (Tab::Conversation, "Conversation"),
-                                (Tab::Changes, "Changes"),
-                                (Tab::Checks, "Checks"),
-                                (Tab::Publish, "Publish"),
-                            ]
-                            .into_iter()
-                            .map(|(tab, label)| {
-                                let display = if tab == Tab::Conversation && pending != 0 {
-                                    format!("{label} ({pending})")
-                                } else {
-                                    label.into()
-                                };
-                                control!(
-                                    label,
-                                    Button::new(label)
-                                        .ghost()
-                                        .selected(self.tab == tab)
-                                        .compact()
-                                        .label(display)
-                                        .on_click(cx.listener(move |v, _, w, cx| {
-                                            v.tab = tab;
-                                            if tab == Tab::Changes
-                                                && let Some(t) = &v.current
-                                            {
-                                                v.workspaces[&t.id]
-                                                    .changes
-                                                    .update(cx, |panel, cx| panel.refresh(w, cx));
-                                            }
-                                            if tab == Tab::Publish
-                                                && let Some(t) = &v.current
-                                            {
-                                                v.workspaces[&t.id]
-                                                    .publish
-                                                    .update(cx, |panel, cx| panel.refresh(cx));
-                                            }
-                                            cx.notify();
-                                        }))
-                                )
-                            }),
-                        ),
-                ),
-        );
-        if self.tab != Tab::Conversation {
-            let content = match self.tab {
-                Tab::Changes => workspace.changes.clone().into_any_element(),
-                Tab::Publish => workspace.publish.clone().into_any_element(),
-                _ => workspace.checks.clone().into_any_element(),
-            };
-            page = page.child(div().flex_1().min_h_0().child(content));
-            return page;
-        }
-        page.child(
+            });
+        let column = column.when(!fresh, |column| column
+        .when(thread.history.older.is_some() || self.before.is_some(), |column| column.child(
             h_flex()
                 .px_5()
                 .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .on_action(cx.listener(|view, _: &Enter, _, cx| view.search_messages(cx)))
-                        .child(control!("Search messages", Input::new(&self.search))),
-                )
-                .child(control!(
-                    "Search",
-                    Button::new("search").label("Search").on_click(cx.listener(
-                        |view, _, _, cx| {
-                            view.search_messages(cx);
-                        }
-                    ))
-                ))
-                .when(!self.query.is_empty(), |row| {
-                    let clear = Button::new("clear-search")
-                        .compact()
-                        .label("Clear")
-                        .on_click(cx.listener(|v, _, w, cx| {
-                            v.search.update(cx, |input, cx| input.set_value("", w, cx));
-                            v.search_messages(cx);
-                        }));
-                    row.child(control!("Clear search", clear))
-                })
                 .when_some(thread.history.older.clone(), |row, older| {
                     row.child(control!(
                         "Older",
@@ -1031,7 +1251,7 @@ impl Desktop {
                         ))
                     ))
                 }),
-        )
+        ))
         .child(
             div()
                 .id("history")
@@ -1041,9 +1261,7 @@ impl Desktop {
                 .overflow_y_scroll()
                 .px_5()
                 .when(thread.history.messages.is_empty(), |history| {
-                    history.child(div().py_4().child(hint(if self.query.is_empty() {
-                        "Send a message to start this conversation."
-                    } else { "No messages match this search." }, cx)))
+                    history.child(div().py_4().child(hint("Send a message to start this conversation.", cx)))
                 })
                 .children(thread.history.messages.iter().map(|item| {
                     let message = &item.message;
@@ -1056,6 +1274,7 @@ impl Desktop {
                         (None, Role::User) => "You",
                         (None, Role::Assistant) => provider.as_str(),
                     };
+                    let caption = item.files.as_ref().map_or(message.text.as_str(), |files| &files.caption);
                     v_flex()
                         .py_3()
                         .gap_1()
@@ -1065,11 +1284,13 @@ impl Desktop {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(role.to_owned()),
                         )
-                        .child(control!(
-                            format!("{role}/{}", message.text),
-                            message.text.clone(),
+                        .when(!caption.is_empty(), |row| row.child(control!(
+                            format!("{role}/{caption}"), caption.to_owned(),
+                        )))
+                        .when_some(item.files.as_ref(), |row, files| row.children(
+                            files.names.iter().enumerate().map(|(index, name)| self.sent_file(&thread.id, &message.id, index, name, cx))
                         ))
-                        .when(item.truncated, |row| {
+                        .when(item.files.as_ref().map_or(item.truncated, |files| files.truncated), |row| {
                             let id = message.id.clone();
                             row.child(control!(
                                 format!("expand/{id}"),
@@ -1077,7 +1298,7 @@ impl Desktop {
                                     .label("Show full message")
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         if let Some(detail) = &mut view.current {
-                                            match view.runtime.read_message(&detail.id, &id) {
+                                            match view.runtime.read_message_body(&detail.id, &id) {
                                                 Ok(message) => {
                                                     if let Some(item) = detail
                                                         .history
@@ -1085,8 +1306,13 @@ impl Desktop {
                                                         .iter_mut()
                                                         .find(|item| item.message.id == id)
                                                     {
-                                                        item.message = message;
-                                                        item.truncated = false;
+                                                        if let Some(files) = &mut item.files {
+                                                            files.caption = message;
+                                                            files.truncated = false;
+                                                        } else {
+                                                            item.message.text = message;
+                                                            item.truncated = false;
+                                                        }
                                                     }
                                                 }
                                                 Err(error) => view.error = Some(error.to_string()),
@@ -1097,9 +1323,10 @@ impl Desktop {
                             ))
                         })
                 }))
-                .when(self.query.is_empty() && self.before.is_none(), |history| {
+                .when(self.before.is_none(), |history| {
                     history.child(self.turn_activity(thread, cx))
                 }),
+        )
         )
         .when(pending != 0, |view| {
             view.child(
@@ -1124,9 +1351,9 @@ impl Desktop {
         })
         .child(
             v_flex()
-                .p_4()
+                .mx_4().mb_3().p_3().rounded_xl().bg(cx.theme().muted.opacity(0.55))
                 .gap_2()
-                .border_t_1()
+                .border_1()
                 .border_color(cx.theme().border)
                 .when(self.checkout_unavailable, |composer| {
                     composer
@@ -1142,7 +1369,7 @@ impl Desktop {
                             Button::new("replace-checkout")
                                 .label("Choose another checkout")
                                 .on_click(cx.listener(|view, _, window, cx| {
-                                    view.new_conversation(window, cx);
+                                    view.new_conversation(false, window, cx);
                                     let checkout = std::env::current_dir()
                                         .ok()
                                         .filter(|root| root.join(".git").exists())
@@ -1174,12 +1401,8 @@ impl Desktop {
                 .when_some(last_run.filter(|_| !self.checkout_unavailable).and_then(|r| r.error.clone()), |area, error| {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
-                .child(
-                    h_flex().justify_between().gap_2()
-                        .child(label("Message"))
-                        .child(self.model_control(thread.model.as_deref(), false, cx))
-                )
-                .child(control!("Message", Input::new(&self.prompt)))
+                .children(self.attachment_list(attachments, cx))
+                .child(control!("Message", Input::new(&self.prompt).appearance(false)))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
                     let noun = if count == 1 { "message" } else { "messages" };
@@ -1214,10 +1437,11 @@ impl Desktop {
                 })
                 .child(
                     h_flex()
-                        .gap_2()
-                        .child(div().flex_1().min_w_0().child(control!(
+                        .flex_wrap().gap_2()
+                        .child(self.model_control(cx))
+                        .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
                             format!("status/{status}"), label(status)
-                        )))
+                        ))))
                         .when(
                             thread.foreground_run.is_some()
                                 || (thread.queued_count > 0 && !thread.queue_held),
@@ -1241,39 +1465,21 @@ impl Desktop {
                                 ))
                             },
                         )
-                        .when(
-                            !busy
-                                && self.runtime.provider_instances().any(|p| {
-                                    p.id == thread.provider_instance && p.driver == Provider::Codex
-                                }),
-                            |row| {
-                                row.child(control!(
-                                    "Send plan",
-                                    Button::new("send-plan")
-                                        .ghost()
-                                        .label("Send as plan").disabled(empty_draft)
-                                        .tooltip(
-                                            "Ask Codex to plan this change in a read-only turn"
-                                        )
-                                        .on_click(cx.listener(|view, _, window, cx| {
-                                            let result = view.send(true, window, cx);
-                                            view.report(result, cx);
-                                        }))
-                                ))
-                            },
-                        )
-                        .child(control!(
+                        .child(self.send_controls(
+                            attachments,
                             if busy { "Queue message" } else { "Send" },
-                            Button::new("send")
-                                .primary()
-                                .label(if busy { "Queue message" } else { "Send" }).disabled(empty_draft)
+                            Self::send_icon("send", if busy { "Queue message" } else { "Send" }).disabled(empty_draft)
                                 .on_click(cx.listener(|view, _, window, cx| {
-                                    let result = view.send(false, window, cx);
+                                    let result = view.send(window, cx);
                                     view.report(result, cx);
                                 })),
+                            cx,
                         )),
                 ),
         )
+        .child(div().mx_5().mb_2().text_xs().truncate().text_color(cx.theme().muted_foreground)
+            .child(workspace.root.display().to_string()));
+        page.child(column)
     }
 }
 
@@ -1305,66 +1511,113 @@ impl Render for Desktop {
             }
         }
 
+        use sidebar::SidebarEdge;
+        let viewport = f32::from(window.viewport_size().width);
+        let narrow = viewport < 900.;
+        let changes_open = self.changes_sidebar.is_open(!narrow);
+        let left = self.navigation.fraction(true, window);
+        let right = if self.current.is_some() && !self.show_settings {
+            self.changes_sidebar.fraction(!narrow, window)
+        } else {
+            0.
+        };
+        let left_max =
+            SidebarEdge::Left.max_width(viewport, narrow, self.changes_sidebar.width, right);
+        let right_max = SidebarEdge::Right.max_width(viewport, narrow, self.navigation.width, left);
+        let left_width = self.navigation.width.min(left_max);
+        let right_width = self.changes_sidebar.width.min(right_max);
         div()
             .flex()
             .track_focus(&self.focus)
             .on_action(cx.listener(|v, _: &crate::OpenSettings, w, cx| v.open_settings(w, cx)))
             .on_action(
-                cx.listener(|v, _: &crate::NewConversation, w, cx| v.new_conversation(w, cx)),
+                cx.listener(|v, _: &crate::NewConversation, w, cx| {
+                    v.new_conversation(false, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|v, _: &crate::NewConversationWithSetup, w, cx| {
+                    v.new_conversation(true, w, cx);
+                }),
             )
             .relative()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(
-                v_flex()
-                    .w(px(sidebar::WIDTH))
-                    .flex_shrink_0()
-                    .bg(cx.theme().sidebar)
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .p_3()
-                    .gap_3()
-                    .child(label("Conversations"))
-                    .child(control!(
-                        "New conversation",
-                        Button::new("new")
-                            .w_full()
-                            .label("New conversation")
-                            .on_click(cx.listener(|view, _, w, cx| view.new_conversation(w, cx))),
-                    ))
-                    .child(self.conversation_sidebar(cx))
-                    .child(
-                        div()
-                            .pt_2()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .child(control!(
-                                "Settings",
-                                Button::new("settings")
-                                    .w_full()
-                                    .justify_start()
-                                    .ghost()
-                                    .label("Settings")
-                                    .selected(self.show_settings)
-                                    .on_click(
-                                        cx.listener(|view, _, w, cx| view.open_settings(w, cx))
-                                    )
-                            )),
-                    ),
-            )
+            .when(left > 0., |layout| {
+                layout.child(
+                    h_flex()
+                        .w(px(left_width * left))
+                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .justify_end()
+                        .child(
+                            v_flex()
+                                .h_full()
+                                .w(px(left_width))
+                                .flex_shrink_0()
+                                .bg(cx.theme().sidebar)
+                                .border_r_1()
+                                .border_color(cx.theme().border)
+                                .p_3()
+                                .gap_3()
+                                .child(
+                                    h_flex()
+                                        .h_7()
+                                        .gap_2()
+                                        .child(IconName::Inbox)
+                                        .child(label("Huggler")),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(control!(
+                                            "Create",
+                                            Button::new("new")
+                                                .small()
+                                                .compact()
+                                                .w_full()
+                                                .ghost()
+                                                .justify_start()
+                                                .icon(IconName::Plus)
+                                                .label("Create")
+                                                .on_click(cx.listener(|view, _, w, cx| {
+                                                    view.new_conversation(false, w, cx)
+                                                })),
+                                        ))
+                                        .child(control!(
+                                            "Settings",
+                                            Button::new("settings")
+                                                .small()
+                                                .compact()
+                                                .w_full()
+                                                .justify_start()
+                                                .ghost()
+                                                .icon(IconName::Settings)
+                                                .label("Settings")
+                                                .selected(self.show_settings)
+                                                .on_click(cx.listener(|view, _, w, cx| {
+                                                    view.open_settings(w, cx)
+                                                }))
+                                        )),
+                                )
+                                .child(div().w_full().h_px().flex_shrink_0().bg(cx.theme().border))
+                                .child(self.conversation_sidebar(left_width, cx)),
+                        ),
+                )
+            })
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
+                    .child(self.workspace_header(changes_open, cx))
                     .child(if self.show_settings {
                         self.settings.clone().into_any_element()
                     } else {
                         match &self.current {
-                            Some(thread) => self.conversation(thread, cx),
-                            None => self.launch_form(window.viewport_size().height <= px(480.), cx),
+                            Some(thread) => self.conversation(thread, cx).into_any_element(),
+                            None => self.launch_form(viewport - left_width * left < 800., cx),
                         }
-                        .into_any_element()
                     })
                     .when_some(
                         self.error.as_ref().filter(|_| !self.show_settings),
@@ -1380,6 +1633,50 @@ impl Render for Desktop {
                             ))
                         },
                     ),
+            )
+            .when(left == 1., |layout| {
+                layout.child(SidebarEdge::Left.handle(left_width, narrow, cx))
+            })
+            .when_some(
+                self.current
+                    .as_ref()
+                    .filter(|_| right > 0. && !self.show_settings),
+                |layout, thread| {
+                    layout.child(
+                        div()
+                            .w(px(right_width * right))
+                            .overflow_hidden()
+                            .flex_shrink_0()
+                            .when(narrow, |panel| {
+                                panel.absolute().right_0().top_10().bottom_0().occlude()
+                            })
+                            .child(
+                                div()
+                                    .w(px(right_width))
+                                    .h_full()
+                                    .border_l_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().sidebar)
+                                    .child(self.workspaces[&thread.id].changes.clone()),
+                            ),
+                    )
+                },
+            )
+            .when(
+                self.current.is_some() && !self.show_settings && right == 1.,
+                |layout| layout.child(SidebarEdge::Right.handle(right_width, narrow, cx)),
+            )
+            .on_drag_move(
+                cx.listener(move |view, event: &DragMoveEvent<SidebarEdge>, _, cx| {
+                    let x = f32::from(event.event.position.x - event.bounds.left());
+                    match event.drag(cx) {
+                        SidebarEdge::Left => view.navigation.width = x.clamp(160., left_max),
+                        SidebarEdge::Right => {
+                            view.changes_sidebar.width = (viewport - x).clamp(160., right_max)
+                        }
+                    }
+                    cx.notify();
+                }),
             )
             .children(gpui_component::Root::render_dialog_layer(window, cx))
     }

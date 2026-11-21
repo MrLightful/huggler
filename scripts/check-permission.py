@@ -74,10 +74,10 @@ def check(mode):
         controls.extend(send_message(prompt))
         if replay:
             controls.extend([{"permission_from": "/root/relay/writer"}, {"click": "permission/allow_once"},
-                             {"see": "status/Completed"}])
+                             {"see": f"Ready/{name}/Completed"}])
         else:
             controls.extend([{"click": "permission/reject_once"},
-                             {"see_any": ["status/Completed", "status/Interrupted"]}])
+                             {"see_any": [f"Ready/{name}/Completed", "status/Interrupted"]}])
         run_window(executable, state, controls, env)
         with sqlite3.connect(state / "huggler.sqlite3") as db:
             runs = db.execute("SELECT id,status,error FROM run").fetchall()

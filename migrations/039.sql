@@ -1,0 +1,2 @@
+ALTER TABLE thread ADD COLUMN settled INTEGER NOT NULL DEFAULT 0 CHECK(settled IN (0,1));
+PRAGMA user_version=39;

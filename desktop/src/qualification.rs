@@ -14,10 +14,15 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum Step {
     Click(String),
+    DragX(String, i16),
+    CenterX(String, i16),
+    NextFileSelection(Vec<std::path::PathBuf>),
     Resize([u16; 2]),
     Type(String),
     Key(String),
     See(String),
+    RightOf([String; 2]),
+    InLowerHalf(String),
     Contains(String),
     Absent(String),
     SeeAny(Vec<String>),
@@ -39,6 +44,15 @@ pub fn load() -> Result<Option<Vec<Step>>> {
 struct Controls(HashMap<SharedString, Bounds<Pixels>>);
 impl Global for Controls {}
 
+// Script the OS picker boundary while exercising the real composer and filesystem.
+#[derive(Default)]
+struct FileSelection(Option<Vec<std::path::PathBuf>>);
+impl Global for FileSelection {}
+
+pub fn take_file_selection(cx: &mut App) -> Option<Vec<std::path::PathBuf>> {
+    cx.default_global::<FileSelection>().0.take()
+}
+
 pub fn begin_frame(cx: &mut App) {
     cx.default_global::<Controls>().0.clear();
 }
@@ -57,11 +71,18 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
     window.draw(cx).clear();
     let controls = &cx.default_global::<Controls>().0;
     match step {
+        Step::NextFileSelection(paths) => {
+            cx.default_global::<FileSelection>().0 = Some(paths.clone());
+            true
+        }
         Step::Resize([width, height]) => {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
             true
         }
-        Step::Click(key) => {
+        Step::CenterX(key, x) => controls
+            .get(key.as_str())
+            .is_some_and(|bounds| (f32::from(bounds.center().x) - f32::from(*x)).abs() < 2.),
+        Step::Click(key) | Step::DragX(key, _) => {
             let Some(bounds) = controls.get(key.as_str()) else {
                 return false;
             };
@@ -75,11 +96,22 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             else {
                 return false;
             };
-            let location = NSPoint::new(
-                position.x.into(),
-                (window.viewport_size().height - position.y).into(),
-            );
-            for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+            let mut events = vec![(NSEventType::LeftMouseDown, 0.)];
+            let mut dx = 0.;
+            if let Step::DragX(_, delta) = step {
+                dx = f64::from(*delta);
+                events.extend([
+                    (NSEventType::LeftMouseDragged, dx / 2.),
+                    (NSEventType::LeftMouseDragged, dx),
+                ]);
+            }
+            events.push((NSEventType::LeftMouseUp, dx));
+            for (kind, offset) in events {
+                let location = NSPoint::new(
+                    f64::from(position.x) + offset,
+                    (window.viewport_size().height - position.y).into(),
+                );
+
                 let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                     kind, location, NSEventModifierFlags::empty(), 0., native.windowNumber(), None, 0, 1, 1.
                 ).expect("create click event");
@@ -100,6 +132,14 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             cx,
         ),
         Step::See(key) => controls.contains_key(key.as_str()),
+        Step::InLowerHalf(key) => controls.get(key.as_str()).is_some_and(|bounds| {
+            let height = window.viewport_size().height;
+            bounds.center().y >= height / 2. && bounds.bottom() <= height
+        }),
+        Step::RightOf([item, reference]) => controls
+            .get(item.as_str())
+            .zip(controls.get(reference.as_str()))
+            .is_some_and(|(item, reference)| item.left() >= reference.right()),
         Step::Contains(text) => controls.keys().any(|key| key.contains(text.as_str())),
         Step::SeeAny(keys) => keys.iter().any(|key| controls.contains_key(key.as_str())),
         Step::Absent(key) => !controls.contains_key(key.as_str()),

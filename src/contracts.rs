@@ -286,6 +286,11 @@ pub enum Action {
         text: String,
         uploads: Vec<UploadId>,
     },
+    /// Enqueue a message with captured UTF-8 files, starting immediately when idle.
+    EnqueueAttachments {
+        text: String,
+        files: Vec<TextAttachment>,
+    },
     /// Send one message in Codex plan mode.
     SendPlan {
         text: String,
@@ -320,6 +325,9 @@ pub enum Action {
     StopThread,
     /// Release queued runs on this thread in delivery order.
     ResumeQueue,
+    SetSettled {
+        settled: bool,
+    },
     SetModel {
         model: Option<String>,
     },
@@ -448,10 +456,26 @@ pub struct HistoryCursor {
     pub before: MessageId,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextAttachment {
+    pub name: String,
+    pub content: String,
+}
+
+/// Bounded caption and filenames in selection order. Read file bodies on demand.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MessageFiles {
+    pub truncated: bool,
+    pub caption: String,
+    pub names: Vec<String>,
+}
+
 /// A bounded message preview. Fetch the original with `Huggler::read_message`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryItem {
     pub message: Message,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<MessageFiles>,
     pub truncated: bool,
 }
 
@@ -465,6 +489,8 @@ pub struct HistoryPage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConversationDetail {
+    #[serde(default)]
+    pub settled: bool,
     pub id: ThreadId,
     pub name: String,
     pub provider_instance: ProviderInstanceId,
@@ -501,6 +527,7 @@ pub struct ThreadSummary {
 /// Lightweight activity for a conversation, including work outside the foreground turn.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConversationSummary {
+    pub settled: bool,
     pub id: ThreadId,
     pub name: String,
     /// Foreground run, otherwise queued work, otherwise the most recent delivered run.
@@ -594,6 +621,7 @@ pub struct ProviderUsage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "ThreadSnapshot")]
 pub struct Thread {
+    pub settled: bool,
     pub questions: Vec<UserInputRequest>,
     pub native_children: Vec<NativeChild>,
     pub tasks: Vec<DelegatedTask>,
@@ -616,6 +644,8 @@ pub struct Thread {
 /// Snapshots written before named instances selected the built-in instance of their driver.
 #[derive(Deserialize)]
 struct ThreadSnapshot {
+    #[serde(default)]
+    settled: bool,
     #[serde(default)]
     questions: Vec<UserInputRequest>,
     #[serde(default)]
@@ -642,6 +672,7 @@ impl From<ThreadSnapshot> for Thread {
             provider_instance: snapshot
                 .provider_instance
                 .unwrap_or_else(|| snapshot.provider.key().into()),
+            settled: snapshot.settled,
             provider: snapshot.provider,
             questions: snapshot.questions,
             native_children: snapshot.native_children,
@@ -724,6 +755,9 @@ pub enum Change {
     PermissionClosed {
         id: RequestId,
         option: Option<String>,
+    },
+    SettlementChanged {
+        settled: bool,
     },
     ModelSelected {
         model: Option<String>,

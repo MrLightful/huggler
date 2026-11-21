@@ -54,7 +54,7 @@ fn result_text(failed: bool, text: Option<&str>) -> Option<&str> {
 
 pub fn thread(t: Thread) -> Value {
     json!({
-        "id": t.id, "projectId": t.project, "name": t.name, "model": t.model, "provider": t.provider,
+        "id": t.id, "projectId": t.project, "name": t.name, "settled": t.settled, "model": t.model, "provider": t.provider,
         "providerInstanceId": t.provider_instance, "worktreePath": t.worktree_path, "nativeThread": t.native_thread,
         "messages": t.messages.into_iter().map(message).collect::<Vec<_>>(),
         "runs": t.runs.into_iter().map(run).collect::<Vec<_>>(), "cursor": t.cursor.to_string(),
@@ -85,7 +85,7 @@ pub fn detail(d: ConversationDetail) -> Result<Value> {
         .map(|i| json!({"message": message(i.message), "truncated": i.truncated}))
         .collect();
     Ok(json!({
-        "id": d.id, "name": d.name, "providerInstanceId": d.provider_instance, "model": d.model,
+        "id": d.id, "name": d.name, "settled": d.settled, "providerInstanceId": d.provider_instance, "model": d.model,
         "latestRun": d.latest_run.map(run), "foregroundRun": d.foreground_run.map(run),
         "queuedCount": d.queued_count.to_string(), "queueHeld": d.queue_held,
         "streamingText": d.streaming_text, "commandItems": d.command_items,
@@ -104,6 +104,7 @@ pub fn event(e: Event) -> Value {
         Run { run: r } => json!({"type": "run", "run": run(r)}),
         Message { message: m } => json!({"type": "message", "message": message(m)}),
         Bound { native_thread } => json!({"type": "bound", "nativeThread": native_thread}),
+        SettlementChanged { settled } => json!({"type":"settlementChanged","settled":settled}),
         ModelSelected { model } => json!({"type": "modelSelected", "model": model}),
         QuestionRequested { request } => {
             json!({"type": "questionRequested", "request": question(request)})

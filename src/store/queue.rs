@@ -26,10 +26,11 @@ pub(super) fn edit(
         return Err(Error::Invalid("empty message".into()));
     }
     let (id, origin) = tx.query_row(
-        "UPDATE message SET text=? WHERE run_id=? AND role='user' RETURNING id,origin",
+        "UPDATE message SET attachment_caption=NULL,text=? WHERE run_id=? AND role='user' RETURNING id,origin",
         params![text, run.0],
         |r| Ok((MessageId(r.get(0)?), r.get::<_, Option<String>>(1)?)),
     )?;
+    tx.execute("DELETE FROM message_attachment WHERE message_id=?", [&id.0])?;
     let seq = event(
         tx,
         thread,

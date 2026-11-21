@@ -157,6 +157,7 @@ export interface DelegatedTask {
   wakeRunId: RunId | null
 }
 export interface Thread extends ThreadSummary {
+  settled: boolean
   projectId: ProjectId
   provider: Provider
   providerInstanceId: ProviderInstanceId
@@ -173,6 +174,7 @@ export interface Thread extends ThreadSummary {
 }
 export interface HistoryOptions { before?: HistoryCursor; query?: string; limit?: number }
 export interface ConversationDetail extends ThreadSummary {
+  settled: boolean
   providerInstanceId: ProviderInstanceId
   model: string | null
   latestRun: Run | null
@@ -196,6 +198,7 @@ export type Change =
   | { type: "run"; run: Run }
   | { type: "message"; message: Message }
   | { type: "bound"; nativeThread: NativeThreadId }
+  | { type: "settlementChanged"; settled: boolean }
   | { type: "modelSelected"; model: string | null }
   | { type: "questionRequested"; request: QuestionRequest }
   | { type: "permissionRequested"; request: PermissionRequest }

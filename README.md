@@ -2,6 +2,16 @@
 
 Huggler is an agent orchestration engine for running and coordinating coding agents in your own application. It’s built in Rust.
 
+## Run the desktop app
+
+On macOS, run this command from the repository root to build and open Huggler:
+
+```sh
+cargo run --locked --manifest-path desktop/Cargo.toml
+```
+
+Press **⌘Q** to quit.
+
 ## Capabilities
 
 | Capability | What you can build with it |
