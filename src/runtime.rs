@@ -28,6 +28,7 @@ pub struct HugglerOptions {
     pub state_dir: PathBuf,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
+    pub agent_policy: crate::application::AgentPolicy,
     /// Continue an idle independent Codex thread after a provider-reported quota reset.
     pub auto_resume_usage_limits: bool,
     /// Ask Codex for an optional follow-up after eligible independent conversations.
@@ -41,6 +42,7 @@ impl HugglerOptions {
         Self {
             state_dir: state_dir.into(),
             agent_tools: false,
+            agent_policy: Default::default(),
             auto_resume_usage_limits: false,
             prompt_suggestions: false,
             instances: vec![],
@@ -51,6 +53,7 @@ impl HugglerOptions {
 }
 
 pub(crate) struct Shared {
+    pub(crate) agent_policy: crate::application::AgentPolicy,
     prompt_suggestions: bool,
     registry: crate::providers::registry::Registry,
     endpoint: Option<String>,
@@ -390,6 +393,7 @@ impl Huggler {
             .transpose()?;
         let jobs = db.ready_jobs()?;
         let shared = Arc::new(Shared {
+            agent_policy: options.agent_policy,
             prompt_suggestions: options.prompt_suggestions,
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),

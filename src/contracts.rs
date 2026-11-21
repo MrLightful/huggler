@@ -661,6 +661,10 @@ pub enum Change {
     },
     Launched,
     SessionReset,
+    UserNotice {
+        run_id: RunId,
+        text: String,
+    },
     PermissionRequested {
         request: PermissionRequest,
     },

@@ -425,3 +425,121 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
     );
     rt.close().await
 }
+
+#[tokio::test]
+async fn managed_agent_requests_and_one_use_secret_references() -> Result<()> {
+    use application::{Preferences, Theme};
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let state = dir.path().join("state");
+    let mut config = options(&state);
+    config.agent_tools = true;
+    config.agent_policy.defer_tools = true;
+    config.agent_policy.allowed_tools = Some(
+        [
+            "tool_search",
+            "orchestrator_capabilities",
+            "send_to_user",
+            "request_secret",
+        ]
+        .map(String::from)
+        .into(),
+    );
+    config.agent_policy.secret_ttl_seconds = Some(3);
+    config.claude_agent.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
+    let rt = Huggler::open(config.clone()).await?;
+    let prefs = Preferences {
+        theme: Theme::Dark,
+        reduce_motion: true,
+    };
+    rt.set_preferences(&prefs)?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let project = rt.open_project(&repo)?;
+    let thread = launch(&rt, &project, "requester", Provider::ClaudeAgent);
+    let sibling = launch(&rt, &project, "sibling", Provider::ClaudeAgent);
+    let op = dir.path().join("op-fixture");
+    std::fs::write(
+        &op,
+        "#!/bin/sh\n[ \"$1 $2 $3\" = 'read --no-newline op://Fixture/build/token' ] || exit 1\nprintf synthetic-secret-9876\n",
+    )?;
+    std::fs::set_permissions(&op, std::fs::Permissions::from_mode(0o700))?;
+    for case in ["approved", "denied", "expired"] {
+        let run = rt
+            .send(
+                CommandId(case.into()),
+                thread.clone(),
+                format!("managed secret {case}"),
+            )?
+            .run_id
+            .unwrap();
+        let request = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            loop {
+                if let Some(r) = rt
+                    .secret_requests(&thread)
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.run == run)
+                {
+                    break r;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            rt.answer_secret(&sibling, &request.id, None),
+            Err(Error::Forbidden)
+        ));
+        match case {
+            "approved" => {
+                rt.approve_onepassword(&thread, &request.id, &op, "op://Fixture/build/token")?
+            }
+            "denied" => rt.answer_secret(&thread, &request.id, None)?,
+            _ => {}
+        }
+        completed(&rt, &thread, &run).await;
+        let response = rt.read(&thread)?.messages.last().unwrap().text.clone();
+        if case == "approved" {
+            assert!(matches!(
+                rt.consume_secret(&ProjectId("different".into()), &response),
+                Err(Error::Forbidden)
+            ));
+            assert_eq!(
+                rt.consume_secret(&project.id, &response)?,
+                b"synthetic-secret-9876"
+            );
+            assert!(matches!(
+                rt.consume_secret(&project.id, &response),
+                Err(Error::Forbidden)
+            ));
+        } else {
+            assert_eq!(response, case);
+        }
+    }
+    assert_eq!(rt.user_notices(&thread)?.len(), 3);
+    assert!(rt.user_notices(&sibling)?.is_empty());
+    rt.close().await?;
+    let rt = Huggler::open(config).await?;
+    assert_eq!(rt.preferences()?, prefs);
+    assert_eq!(
+        rt.secret_requests(&thread)?
+            .iter()
+            .map(|r| r.state.as_str())
+            .collect::<Vec<_>>(),
+        ["consumed", "denied", "expired"]
+    );
+    for file in std::fs::read_dir(state)? {
+        let path = file?.path();
+        if path.is_file() {
+            assert!(
+                !std::fs::read(path)?
+                    .windows(b"synthetic-secret-9876".len())
+                    .any(|w| w == b"synthetic-secret-9876")
+            );
+        }
+    }
+    rt.close().await
+}

@@ -1,3 +1,4 @@
+mod application;
 #[cfg(feature = "application")]
 mod automation;
 mod checkpoints;
@@ -73,6 +74,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/026.sql"),
     include_str!("../migrations/027.sql"),
     include_str!("../migrations/028.sql"),
+    include_str!("../migrations/029.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -219,6 +221,7 @@ impl Drop for StateLock {
 pub(crate) struct Database {
     db: Connection,
     worktree_dir: PathBuf,
+    secrets: std::collections::HashMap<String, application::Secret>,
     // Drop after SQLite closes.
     _lock: StateLock,
 }
@@ -290,6 +293,9 @@ impl Database {
             "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
         )?;
         tx.execute("UPDATE workspace_setup SET state='failed',detail='runtime closed during setup' WHERE state='running'", [])?;
+        tx.execute_batch("CREATE TEMP TABLE discovered_tool(run TEXT, name TEXT, PRIMARY KEY(run,name));
+            CREATE TEMP TRIGGER forget_tools AFTER DELETE ON agent_grant BEGIN DELETE FROM discovered_tool WHERE run=OLD.run_id; END;
+            UPDATE secret_request SET state='expired' WHERE state IN ('requested','approved');")?;
         // Queue unclaimed task launches, wakes and peer messages for a new worker.
         // A claimed effect may already have reached the provider.
         tx.execute("UPDATE run SET status='queued' WHERE status='starting' AND stop_requested=0
@@ -321,6 +327,7 @@ impl Database {
         tx.commit()?;
         Ok(Self {
             db,
+            secrets: Default::default(),
             worktree_dir: dir.canonicalize()?.join("worktrees"),
             _lock: lock,
         })
