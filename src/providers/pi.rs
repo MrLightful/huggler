@@ -137,8 +137,18 @@ async fn converse(rpc: &mut Rpc, turn: &Turn, update: impl Fn(Update) -> Result<
         request(rpc, "set_model", json!({"provider":provider,"modelId":id})).await?;
     }
     turn.submitting_prompt(&update)?;
-    rpc.write(json!({"type":"prompt","message":turn.text}))
-        .await?;
+    let mut prompt = json!({"type":"prompt","message":turn.text});
+    let images: Vec<_> = turn
+        .files
+        .files
+        .iter()
+        .filter(|file| file.is_image())
+        .map(|file| json!({"type":"image","data":file.base64(),"mimeType":file.file.mime}))
+        .collect();
+    if !images.is_empty() {
+        prompt["images"] = json!(images);
+    }
+    rpc.write(prompt).await?;
     update(Update::Started(None))?;
     let mut totals = (0i64, 0i64);
     let mut reported = false;

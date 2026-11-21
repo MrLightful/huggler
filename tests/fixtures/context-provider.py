@@ -64,6 +64,8 @@ for line in sys.stdin:
         ]}
     elif method == "initialize" and acp:
         result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
+        if Path("acp-vision").exists():
+            result["agentCapabilities"]["promptCapabilities"] = {"image": True}
     elif method in ("thread/start", "session/new", "thread/resume", "session/load", "thread/fork"):
         session = str(uuid4()) if method in ("thread/fork", "thread/start", "session/new") else params.get("threadId", params.get("sessionId"))
         result = {"sessionId": session} if acp else {"thread": {"id": session}}

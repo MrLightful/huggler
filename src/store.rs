@@ -298,6 +298,7 @@ pub(crate) struct Database {
     output: std::sync::Arc<crate::AgentOutput>,
     db: Connection,
     state_dir: PathBuf,
+    attachment_dir: PathBuf,
     storage: crate::StorageLayout,
     secrets: std::collections::HashMap<SecretRequestId, application::Secret>,
     // Drop after SQLite closes.
@@ -335,19 +336,45 @@ impl Database {
             std::fs::TryLockError::Error(e) => Error::Io(e),
         })?;
         let lock = StateLock(lock);
+        use sha2::{Digest, Sha256};
+        let attachment_dir = database_path.with_file_name(format!(
+            ".huggler-attachments-{:x}",
+            Sha256::digest(database_path.as_os_str().as_encoded_bytes())
+        ));
         let mut db = Connection::open(database_path)?;
         db.execute_batch(
             "PRAGMA foreign_keys=OFF; PRAGMA journal_mode=WAL; PRAGMA temp_store=MEMORY;",
         )?;
         let tx = db.transaction()?;
-        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if !(0..=MIGRATIONS.len() as i64).contains(&version) {
+        let mut version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let latest = MIGRATIONS.len() as i64;
+        // Separate development builds shared this database. One used version 41
+        // for attachments and another used 41 and 42 for transcript data.
+        let has_transcript_activity = matches!(version, 41 | 42)
+            && tx
+                .prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='run_activity'")?
+                .exists([])?;
+        if version == 41 && !has_transcript_activity && uploads::uses_preview_schema(&tx)? {
+            version = 40;
+            tx.pragma_update(None, "user_version", version)?;
+        }
+        let transcript_preview = has_transcript_activity
+            && (version == 41 || tx.query_row(
+                "SELECT (SELECT count(*) FROM pragma_table_info('message') WHERE name='timestamp_ms')
+                      + (SELECT count(*) FROM pragma_table_info('run')
+                         WHERE name IN ('started_at_ms','finished_at_ms')) = 3",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?);
+        if !(0..=latest).contains(&version) && !transcript_preview {
             return Err(Error::SchemaVersion(version));
         }
-        for migration in &MIGRATIONS[version as usize..] {
+        for migration in MIGRATIONS.iter().skip(version as usize) {
             tx.execute_batch(migration)?;
         }
-        if version < MIGRATIONS.len() as i64 && tx.prepare("PRAGMA foreign_key_check")?.exists([])?
+        let attachments_migrated = uploads::migrate(&tx)?;
+        if (version < latest || attachments_migrated)
+            && tx.prepare("PRAGMA foreign_key_check")?.exists([])?
         {
             return Err(Error::Invalid(
                 "invalid foreign key after state migration".into(),
@@ -355,6 +382,7 @@ impl Database {
         }
         tx.commit()?;
         db.execute_batch("PRAGMA foreign_keys=ON")?;
+        uploads::clean_cache(&db, &attachment_dir)?;
         let tx = db.transaction()?;
         tx.execute_batch("CREATE TEMP TABLE configured_provider(id TEXT PRIMARY KEY, driver TEXT NOT NULL, scope TEXT NOT NULL)")?;
         for instance in registry.values() {
@@ -416,6 +444,7 @@ impl Database {
             db,
             secrets: Default::default(),
             state_dir,
+            attachment_dir,
             storage,
             output,
             _lock: lock,
@@ -441,7 +470,7 @@ impl Database {
 
     pub fn dispatch(&mut self, cmd: &Command) -> Result<(Receipt, DispatchWork)> {
         let tx = self.db.transaction()?;
-        let action = serde_json::to_string(&cmd.action)?;
+        let action = uploads::receipt_action(&cmd.action)?;
         let prior = tx
             .query_row(
                 "SELECT action,result FROM receipt WHERE command_id=?",
@@ -645,38 +674,44 @@ impl Database {
             | Action::SendPlan { text }
             | Action::Enqueue { text }
             | Action::SendAttachments { text, .. }
-            | Action::EnqueueAttachments { text, .. } => {
-                let claimed;
+            | Action::EnqueueAttachments { text, .. }
+            | Action::EnqueueFiles { text, .. } => {
+                let owned;
                 let files = match &cmd.action {
                     Action::SendAttachments { uploads, .. } => {
-                        if !(1..=8).contains(&uploads.len()) {
+                        if !(1..=Attachment::MAX_FILES).contains(&uploads.len()) {
                             return Err(Error::Invalid(
                                 "send between one and eight uploads".into(),
                             ));
                         }
-                        claimed = uploads::claim(&tx, thread, uploads)?;
-                        claimed.as_slice()
+                        owned = uploads::claim(&tx, thread, uploads, false)?;
+                        owned.as_slice()
                     }
                     Action::EnqueueAttachments { files, .. } => {
-                        if !(1..=8).contains(&files.len()) {
+                        if !(1..=Attachment::MAX_FILES).contains(&files.len()) {
                             return Err(Error::Invalid("send between one and eight files".into()));
                         }
                         for file in files {
-                            uploads::validate(&file.name, file.content.len())?;
+                            uploads::validate_text(&file.name, file.content.len())?;
                         }
-                        files.as_slice()
+                        owned = files
+                            .iter()
+                            .map(|file| Attachment {
+                                name: file.name.clone(),
+                                mime: "text/plain".into(),
+                                bytes: file.content.as_bytes().to_vec(),
+                            })
+                            .collect();
+                        owned.as_slice()
                     }
+                    Action::EnqueueFiles { files, .. } => files.as_slice(),
                     _ => &[],
                 };
                 let combined;
                 let prompt = if files.is_empty() {
                     text
                 } else {
-                    let parts = files
-                        .iter()
-                        .map(|f| self.output.text.attachment(&f.name, &f.content))
-                        .collect::<Vec<_>>();
-                    combined = self.output.text.with_attachments(text, &parts);
+                    combined = uploads::prompt(&*self.output.text, text, files);
                     &combined
                 };
                 let (id, msg, events, delivery) = start_message(
@@ -690,17 +725,11 @@ impl Database {
                         Action::Enqueue { .. }
                             | Action::SendAuto { .. }
                             | Action::EnqueueAttachments { .. }
+                            | Action::EnqueueFiles { .. }
                     ),
                 )?;
                 if !files.is_empty() {
-                    tx.execute(
-                        "UPDATE message SET attachment_caption=? WHERE id=?",
-                        params![text, msg.0],
-                    )?;
-                    for (position, file) in files.iter().enumerate() {
-                        tx.execute("INSERT INTO message_attachment(message_id,position,name,content) VALUES(?,?,?,?)",
-                            params![msg.0, position as i64, file.name, file.content])?;
-                    }
+                    uploads::save(&tx, &msg, text, files)?;
                 }
                 if matches!(cmd.action, Action::SendPlan { .. })
                     && tx.execute(
@@ -852,14 +881,15 @@ impl Database {
         {
             return Err(Error::Interrupted);
         }
-        let mut turn = tx.query_row(
-            "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode,t.provider_instance FROM run r
+        let (mut turn, message) = tx.query_row(
+            "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode,t.provider_instance,m.id FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
              JOIN message m ON m.run_id=r.id WHERE r.id=? AND m.role='user'",
             [&id.0],
             |r| {
-                Ok(Turn {
+                Ok((Turn {
+                    files: Default::default(),
                     output: self.output.clone(),
                     has_app_context: false,
                     sample_suggestion: false,
@@ -876,7 +906,7 @@ impl Database {
                     },
                     model: r.get(3)?,
                     resume: r.get::<_, Option<String>>(4)?.map(NativeThreadId),
-                })
+                }, MessageId(r.get(9)?)))
             },
         )?;
         let scope: String = tx
@@ -934,6 +964,8 @@ impl Database {
                 turn.instance
             )));
         }
+        turn.files.pending = uploads::load_turn_files(&tx, &message)?;
+        turn.files.directory = self.attachment_dir.join(message.0);
         tx.commit()?;
         Ok(turn)
     }
@@ -1528,6 +1560,162 @@ mod tests {
         drop(db);
         let _reopened = Database::open(dir.path())?;
         drop(inherited);
+        Ok(())
+    }
+
+    #[test]
+    fn upgrades_text_attachments_and_staged_uploads_in_shared_state() -> Result<()> {
+        for version in [40, 41, 42] {
+            check_text_attachment_upgrade(version)?;
+        }
+        Ok(())
+    }
+
+    fn check_text_attachment_upgrade(version: i64) -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let conn = Connection::open(dir.path().join("huggler.sqlite3"))?;
+        for migration in &MIGRATIONS[..40] {
+            conn.execute_batch(migration)?;
+        }
+        conn.execute_batch(
+            "INSERT INTO project(id,root) VALUES('p','/old');
+             INSERT INTO thread(id,project,name,provider,provider_instance) VALUES('t','p','legacy','codex','codex');
+             INSERT INTO run(id,thread_id,ordinal,status) VALUES('r','t',1,'completed');
+             INSERT INTO message(id,run_id,role,text,attachment_caption) VALUES('m','r','user','legacy prompt','caption');
+             INSERT INTO message_attachment VALUES('m',0,'notes.txt','déjà vu');
+             INSERT INTO pending_upload VALUES('upload','t','docs/staged.txt','legacy upload');",
+        )?;
+        if version >= 41 {
+            conn.execute_batch(
+                "CREATE TABLE run_activity (
+                    run_id TEXT NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+                    item_id TEXT NOT NULL, item TEXT NOT NULL, sequence INTEGER NOT NULL,
+                    PRIMARY KEY (run_id,item_id)
+                 ) STRICT;
+                 INSERT INTO run_activity VALUES('r','item','{}',1);",
+            )?;
+        }
+        if version == 42 {
+            conn.execute_batch(
+                "ALTER TABLE message ADD COLUMN timestamp_ms INTEGER;
+                 ALTER TABLE run ADD COLUMN started_at_ms INTEGER;
+                 ALTER TABLE run ADD COLUMN finished_at_ms INTEGER;
+                 UPDATE message SET timestamp_ms=42;",
+            )?;
+        }
+        conn.pragma_update(None, "user_version", version)?;
+        drop(conn);
+
+        let mut db = Database::open(dir.path())?;
+        assert_eq!(
+            db.db
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
+            version
+        );
+        if version >= 41 {
+            assert!(
+                db.db
+                    .prepare("SELECT 1 FROM run_activity WHERE run_id='r'")?
+                    .exists([])?
+            );
+        }
+        if version == 42 {
+            assert_eq!(
+                db.db
+                    .query_row("SELECT timestamp_ms FROM message WHERE id='m'", [], |r| r
+                        .get::<_, i64>(
+                        0
+                    ))?,
+                42
+            );
+        }
+        // A build using the previous text columns can still stage an upload.
+        db.db.execute(
+            "INSERT INTO pending_upload(id,thread_id,name,content) VALUES('old-writer','t','old.txt','old writer')",
+            [],
+        )?;
+        let thread = ThreadId("t".into());
+        let message = MessageId("m".into());
+        let file = db.read_attachment_file(&thread, &message, 0)?;
+        assert_eq!(file.name, "notes.txt");
+        assert_eq!(file.mime, "text/plain");
+        assert_eq!(file.bytes, "déjà vu".as_bytes());
+        assert_eq!(db.read_message_body(&thread, &message)?, "caption");
+        let (receipt, _) = db.dispatch(&Command {
+            id: CommandId("claim-legacy".into()),
+            thread_id: thread.clone(),
+            action: Action::SendAttachments {
+                text: "Read this".into(),
+                uploads: vec![UploadId("upload".into()), UploadId("old-writer".into())],
+            },
+        })?;
+        let file = db.read_attachment_file(&thread, receipt.message_id.as_ref().unwrap(), 0)?;
+        assert_eq!(file.name, "docs/staged.txt");
+        assert_eq!(file.text(), Some("legacy upload"));
+        assert_eq!(
+            db.read_attachment_file(&thread, receipt.message_id.as_ref().unwrap(), 1)?
+                .text(),
+            Some("old writer")
+        );
+        assert!(
+            db.claim(receipt.run_id.as_ref().unwrap())?
+                .files
+                .pending
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recovers_binary_attachments_from_the_earlier_version_41() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let conn = Connection::open(dir.path().join("huggler.sqlite3"))?;
+        for migration in &MIGRATIONS[..40] {
+            conn.execute_batch(migration)?;
+        }
+        conn.execute_batch(
+            "DROP TABLE pending_upload;
+             CREATE TABLE pending_upload(id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES thread(id),
+                 name TEXT NOT NULL, mime TEXT NOT NULL, content BLOB NOT NULL) STRICT;
+             CREATE INDEX pending_upload_thread ON pending_upload(thread_id);
+             DROP TABLE message_attachment;
+             CREATE TABLE message_attachment(message_id TEXT NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+                 position INTEGER NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, content BLOB NOT NULL,
+                 inline_text INTEGER NOT NULL, PRIMARY KEY(message_id,position)) STRICT;
+             INSERT INTO project(id,root) VALUES('p','/old');
+             INSERT INTO thread(id,project,name,provider,provider_instance) VALUES('t','p','preview','codex','codex');
+             INSERT INTO run(id,thread_id,ordinal,status) VALUES('r','t',1,'completed');
+             INSERT INTO message(id,run_id,role,text,attachment_caption) VALUES('m','r','user','preview','caption');
+             INSERT INTO message_attachment VALUES('m',0,'prior.bin','application/octet-stream',x'00ff',0);
+             INSERT INTO pending_upload VALUES('upload','t','staged.bin','application/octet-stream',x'017f');
+             PRAGMA user_version=41;",
+        )?;
+        drop(conn);
+        let mut db = Database::open(dir.path())?;
+        assert_eq!(
+            db.db
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
+            40
+        );
+        let thread = ThreadId("t".into());
+        assert_eq!(
+            db.read_attachment_file(&thread, &MessageId("m".into()), 0)?
+                .bytes,
+            [0, 255]
+        );
+        let (receipt, _) = db.dispatch(&Command {
+            id: CommandId("claim-preview".into()),
+            thread_id: thread.clone(),
+            action: Action::SendAttachments {
+                text: String::new(),
+                uploads: vec![UploadId("upload".into())],
+            },
+        })?;
+        assert_eq!(
+            db.read_attachment_file(&thread, receipt.message_id.as_ref().unwrap(), 0)?
+                .bytes,
+            [1, 127]
+        );
         Ok(())
     }
 

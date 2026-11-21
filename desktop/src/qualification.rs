@@ -17,6 +17,8 @@ pub enum Step {
     DragX(String, i16),
     CenterX(String, i16),
     NextFileSelection(Vec<std::path::PathBuf>),
+    NextSavePath(std::path::PathBuf),
+    FileSize(std::path::PathBuf, u64),
     Resize([u16; 2]),
     Type(String),
     Key(String),
@@ -53,6 +55,14 @@ pub fn take_file_selection(cx: &mut App) -> Option<Vec<std::path::PathBuf>> {
     cx.default_global::<FileSelection>().0.take()
 }
 
+#[derive(Default)]
+struct SavePath(Option<std::path::PathBuf>);
+impl Global for SavePath {}
+
+pub fn take_save_path(cx: &mut App) -> Option<std::path::PathBuf> {
+    cx.default_global::<SavePath>().0.take()
+}
+
 pub fn begin_frame(cx: &mut App) {
     cx.default_global::<Controls>().0.clear();
 }
@@ -75,6 +85,11 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             cx.default_global::<FileSelection>().0 = Some(paths.clone());
             true
         }
+        Step::NextSavePath(path) => {
+            cx.default_global::<SavePath>().0 = Some(path.clone());
+            true
+        }
+        Step::FileSize(path, size) => fs::metadata(path).is_ok_and(|file| file.len() == *size),
         Step::Resize([width, height]) => {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
             true

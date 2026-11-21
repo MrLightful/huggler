@@ -161,7 +161,7 @@ async fn attachments_are_claimed_once_and_answers_reach_the_owning_callback() ->
     let upload = |name: &str| rt.prepare_upload(&owner, name, "text/plain", name.as_bytes());
     assert!(matches!(
         rt.prepare_upload(&owner, "blob", "image/png", b""),
-        Err(Error::Unsupported(_))
+        Err(Error::Invalid(_))
     ));
     let discarded = upload("discard")?;
     rt.discard_upload(&owner, &discarded)?;
@@ -1148,5 +1148,195 @@ async fn prompt_suggestions_settle_independently_and_stay_with_the_latest_turn()
             .iter()
             .any(|m| m.message.text == "Explain the result.")
     );
+    rt.close().await
+}
+
+#[tokio::test]
+async fn mixed_attachments_survive_a_held_queue_and_reach_the_provider() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let mut opts = options(&dir.path().join("state"));
+    opts.storage.database_path = "attachments".into();
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&repo)?;
+    let thread = launch(&rt, &project, "mixed attachments", Provider::Codex);
+    let peer = launch(&rt, &project, "other", Provider::Codex);
+
+    let (_, mut changes) = rt.subscribe(&thread, None)?;
+    let active = rt.send(CommandId("active".into()), thread.clone(), "ask".into())?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if matches!(
+                changes.next().await.unwrap().change,
+                Change::QuestionRequested { .. }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    let png = include_bytes!("fixtures/attachments/diagram.png");
+    let pdf = include_bytes!("fixtures/attachments/report.pdf");
+    let files = vec![
+        Attachment::from_bytes("diagram".into(), png.to_vec())?,
+        Attachment::from_bytes("report.pdf".into(), pdf.to_vec())?,
+        Attachment::from_bytes("data.zip".into(), vec![0, 5, 255])?,
+        Attachment::from_bytes("snippet.rs".into(), b"fn main() {}".to_vec())?,
+    ];
+    let queue = command(
+        "mixed",
+        &thread,
+        Action::EnqueueFiles {
+            text: String::new(),
+            files: files.clone(),
+        },
+    );
+    let receipt = rt.dispatch(queue.clone())?;
+    assert_eq!(rt.dispatch(queue.clone())?, receipt);
+    let mut different = queue.clone();
+    if let Action::EnqueueFiles { files, .. } = &mut different.action {
+        files[2].bytes[1] = 6;
+    }
+    assert!(matches!(
+        rt.dispatch(different),
+        Err(Error::Conflict { .. })
+    ));
+
+    let upload = rt.prepare_upload(&thread, "staged.png", "image/png", png)?;
+    let staged = command(
+        "staged",
+        &thread,
+        Action::SendAttachments {
+            text: "Staged image".into(),
+            uploads: vec![upload.clone()],
+        },
+    );
+    assert!(matches!(rt.dispatch(staged.clone()), Err(Error::Busy)));
+
+    rt.stop_thread(CommandId("hold".into()), thread.clone())?;
+    rt.wait(&thread, active.run_id.as_ref().unwrap()).await?;
+    drop(changes);
+    rt.close().await?;
+
+    let mut reopen = opts.clone();
+    reopen.storage.database_path = opts.state_dir.join(&opts.storage.database_path);
+    reopen.state_dir = dir.path().join("other state");
+    let rt = Huggler::open(reopen).await?;
+    assert_eq!(rt.dispatch(queue)?, receipt);
+    let message = receipt.message_id.as_ref().unwrap();
+    let row = rt
+        .detail(&thread, None, "report.pdf", 8)?
+        .history
+        .messages
+        .pop()
+        .unwrap();
+    assert_eq!(row.message.id, *message);
+    assert!(row.files.unwrap().caption.is_empty());
+    for (position, file) in files.iter().enumerate() {
+        assert_eq!(rt.read_attachment_file(&thread, message, position)?, *file);
+    }
+    assert!(matches!(
+        rt.read_attachment_file(&peer, message, 0),
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        rt.read_attachment(&thread, message, 0),
+        Err(Error::Unsupported(_))
+    ));
+    assert_eq!(rt.read_attachment(&thread, message, 3)?, "fn main() {}");
+
+    rt.resume_queue(CommandId("resume".into()), thread.clone())?;
+    completed(&rt, &thread, receipt.run_id.as_ref().unwrap()).await;
+    let input = frames(&repo, "turn/start").pop().unwrap()["input"].clone();
+    let text = input[0]["text"].as_str().unwrap();
+    assert!(text.contains("Attachment PDF fixture") && text.contains("fn main() {}"));
+    assert!(text.contains("data.zip") && text.contains("application/zip"));
+    assert_eq!(input.as_array().unwrap().len(), 2);
+    assert_eq!(input[1]["type"], "localImage");
+    let path = Path::new(input[1]["path"].as_str().unwrap());
+    assert_eq!(fs::read(path)?, png);
+
+    let sent = rt.dispatch(staged.clone())?;
+    completed(&rt, &thread, sent.run_id.as_ref().unwrap()).await;
+    assert_eq!(rt.dispatch(staged)?, sent);
+    assert_eq!(
+        rt.read_attachment_file(&thread, sent.message_id.as_ref().unwrap(), 0)?
+            .bytes,
+        png
+    );
+
+    rt.close().await?;
+    #[cfg(feature = "application")]
+    {
+        let rt = Huggler::open(opts).await?;
+        rt.delete_thread(&thread)?;
+        assert!(!path.exists());
+        assert!(matches!(
+            rt.read_attachment_file(&thread, message, 0),
+            Err(Error::NotFound(_))
+        ));
+        rt.close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn acp_image_delivery_follows_the_advertised_capability() -> Result<()> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let rt = Huggler::open(options(&dir.path().join("state"))).await?;
+    let thread = launch(
+        &rt,
+        &rt.open_project(&repo)?,
+        "ACP images",
+        Provider::ClaudeAgent,
+    );
+    let image = include_bytes!("fixtures/attachments/diagram.png");
+    for native in [false, true] {
+        if native {
+            fs::write(repo.join("acp-vision"), "")?;
+        }
+        let sent = rt.dispatch(command(
+            if native {
+                "native-image"
+            } else {
+                "image-fallback"
+            },
+            &thread,
+            Action::EnqueueFiles {
+                text: "Look at this image".into(),
+                files: vec![Attachment::from_bytes(
+                    "diagram.png".into(),
+                    image.to_vec(),
+                )?],
+            },
+        ))?;
+        completed(&rt, &thread, sent.run_id.as_ref().unwrap()).await;
+        let wire = frames(&repo, "session/prompt").pop().unwrap();
+        let parts = wire["prompt"].as_array().unwrap();
+        assert!(parts[0]["text"].as_str().unwrap().contains("diagram.png"));
+        if native {
+            assert_eq!(
+                parts[1],
+                serde_json::json!({
+                    "type": "image", "mimeType": "image/png", "data": STANDARD.encode(image)
+                })
+            );
+        } else {
+            assert_eq!(parts.len(), 1);
+            let (_, encoded) = parts[0]["text"]
+                .as_str()
+                .unwrap()
+                .rsplit_once("available at ")
+                .unwrap();
+            let path: String = serde_json::from_str(encoded)?;
+            assert_eq!(fs::read(path)?, image);
+        }
+    }
     rt.close().await
 }

@@ -362,7 +362,21 @@ pub(crate) async fn execute(
         if server.v2 {
             return events::prompt(&server, &path, &id, &turn, &mut outstanding, update).await;
         }
-        let mut body = json!({"parts":[{"type":"text","text":turn.text}]});
+        let mut parts = vec![json!({"type":"text","text":turn.text})];
+        if server.managed.is_some() {
+            for file in &turn.files.files {
+                if file.is_image()
+                    || (file.file.mime == "application/pdf"
+                        && file.file.bytes.len() <= 20 * 1024 * 1024)
+                {
+                    parts.push(json!({
+                        "type":"file","mime":file.file.mime,"filename":file.file.name,
+                        "url":file.file_uri()?
+                    }));
+                }
+            }
+        }
+        let mut body = json!({"parts":parts});
         if let Some((p, m)) = turn.model.as_deref().and_then(|s| s.split_once('/')) {
             body["model"] = json!({"providerID":p,"modelID":m});
         }

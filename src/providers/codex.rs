@@ -293,7 +293,15 @@ impl Client {
         )
         .await?;
         self.request("config/read", read_config).await?;
-        let mut params = json!({"threadId":thread, "cwd":turn.cwd, "input":[{"type":"text","text":turn.text}],
+        let mut input = vec![json!({"type":"text","text":turn.text})];
+        input.extend(
+            turn.files
+                .files
+                .iter()
+                .filter(|file| file.is_image())
+                .map(|file| json!({"type":"localImage","path":file.path})),
+        );
+        let mut params = json!({"threadId":thread, "cwd":turn.cwd, "input":input,
             "approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly"},"summary":"auto"});
         if writable {
             params["sandboxPolicy"] = json!({"type":"workspaceWrite", "networkAccess":false});

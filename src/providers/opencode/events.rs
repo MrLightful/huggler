@@ -64,14 +64,23 @@ pub(super) async fn prompt(
         offset: 0,
     };
     let inbox = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    let mut body = json!({"id":inbox,"text":turn.text,"delivery":"queue"});
+    if server.managed.is_some() {
+        let files = turn
+            .files
+            .files
+            .iter()
+            .filter(|file| file.is_image())
+            .map(|file| Ok(json!({"uri":file.file_uri()?,"name":file.file.name})))
+            .collect::<Result<Vec<_>>>()?;
+        if !files.is_empty() {
+            body["files"] = json!(files);
+        }
+    }
     turn.submitting_prompt(&update)?;
     *outstanding = Outstanding::Queued(inbox.clone());
     let reply = server
-        .submit_prompt(
-            &format!("{path}/prompt"),
-            &json!({"id":inbox,"text":turn.text,"delivery":"queue"}),
-            outstanding,
-        )
+        .submit_prompt(&format!("{path}/prompt"), &body, outstanding)
         .await?;
     let user = &reply["data"];
     if user["id"] != inbox || user["sessionID"] != id || user["type"] != "user" {

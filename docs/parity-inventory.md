@@ -94,6 +94,20 @@ All five reads require orchestration-read scope. The live shell, detailed thread
 
 **Adjacent routes needed by a T3-like application.** Projects, filesystem, assets/attachments, external agent sessions, VCS/worktree setup, Git/review, source control/PRs/issues, settings, provider authentication/install, ACP Registry management, provider catalogs/usage, peer links, guest sharing, secrets, schedules/webhook history, MCP Apps, terminal, preview and devices live outside this 23-method map. For example, `agentSessions.scan` and `agentSessions.import` ingest local transcripts, `server.importAcpRegistrySession` handles a registry session and `secrets.answerRequest` completes a secret request. Use the main RPC map and its per-call permissions when implementing the full host profile. [Main RPC map][src-3] · [Per-call scopes][src-11]
 
+### File attachments in Huggler
+
+The desktop owns file selection, drag and drop, draft removal, previews, and saving a copy. The crate validates and stores the original bytes with the message, scopes upload claims to their thread, and keeps bytes out of history pages and replay events. Adapters choose how to deliver the files. Huggler uses bounded UTF-8 and PDF excerpts and local file paths for other formats. A configured external OpenCode server needs a shared filesystem for those paths to work. Portable fork summaries carry bounded message text.
+
+| Harness and transport | Turn input |
+| --- | --- |
+| Codex app-server 0.170.0 over stdio | Native `localImage` for PNG, JPEG, GIF and WebP. PDFs use an extracted text excerpt and a local file path. |
+| ACP v1/v2 over stdio, including Claude Agent | Native image content blocks when the harness advertises `promptCapabilities.image`. Local file paths provide a fallback. |
+| Pi RPC 1.0.0 fixture over stdio | Native `images` on `prompt`. Other files use the text and path fallback. |
+| Muse 1.4.3 JSON-RPC fixture over stdio | Native image parts on `turn/start` following the upstream Muse adapter. Other files use the text and path fallback. |
+| OpenCode HTTP 1.14.39 and 2.0.18 fixtures | Managed v1 uses native image and PDF file parts. Managed v2 uses native image files and the text and path fallback for PDFs. External servers receive the text and path fallback. |
+
+The upstream reference is the attachment handling at `338352dee2f43079482e054e8229a2ba055641d9`, including the fix that keeps attachment references visible in the provider prompt. Huggler reads PDFs in Rust. Other binary documents use the original file path. [Upstream prompt regression](https://github.com/pingdotgg/t3code/commit/550f119c3ac12b2df070c4fd545ab8b41222debb) · [Crate attachment tests](../tests/context.rs) · [Desktop history check](../scripts/check-desktop-history.py)
+
 ## Durable facts and effects
 
 These 48 distinct event names belong to the thread domain union. A stored event, the in-memory domain value and a compact wire delta have different encodings. Persisted application sequences also cover project activity. Consumers should use the stream frames and cursors defined for their view. [Domain and JSON schemas][src-1] · [Wire projection][src-19] · [Application event envelope][src-20]
