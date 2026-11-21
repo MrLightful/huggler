@@ -20,7 +20,8 @@ with tempfile.TemporaryDirectory(prefix="huggler independent ") as tmp:
     with tarfile.open(target / "package" / f"{name}.crate") as archive:
         members = set(archive.getnames())
         fixtures = ("fx", "grok", "kiro", "registry", "muse", "pi", "open1", "open2")
-        for required in ("Cargo.lock", "migrations/001.sql", "migrations/013.sql",
+        migrations = sorted(path.relative_to(root).as_posix() for path in (root / "migrations").glob("*.sql"))
+        for required in ("Cargo.lock", *migrations, "tests/fixtures/context-provider.py",
                          "docs/reference/codex-resume/LICENSE",
                          "tests/fixtures/providers/LICENSE", "docs/reference/codex-resume/codex_transcript.ndjson",
                          "src/providers/codex.rs", *(f"tests/fixtures/providers/{f}.ndjson" for f in fixtures),

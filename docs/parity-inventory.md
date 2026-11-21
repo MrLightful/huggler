@@ -10,6 +10,8 @@ Stage 3 verified cross-provider peer replies, delegated completions, live permis
 
 Stage 4 added named instances for all eleven driver kinds. A host can probe an instance, select it at launch, observe run output and read usage for runs that reported tokens. Agent-created peers and delegates can inherit or select an instance. Installed Cursor and Antigravity CLIs returned login challenges in fresh homes. Both advertised session loading, and only Cursor advertised HTTP MCP in these runs. The upstream Antigravity v2 recording advertises both. Successful turns for these two providers use scripted peers. [Driver matrix and limits](stage-4.md#driver-results)
 
+Stage 5 verified durable queue controls, delegation-tree stop, Codex steering and restart, human input with text attachments, context forks and checkpoint restore, bounded history and replay, process-loss recovery and four provider import paths. The qualification record identifies the scripted and recorded operations, portable fallbacks and unavailable workflows for each acceptance row. [Stage 5 coverage](stage-5.md)
+
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
 | Thread orchestration commands | 58 wire variants + 15 additional internal variants | [Command and event unions][src-1] · [Command policy][src-2] |
