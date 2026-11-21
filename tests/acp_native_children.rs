@@ -164,6 +164,39 @@ async fn nested_child_permissions_and_cancellation_outlive_the_foreground() {
 }
 
 #[tokio::test]
+async fn stop_thread_disconnects_native_children_after_foreground_completion() {
+    timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, rt, thread) = setup(dir.path()).await;
+        let (_, mut events) = rt.subscribe(&thread, None).unwrap();
+        let run = send(&rt, &thread, "background");
+        let writer = permission(&mut events, "old request").await;
+        let root = permission(&mut events, "finish root").await;
+        rt.respond_to_permission(&thread, &run, &root.id, "yes".into())
+            .unwrap();
+        agents::completed(&rt, &thread, &run).await;
+        let before = rt.read(&thread).unwrap();
+        rt.stop_thread(CommandId("stop".into()), thread.clone())
+            .unwrap();
+        closed(&mut events, &writer).await;
+        let after = rt.read(&thread).unwrap();
+        assert!(after.permissions.is_empty());
+        for session in [RELAY, WRITER] {
+            let node = child(&after, session);
+            assert_eq!(node.run_id, run);
+            assert_eq!(node.status, NativeChildStatus::Disconnected);
+            assert!(!node.can_interrupt);
+        }
+        assert_eq!(after.runs, before.runs);
+        assert_eq!(after.messages, before.messages);
+        assert_eq!(after.messages.last().unwrap().text, "root answer");
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn provider_loss_expires_a_background_childs_permission() {
     timeout(Duration::from_secs(15), async {
         let dir = tempfile::tempdir().unwrap();

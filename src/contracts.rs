@@ -205,6 +205,10 @@ pub enum Action {
     SendPlan {
         text: String,
     },
+    /// Hold queued runs and stop current work throughout the owned delegation tree.
+    StopThread,
+    /// Release queued runs on this thread in their original order.
+    ResumeQueue,
     SetModel {
         model: Option<String>,
     },
@@ -247,6 +251,9 @@ pub struct Run {
     pub id: RunId,
     pub ordinal: i64,
     pub status: RunStatus,
+    /// Explicit queue resume is required before this run can start.
+    #[serde(default)]
+    pub queue_held: bool,
     pub native_turn: Option<NativeTurnId>,
     pub error: Option<String>,
 }
@@ -441,6 +448,10 @@ impl From<ThreadSnapshot> for Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    /// The host requested that the worker for this run stop.
+    RunStopRequested {
+        run_id: RunId,
+    },
     /// Text as received, before the final assistant message is committed.
     OutputDelta {
         run_id: RunId,

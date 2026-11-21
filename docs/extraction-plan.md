@@ -6,11 +6,13 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Stage 4 passed on macOS arm64.** A signed-in Codex instance completed a cloud turn while an ACP executable was missing. Installed Muse resumed a deterministic echo session across reopen. Cursor and Antigravity negotiated ACP v1 and returned login challenges in fresh homes. Their authenticated turns use scripted peers. Two Pi fixtures resumed independently with the same native identity. A GPUI qualification build displayed discovery results for working and missing instances. The driver matrix records the evidence and limits for all eleven driver kinds. [Stage 4 evidence and reproduction](stage-4.md)
+**Stage 5 in progress.** The thread-stop check passes through the Rust API. `Huggler::stop_thread` interrupted a parent, child and grandchild while an independent peer continued. The parent kept its completed review. Queued messages stayed held across reopen. `Huggler::resume_queue` ran the selected thread’s messages in FIFO order, and the grandchild’s queue waited for its own resume. Retrying either command returned its original receipt. [Delegation fixture test](../tests/delegation.rs) · [Upstream stop scenarios][src-33]
 
-**Next action for Stage 5.** Stop a thread with queued work and a live child. Verify that the child stops and the queue stays held until explicit resume. [Stage 5 acceptance](#5-complete-control-history-and-recovery)
+Run `cargo test --locked stop_thread` to reproduce the stop checks. A scripted peer for standalone Claude Agent ACP 0.109.0 over ACP v1 stdio verified that stopping after foreground completion disconnects native children, closes their permissions and preserves the foreground answer. Store tests cover stale worker callbacks, a stop after an answer commits, and delivery to an idle parent when a stop clears the last pending task. Run `cargo test --locked --lib upgrades_v2_messages_and_events_without_attribution` to verify that historical run events and migrated rows agree on the queue hold. [Native-child fixture test](../tests/acp_native_children.rs) · [Worker race tests](../src/store/interrupts.rs) · [Migration test](../src/store.rs)
 
-**Branch recommendation.** Merge Stage 4. The independent Cargo consumer passed, the desktop exposed instance-specific failures, and the driver matrix identifies which operations Stage 5 can rely on.
+**Next action for Stage 5.** Host `send` currently returns `Busy` when work is queued. Add host queue delivery, editing and reordering through the Rust API. Queue two messages behind an active run, stop the thread, edit a held message and reverse their order. After resume, verify the provider receives the edited text and executes both messages in the requested order. [Queue controls inventory](parity-inventory.md) · [Stage 5 acceptance](#5-complete-control-history-and-recovery)
+
+**Branch recommendation.** Commit and continue on this branch. Thread stop and explicit resume pass their checks. Host queue controls and the remaining Stage 5 workflows are still open.
 
 ### Maintaining the handoff
 

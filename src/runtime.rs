@@ -181,14 +181,18 @@ impl Shared {
     ) -> Result<DelegatedTask> {
         self.schedule(|db| {
             let (task, runs) = db.cancel_task(token, id, key)?;
-            let stops = self.run_stops.lock().unwrap();
-            for id in runs {
-                if let Some(stop) = stops.get(&id) {
-                    stop.send_replace(true);
-                }
-            }
+            self.stop_runs(&runs);
             Ok((task, None))
         })
+    }
+
+    fn stop_runs(&self, runs: &[RunId]) {
+        let stops = self.run_stops.lock().unwrap();
+        for id in runs {
+            if let Some(stop) = stops.get(id) {
+                stop.send_replace(true);
+            }
+        }
     }
 
     pub(crate) fn interrupt_run(
@@ -406,17 +410,13 @@ impl Huggler {
         self.shared.access(|db| db.project(&root))
     }
 
-    /// Commit a launch, model selection or message. Reusing the same command
+    /// Commit a host command. Reusing the same command
     /// identity and payload returns the original receipt, including after reopen.
     pub fn dispatch(&self, command: Command) -> Result<Receipt> {
         self.shared.schedule(|db| {
-            let (receipt, fresh) = db.dispatch(&command)?;
-            let job = receipt
-                .run_id
-                .clone()
-                .filter(|_| fresh)
-                .map(|run| (command.thread_id, run));
-            Ok((receipt, job))
+            let (receipt, work) = db.dispatch(&command)?;
+            self.shared.stop_runs(&work.stop);
+            Ok((receipt, work.start))
         })
     }
 
@@ -443,6 +443,24 @@ impl Huggler {
             id,
             thread_id: thread,
             action: Action::Send { text },
+        })
+    }
+    /// Request interruption of current work on the thread and its owned descendants.
+    /// Observe worker outcomes with `wait` or `subscribe`.
+    pub fn stop_thread(&self, id: CommandId, thread: ThreadId) -> Result<Receipt> {
+        self.dispatch(Command {
+            id,
+            thread_id: thread,
+            action: Action::StopThread,
+        })
+    }
+
+    /// Release the held queue on this thread. Descendants have their own queues.
+    pub fn resume_queue(&self, id: CommandId, thread: ThreadId) -> Result<Receipt> {
+        self.dispatch(Command {
+            id,
+            thread_id: thread,
+            action: Action::ResumeQueue,
         })
     }
     /// Answer one live provider request on its owning thread and run.

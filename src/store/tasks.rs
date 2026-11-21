@@ -51,6 +51,40 @@ pub(super) fn for_parent(db: &Connection, parent: &ThreadId) -> Result<Vec<Deleg
         .collect::<rusqlite::Result<_>>()?)
 }
 
+/// Ownership survives completion of the run that originally delegated the task.
+pub(super) fn subtree(tx: &Transaction, root: &ThreadId) -> Result<Vec<ThreadId>> {
+    Ok(tx
+        .prepare(
+            "WITH RECURSIVE family(child) AS (
+                SELECT ?1 UNION SELECT t.child_thread FROM delegated_task t
+                JOIN family f ON t.parent_thread=f.child WHERE t.request_key IS NOT NULL
+            ) SELECT child FROM family",
+        )?
+        .query_map([&root.0], |r| Ok(ThreadId(r.get(0)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// A targeted cancel preserves settled sibling results on the same child.
+/// A whole-thread stop disposes every pending delivery from owned children.
+pub(super) fn dispose(tx: &Transaction, child: &ThreadId, target: Option<&TaskId>) -> Result<()> {
+    let disposed = tx.prepare(
+        "UPDATE delegated_task AS t SET delivery='disposed',cancelled=(result_run IS NULL AND
+            (EXISTS (SELECT 1 FROM run WHERE task_id=t.id AND status IN ('starting','running','queued'))
+             OR EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
+                        WHERE c.active AND r.task_id=t.id)
+             OR EXISTS (SELECT 1 FROM delegated_task d JOIN run r ON r.id=d.parent_run
+                        WHERE r.task_id=t.id AND (d.result_run IS NULL OR d.delivery='pending')))),
+         result_run=coalesce(result_run,(SELECT id FROM run WHERE id=t.child_run AND queue_held))
+         WHERE child_thread=?1 AND delivery='pending' AND (?2 IS NULL OR id=?2 OR result_run IS NULL)
+         RETURNING id,parent_thread",
+    )?.query_map(params![child.0, target.map(|id| &id.0)], |r| Ok((TaskId(r.get(0)?), ThreadId(r.get(1)?))))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, parent) in disposed {
+        publish(tx, &parent, &id)?;
+    }
+    Ok(())
+}
+
 fn owned(db: &Connection, parent: &ThreadId, id: &TaskId) -> Result<DelegatedTask> {
     db.query_row(
         &format!("{SELECT_TASK} WHERE t.parent_thread=? AND t.id=?"),
@@ -217,37 +251,9 @@ impl Database {
         {
             return Ok((task, Vec::new()));
         }
-        // The tree belongs to the parent even after a task returns its result.
-        // A later turn in any of these threads can have more work in flight.
-        let subtree = tx
-            .prepare(
-                "WITH RECURSIVE family(child) AS (
-                    SELECT child_thread FROM delegated_task WHERE id=?1
-                    UNION
-                    SELECT t.child_thread FROM delegated_task t JOIN family f ON t.parent_thread=f.child
-                    WHERE t.request_key IS NOT NULL
-                ) SELECT child FROM family",
-            )?
-            .query_map([&id.0], |r| Ok(ThreadId(r.get(0)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stops = Vec::new();
-        for child in subtree {
-            let disposed = tx.prepare(
-                "UPDATE delegated_task AS t SET delivery='disposed',cancelled=(result_run IS NULL AND
-                    (EXISTS (SELECT 1 FROM run WHERE task_id=t.id AND status IN ('starting','running','queued'))
-                     OR EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
-                                WHERE c.active AND r.task_id=t.id)
-                     OR EXISTS (SELECT 1 FROM delegated_task d JOIN run r ON r.id=d.parent_run
-                                WHERE r.task_id=t.id AND (d.result_run IS NULL OR d.delivery='pending'))))
-                 WHERE child_thread=?1 AND delivery='pending'
-                   AND (id=?2 OR child_thread<>?3 OR result_run IS NULL)
-                 RETURNING id,parent_thread",
-            )?.query_map(params![child.0, id.0, task.child_thread_id.0], |r|
-                Ok((TaskId(r.get(0)?), ThreadId(r.get(1)?))))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (subtask, owner) in disposed {
-                publish(&tx, &owner, &subtask)?;
-            }
+        for child in subtree(&tx, &task.child_thread_id)? {
+            dispose(&tx, &child, (child == task.child_thread_id).then_some(id))?;
             let runs = tx.prepare("SELECT id,status FROM run WHERE thread_id=? AND
                 (status IN ('starting','running','queued') OR id IN (SELECT run_id FROM native_child WHERE active))")?
                 .query_map([&child.0],|r|Ok((RunId(r.get(0)?),r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;

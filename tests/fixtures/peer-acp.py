@@ -152,6 +152,9 @@ for line in sys.stdin:
                 assert respond()["code"] == "already_answered"
                 assert pending("list", **target) == {"requestIds": []}
             finish("Checked question")
+        elif text == "start branch review":
+            delegate("branch review", "branch")
+            finish("Delegated for review")
         elif text.startswith("delegate "):
             action = text.removeprefix("delegate ")
             child = {"nested": "delegate leaf", "subtree": "branch review",
