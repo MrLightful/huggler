@@ -175,7 +175,7 @@ impl Resource for Display {
                     let input = dir.path().join("input.html");
                     let png = dir.path().join("view.png");
                     std::fs::write(&input, self.content)?;
-                    let status = std::process::Command::new(chrome)
+                    let output = std::process::Command::new(chrome)
                         .args([
                             "--headless",
                             "--no-first-run",
@@ -189,9 +189,13 @@ impl Resource for Display {
                         ))
                         .arg(format!("--screenshot={}", png.display()))
                         .arg(input)
-                        .stderr(std::process::Stdio::null())
-                        .status()?;
-                    assert!(status.success());
+                        .output()?;
+                    assert!(
+                        output.status.success(),
+                        "Chromium capture exited with {}: {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr)
+                    );
                     Ok(Output::Bytes {
                         mime: "image/png".into(),
                         data: std::fs::read(png)?,
