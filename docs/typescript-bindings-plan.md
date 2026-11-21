@@ -2,6 +2,8 @@
 
 Ship an npm package that lets a Node.js project open a Git checkout, run and monitor an agent conversation, answer a provider request, and resume the conversation after a process restart. Start with TypeScript CLIs and long-lived backends. The first release should install from npm on Apple Silicon macOS and x64 Linux with glibc without requiring Cargo or a C compiler on the consumer’s machine. `@huggler/sdk` is the proposed package name, pending npm scope access and availability.
 
+The preview implementation and local tarball installation instructions are in the [TypeScript SDK guide](typescript-sdk.md).
+
 ## Architecture
 
 Add a standalone Rust `cdylib` crate in `bindings/node/native` using NAPI-RS and a TypeScript package in `bindings/node`. Give the binding its own manifest and lockfile and use the root Huggler crate as a Cargo dependency. The addon hosts `Huggler` in-process on NAPI-RS’s Tokio runtime. The TypeScript layer supplies a typed API, abortable observers, and structured errors. Rust continues to own the database, migrations, command receipts, provider processes, and agent authorization. The GPUI app continues to embed the Cargo crate directly and runs without Node.js. [Rust runtime](../src/runtime.rs) · [NAPI-RS async runtime](https://napi.rs/docs/concepts/async-runtime)

@@ -1,0 +1,53 @@
+name: Node bindings
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  packed-consumer:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+          - os: ubuntu-24.04
+            container: rust:1.94.1-bookworm
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        working-directory: bindings/node
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        if: runner.os == 'macOS'
+        with:
+          python-version: '3.12'
+      - name: Install build prerequisites
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            apt-get update && apt-get install -y python3
+          fi
+          rustup toolchain install 1.94.1 --profile minimal --component rust-docs
+          echo RUSTUP_TOOLCHAIN=1.94.1 >> "$GITHUB_ENV"
+      - name: Build release tarballs
+        run: |
+          cargo install --locked cargo-about --version 0.9.1
+          npm ci --ignore-scripts
+          npm run pack:local
+      - name: Verify packed installs across Node versions
+        run: |
+          sdk=(packages/huggler-sdk-[0-9]*.tgz)
+          binary=(packages/huggler-sdk-"$(node platform.cjs)"-*.tgz)
+          for version in 22.14.0 22 24.0.0 24 26.0.0 26; do
+            npm exec --yes --package="node@$version" -- node scripts/test-consumer.mjs "${sdk[0]}" "${binary[0]}"
+          done
