@@ -284,10 +284,10 @@ impl Database {
         limit: usize,
     ) -> Result<ConversationDetail> {
         let history = self.history(thread, before, query, limit)?;
-        let (name, instance, model) = self.db.query_row(
-            "SELECT name,provider_instance,model FROM thread WHERE id=?",
+        let (name, instance, model, settled) = self.db.query_row(
+            "SELECT name,provider_instance,model,settled FROM thread WHERE id=?",
             [&thread.0],
-            |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get(3)?)),
         )?;
         let latest_run = self
             .db
@@ -338,6 +338,7 @@ impl Database {
             .map(|row| Ok(serde_json::from_str(&row?)?))
             .collect::<Result<_>>()?;
         Ok(ConversationDetail {
+            settled,
             id: thread.clone(),
             name,
             provider_instance: instance.into(),

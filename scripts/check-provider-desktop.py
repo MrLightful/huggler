@@ -17,7 +17,7 @@ def check_models(executable, tmp, env):
     env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
     default = "model/Provider default"
     run_window(executable, state, [
-        {"click": "Git checkout"}, {"type": str(checkout)}, {"click": default},
+        {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)}, {"click": default},
         {"see": "model-option/fixture-fast"}, {"type": "deep"},
         {"absent": "model-option/fixture-fast"}, {"key": "enter"}, {"see": "model/fixture-deep"},
         {"click": "available"}, {"see": default}, {"click": default},
@@ -62,7 +62,7 @@ def main():
         ]))
         status = "provider-status/"
         steps = [
-            {"click": "Git checkout"}, {"type": str(tmp)},
+            {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(tmp)},
             {"click": "unavailable"}, {"click": "Check provider"},
             {"see": status + "install the provider executable or configure its path: " + str(missing)},
             {"click": "model/Provider default"}, {"see": "Retry models"},

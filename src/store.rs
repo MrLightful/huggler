@@ -86,6 +86,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/036.sql"),
     include_str!("../migrations/037.sql"),
     include_str!("../migrations/038.sql"),
+    include_str!("../migrations/039.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -134,6 +135,7 @@ fn event(tx: &Transaction<'_>, thread: &ThreadId, change: Change) -> Result<i64>
     if matches!(
         change,
         Change::Launched
+            | Change::SettlementChanged { .. }
             | Change::Run { .. }
             | Change::NativeChild { .. }
             | Change::QuestionRequested { .. }
@@ -195,6 +197,17 @@ fn message(
     Ok((id, seq))
 }
 
+fn set_settled(tx: &Transaction<'_>, thread: &ThreadId, settled: bool) -> Result<Option<i64>> {
+    if tx.execute(
+        "UPDATE thread SET settled=?1 WHERE id=?2 AND settled!=?1",
+        params![settled, thread.0],
+    )? == 0
+    {
+        return Ok(None);
+    }
+    event(tx, thread, Change::SettlementChanged { settled }).map(Some)
+}
+
 fn start_message(
     tx: &Transaction<'_>,
     thread: &ThreadId,
@@ -242,13 +255,16 @@ fn start_message(
          FROM run WHERE thread_id=?2",
         params![id.0, thread.0, status, delivery == PeerDelivery::Queued && held],
     )?;
+    let mut events = Vec::new();
+    events.extend(set_settled(tx, thread, false)?);
     let started = run_event(tx, thread, &id)?;
     let (msg, seq) = message(tx, thread, &id, Role::User, origin, text.to_owned())?;
     tx.execute(
         "INSERT INTO turn_effect(run_id,model,state) VALUES(?,?,'pending')",
         params![id.0, model],
     )?;
-    Ok((id, msg, vec![started, seq], delivery))
+    events.extend([started, seq]);
+    Ok((id, msg, events, delivery))
 }
 
 fn start_durable_message(
@@ -593,6 +609,20 @@ impl Database {
                 receipt.run_id = Some(run);
                 receipt.message_id = Some(msg);
                 receipt.event_sequences = events;
+            }
+            Action::SetSettled { settled } => {
+                if *settled {
+                    if tx.prepare("SELECT 1 FROM run WHERE thread_id=?1 AND status IN ('queued','starting','running','waiting')
+                        UNION ALL SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id WHERE r.thread_id=?1 AND c.active
+                        UNION ALL SELECT 1 FROM permission p JOIN run r ON r.id=p.run_id WHERE r.thread_id=?1 AND p.expired=0 AND p.decision IS NULL
+                        UNION ALL SELECT 1 FROM user_question u JOIN run r ON r.id=u.run_id WHERE r.thread_id=?1 AND u.state IN ('pending','answering')")?.exists([&thread.0])? {
+                        return Err(Error::Busy);
+                    }
+                    tx.execute("DELETE FROM usage_recovery WHERE thread_id=?", [&thread.0])?;
+                }
+                receipt
+                    .event_sequences
+                    .extend(set_settled(&tx, thread, *settled)?);
             }
             Action::SetModel { model } => {
                 if selection.as_ref() != Some(model) {
@@ -1329,7 +1359,7 @@ impl Database {
                              WHERE u.state IN ('pending','answering')),
                     coalesce(q.held,0),
                     t.id IN (SELECT r.thread_id FROM native_child c JOIN run r ON r.id=c.run_id
-                             WHERE c.active)
+                             WHERE c.active), t.settled
              FROM thread_order o JOIN thread t ON t.id=o.id
              LEFT JOIN run fg ON fg.thread_id=t.id AND fg.status IN ('starting','running','waiting')
              LEFT JOIN queued q ON q.thread_id=t.id ORDER BY o.activity DESC, o.position DESC",
@@ -1348,6 +1378,7 @@ impl Database {
                     needs_answer: row.get(4)?,
                     queue_held: row.get(5)?,
                     active_children: row.get(6)?,
+                    settled: row.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1361,10 +1392,11 @@ impl Database {
         let mut thread = self
             .db
             .query_row(
-                "SELECT project,name,model,native_thread,provider,worktree_path,provider_instance FROM thread WHERE id=?",
+                "SELECT project,name,model,native_thread,provider,worktree_path,provider_instance,settled FROM thread WHERE id=?",
                 [&id.0],
                 |r| {
                     Ok(Thread {
+                        settled:r.get(7)?,
                         provider_instance:ProviderInstanceId(r.get(6)?),
                         questions: vec![],
                         native_children: vec![],
@@ -1645,6 +1677,80 @@ mod tests {
                     r.get(0)
                 })?;
         assert_eq!(violations, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn manual_settlement_is_durable_idempotent_and_cleared_by_a_turn() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut db = Database::open(dir.path())?;
+        let project = db.project(dir.path())?.id;
+        let thread = ThreadId("conversation".into());
+        let command = |id: &str, action| Command {
+            id: CommandId(id.into()),
+            thread_id: thread.clone(),
+            action,
+        };
+        db.dispatch(&command(
+            "launch",
+            Action::Launch {
+                project,
+                name: "Manual settlement".into(),
+                model: None,
+            },
+        ))?;
+        let settle = Action::SetSettled { settled: true };
+        let (receipt, _) = db.dispatch(&command("settle", settle.clone()))?;
+        assert_eq!(receipt.event_sequences.len(), 1);
+        let settled = db.conversation_list()?;
+        assert!(settled.threads[0].settled);
+        let (noop, _) = db.dispatch(&command("again", settle.clone()))?;
+        assert!(noop.event_sequences.is_empty());
+        assert_eq!(db.conversation_list()?, settled);
+        drop(db);
+        let mut db = Database::open(dir.path())?;
+        assert!(db.read(&thread)?.settled);
+        assert!(
+            db.dispatch(&command(
+                "empty",
+                Action::Send {
+                    text: String::new()
+                }
+            ))
+            .is_err()
+        );
+        assert!(db.read(&thread)?.settled);
+        let (sent, _) = db.dispatch(&command(
+            "follow-up",
+            Action::Send {
+                text: "Continue".into(),
+            },
+        ))?;
+        let changes = db.events(&thread, receipt.event_sequences[0])?;
+        assert!(matches!(
+            changes[0].change,
+            Change::SettlementChanged { settled: false }
+        ));
+        assert_eq!(
+            changes.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            sent.event_sequences
+        );
+        assert!(!db.read(&thread)?.settled);
+        assert!(matches!(
+            db.dispatch(&command("busy", settle.clone())),
+            Err(Error::Busy)
+        ));
+        db.dispatch(&command(
+            "enqueue",
+            Action::Enqueue {
+                text: "Next".into(),
+            },
+        ))?;
+        db.dispatch(&command("pause", Action::StopThread))?;
+        assert!(matches!(
+            db.dispatch(&command("queued", settle)),
+            Err(Error::Busy)
+        ));
         Ok(())
     }
 

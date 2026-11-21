@@ -32,7 +32,7 @@ def isolated_env(case, *, codex_login=False):
 
 def launch_thread(checkout, name, provider="Codex", *, branch=None):
     return [
-        {"click": "Git checkout"}, {"type": str(checkout)}, {"click": provider},
+        {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)}, {"click": provider},
         {"click": "Conversation name"}, {"type": name},
         *([{"click": "New worktree branch (optional)"}, {"type": branch}] if branch else []),
         {"click": "Open conversation"},

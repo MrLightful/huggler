@@ -38,6 +38,44 @@ def main():
         run_window(executable, state, steps, os.environ)
         env = dict(os.environ, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"),
                    HUGGLER_PROMPT_SUGGESTIONS="1")
+        starter_state = checkout / "starter-state"
+        first = "Explain this project"
+        run_window(executable, starter_state, [
+            {"resize": [640, 440]}, {"click": "Conversation options"},
+            {"click": "Git checkout"}, {"type": str(checkout)}, {"click": "Conversation options"},
+            {"click": "Start without a project"}, {"click": "First message"}, {"type": first},
+            {"click": "Send first message"}, {"see": "thread/" + first},
+            {"see": "Codex/reply " + first},
+        ], env)
+        with sqlite3.connect(starter_state / "huggler.sqlite3") as db:
+            assert db.execute("SELECT text FROM message WHERE role='user'").fetchall() == [(first,)]
+            root, = db.execute("SELECT root FROM project").fetchone()
+            assert Path(root).parent == (starter_state / "scratch").resolve()
+        run_window(executable, starter_state, [
+            {"key": "cmd-n"}, {"click": "Conversation options"}, {"click": "Git checkout"},
+            {"type": str(checkout / "missing")}, {"click": "Conversation options"},
+            {"click": "First message"}, {"type": "Review my changes"}, {"key": "enter"},
+            {"type": "Include the tests."}, {"key": "cmd-enter"}, {"contains": "Could not open"},
+            {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"},
+            {"type": str(checkout)}, {"click": "Conversation options"}, {"click": "Send first message"},
+            {"see": "thread/Review my changes"}, {"see": "status/Completed"},
+        ], env)
+        with sqlite3.connect(starter_state / "huggler.sqlite3") as db:
+            assert db.execute("SELECT text FROM message WHERE role='user' ORDER BY rowid").fetchall() == [
+                (first,), ("Review my changes\nInclude the tests.",),
+            ]
+        run_window(executable, starter_state, [
+            {"resize": [640, 440]}, {"click": "Settle/" + first},
+            {"see": "section/Settled/1"}, {"absent": "thread/" + first},
+        ], env)
+        run_window(executable, starter_state, [
+            {"click": "Show settled"}, {"click": "thread/" + first},
+            {"see": "Codex/reply " + first}, {"click": "Unsettle/" + first},
+            {"see": "Ready/" + first + "/Completed"}, {"click": "Settle/" + first},
+            {"see": "Settled/" + first + "/Settled"}, *send_message("Continue"),
+            {"see": "Codex/reply Continue"}, {"see": "Ready/" + first + "/Completed"},
+            {"absent": "section/Settled/1"},
+        ], env)
         run_window(executable, checkout / "suggestion-state", [
             *launch_thread(checkout, "Follow-up"), *send_message("First question"),
             {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/Explain the result."},

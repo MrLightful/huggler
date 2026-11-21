@@ -8,6 +8,7 @@ enum Section {
     Attention,
     Ready,
     Working,
+    Settled,
 }
 
 impl Section {
@@ -16,11 +17,15 @@ impl Section {
             Self::Attention => "Needs attention",
             Self::Ready => "Ready",
             Self::Working => "Working",
+            Self::Settled => "Settled",
         }
     }
 }
 
 fn activity(thread: &ConversationSummary) -> (Section, &'static str) {
+    if thread.settled {
+        return (Section::Settled, "Settled");
+    }
     if thread.needs_approval {
         return (Section::Attention, "Approval requested");
     }
@@ -48,7 +53,12 @@ impl Desktop {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
-        for section in [Section::Attention, Section::Working, Section::Ready] {
+        for section in [
+            Section::Attention,
+            Section::Working,
+            Section::Ready,
+            Section::Settled,
+        ] {
             let rows: Vec<_> = self
                 .threads
                 .iter()
@@ -63,14 +73,18 @@ impl Desktop {
 
             let title = section.label();
             let count = rows.len();
-            let expanded = section != Section::Working || self.show_working;
+            let expanded = match section {
+                Section::Working => self.show_working,
+                Section::Settled => self.show_settled,
+                _ => true,
+            };
             let selected = self
                 .current
                 .as_ref()
                 .filter(|_| !self.show_settings)
                 .map(|t| &t.id);
-            let can_fold =
-                section == Section::Working && rows.iter().any(|(t, _)| Some(&t.id) != selected);
+            let can_fold = matches!(section, Section::Working | Section::Settled)
+                && rows.iter().any(|(t, _)| Some(&t.id) != selected);
             let header = h_flex()
                 .px_1()
                 .gap_2()
@@ -84,15 +98,19 @@ impl Desktop {
                 .when(can_fold, |header| {
                     let action = if expanded { "Hide" } else { "Show" };
                     header.child(control!(
-                        format!("{action} working"),
-                        Button::new("toggle-working")
+                        format!("{action} {}", title.to_lowercase()),
+                        Button::new(SharedString::from(format!("toggle-{title}")))
                             .small()
                             .compact()
                             .ghost()
                             .label(action)
-                            .tooltip(format!("{action} working conversations"))
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.show_working = !view.show_working;
+                            .tooltip(format!("{action} {} conversations", title.to_lowercase()))
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                match section {
+                                    Section::Settled => view.show_settled = !expanded,
+                                    Section::Working => view.show_working = !expanded,
+                                    _ => {}
+                                }
                                 cx.notify();
                             }))
                     ))
@@ -126,7 +144,7 @@ impl Desktop {
         // Button measures its custom label at its intrinsic width. Bound it to the
         // space inside the sidebar and row padding so long names get an ellipsis.
         let content = v_flex()
-            .w(px(WIDTH - 43.))
+            .w(px(WIDTH - 70.))
             .items_start()
             .child(div().w_full().truncate().child(thread.name.clone()))
             .when(attention, |row| {
@@ -137,7 +155,15 @@ impl Desktop {
                         .child(status),
                 )
             });
-        control!(
+        let settled = thread.settled;
+        let action = if settled { "Unsettle" } else { "Settle" };
+        let enabled = settled
+            || (!thread.needs_approval
+                && !thread.needs_answer
+                && !thread.active_children
+                && thread.status.is_none_or(RunStatus::terminal));
+        let target = id.clone();
+        let select = control!(
             format!("thread/{}", thread.name),
             Button::new(SharedString::from(id.0.clone()))
                 .w_full()
@@ -157,5 +183,32 @@ impl Desktop {
                     view.report(result, cx);
                 })),
         )
+        .flex_1()
+        .min_w_0();
+        h_flex().child(select).child(control!(
+            format!("{action}/{}", thread.name),
+            Button::new(SharedString::from(format!("settlement-{}", thread.id.0)))
+                .ghost()
+                .small()
+                .compact()
+                .icon(if settled {
+                    IconName::Undo2
+                } else {
+                    IconName::CircleCheck
+                })
+                .tooltip(format!("{action} conversation"))
+                .disabled(!enabled)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    let result = view
+                        .runtime
+                        .dispatch(Command {
+                            id: CommandId(Uuid::new_v4().to_string()),
+                            thread_id: target.clone(),
+                            action: Action::SetSettled { settled: !settled },
+                        })
+                        .map(|_| ());
+                    view.report(result, cx);
+                }))
+        ))
     }
 }

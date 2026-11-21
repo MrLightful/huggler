@@ -53,8 +53,10 @@ pub struct Desktop {
     workspaces: HashMap<ThreadId, Workspace>,
     runtime: Arc<Huggler>,
     selection_file: PathBuf,
+    scratch_root: PathBuf,
     threads: Vec<ConversationSummary>,
     show_working: bool,
+    show_settled: bool,
     current: Option<ConversationDetail>,
     checkout_unavailable: bool,
     before: Option<HistoryCursor>,
@@ -68,6 +70,8 @@ pub struct Desktop {
     branch: Entity<InputState>,
     launching: Option<ThreadId>,
     name: Entity<InputState>,
+    starter: Entity<InputState>,
+    launch_options: bool,
     prompt: Entity<InputState>,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
@@ -126,9 +130,11 @@ impl Desktop {
             tab: Tab::Conversation,
             workspaces: HashMap::new(),
             runtime,
+            scratch_root: state.join("scratch"),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
             show_working: false,
+            show_settled: false,
             current: None,
             checkout_unavailable: false,
             before: None,
@@ -138,12 +144,28 @@ impl Desktop {
             command_log: None,
             thread_updates: None,
             history_scroll: ScrollHandle::new(),
-            checkout: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/project")),
+            checkout: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(
+                        std::env::current_dir()
+                            .ok()
+                            .filter(|root| root.join(".git").exists())
+                            .map(|root| root.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    )
+                    .placeholder("/path/to/project")
+            }),
             branch: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("Leave blank to use this checkout")
             }),
             launching: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Name this conversation…")),
+            launch_options: false,
+            starter: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .auto_grow(3, 7)
+                    .placeholder("Describe a task or ask a question…")
+            }),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
             instance,
             launch_model: None,
@@ -159,6 +181,12 @@ impl Desktop {
         })
         .detach();
         cx.subscribe(&view.name, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe(&view.starter, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
@@ -209,7 +237,7 @@ impl Desktop {
         if let Some(thread) = selected {
             self.select(thread.id.clone(), window, cx)?;
         } else {
-            self.checkout.focus_handle(cx).focus(window);
+            self.starter.focus_handle(cx).focus(window);
         }
         Ok(list.revision)
     }
@@ -228,42 +256,7 @@ impl Desktop {
         }
         let snapshot = self.runtime.detail(&id, None, "", 32)?;
         let mut cursor = snapshot.history.sequence;
-        if !self.workspaces.contains_key(&id) {
-            let root = self.runtime.thread_checkout(&id)?;
-            let changes = cx.new(|cx| Changes::new(root.clone(), window, cx));
-            let checks = cx.new(|cx| Checks::new(self.runtime.clone(), id.clone(), window, cx));
-            let publish = cx.new(|_| Publish::new(root.clone()));
-            cx.subscribe_in(&changes, window, |v, _, msg: &FollowUp, w, cx| {
-                v.follow_up(msg, w, cx)
-            })
-            .detach();
-            cx.subscribe_in(&checks, window, |v, _, msg: &FollowUp, w, cx| {
-                v.follow_up(msg, w, cx)
-            })
-            .detach();
-            let draft = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .auto_grow(2, 5)
-                    .placeholder("Describe a task or ask a question")
-            });
-            cx.subscribe(&draft, |_, _, event, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            })
-            .detach();
-            self.workspaces.insert(
-                id.clone(),
-                Workspace {
-                    root,
-                    changes,
-                    checks,
-                    publish,
-                    draft,
-                    questions: HashMap::new(),
-                },
-            );
-        }
+        self.ensure_workspace(&id, window, cx)?;
         self.tab = Tab::Conversation;
         self.command_log = None;
         self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
@@ -298,6 +291,51 @@ impl Desktop {
             }
         }));
         fs::write(&self.selection_file, id.0)?;
+        Ok(())
+    }
+
+    fn ensure_workspace(
+        &mut self,
+        id: &ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> huggler::Result<()> {
+        if !self.workspaces.contains_key(id) {
+            let root = self.runtime.thread_checkout(id)?;
+            let changes = cx.new(|cx| Changes::new(root.clone(), window, cx));
+            let checks = cx.new(|cx| Checks::new(self.runtime.clone(), id.clone(), window, cx));
+            let publish = cx.new(|_| Publish::new(root.clone()));
+            cx.subscribe_in(&changes, window, |v, _, msg: &FollowUp, w, cx| {
+                v.follow_up(msg, w, cx)
+            })
+            .detach();
+            cx.subscribe_in(&checks, window, |v, _, msg: &FollowUp, w, cx| {
+                v.follow_up(msg, w, cx)
+            })
+            .detach();
+            let draft = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .auto_grow(2, 5)
+                    .placeholder("Describe a task or ask a question")
+            });
+            cx.subscribe(&draft, |_, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.workspaces.insert(
+                id.clone(),
+                Workspace {
+                    root,
+                    changes,
+                    checks,
+                    publish,
+                    draft,
+                    questions: HashMap::new(),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -380,7 +418,7 @@ impl Desktop {
                             v.checkout.update(cx, |s, cx| {
                                 s.set_value(path.to_string_lossy().into_owned(), window, cx)
                             });
-                            v.name.focus_handle(cx).focus(window);
+                            v.focus_workspace(window, cx);
                         }
                     }
                     Ok(Err(e)) => v.error = Some(e.to_string()),
@@ -404,7 +442,10 @@ impl Desktop {
             return;
         }
         match (&self.current, self.tab) {
-            (None, _) if self.launching.is_none() => self.checkout.focus_handle(cx).focus(window),
+            (None, _) if self.launch_options && self.launching.is_none() => {
+                self.name.focus_handle(cx).focus(window)
+            }
+            (None, _) if self.launching.is_none() => self.starter.focus_handle(cx).focus(window),
             (Some(_), Tab::Conversation) => self.prompt.focus_handle(cx).focus(window),
             _ => self.focus.focus(window),
         }
@@ -423,12 +464,13 @@ impl Desktop {
         self.subscription = None;
         self.command_log = None;
         self.current = None;
+        self.launch_options = false;
         self.error = None;
         self.name
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.branch
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.checkout.focus_handle(cx).focus(window);
+        self.starter.focus_handle(cx).focus(window);
         cx.notify();
     }
 
@@ -436,22 +478,23 @@ impl Desktop {
         if self.launching.is_some() {
             return;
         }
-        let name = self.name.read(cx).value().to_string();
-        if name.trim().is_empty() {
-            self.report(
-                Err(huggler::Error::Invalid("enter a conversation name".into())),
-                cx,
-            );
+        let message = self.starter.read(cx).value().to_string();
+        let explicit_name = self.name.read(cx).value();
+        let name = if explicit_name.trim().is_empty() {
+            let mut chars = message.trim().lines().next().unwrap_or("").chars();
+            let mut title: String = chars.by_ref().take(72).collect();
+            if chars.next().is_some() {
+                title.push('…');
+            }
+            title
+        } else {
+            explicit_name.trim().to_owned()
+        };
+        if name.is_empty() {
             return;
         }
         let checkout = self.checkout.read(cx).value();
-        if checkout.trim().is_empty() {
-            self.report(
-                Err(huggler::Error::Invalid("choose a Git checkout".into())),
-                cx,
-            );
-            return;
-        }
+        let scratch_root = self.scratch_root.clone();
         let branch = self.branch.read(cx).value();
         let model = self.launch_model.clone();
         let instance = self.instance.clone();
@@ -462,10 +505,19 @@ impl Desktop {
         self.error = None;
         cx.notify();
         let thread = id.clone();
+        self.starter
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        let first_message = message.clone();
         let launch_name = name.clone();
         let launch = cx.background_spawn(async move {
-            let source = runtime.open_project(checkout.as_str())?;
-            let branch = branch.trim();
+            let scratch = checkout.trim().is_empty();
+            let source = if scratch {
+                fs::create_dir_all(&scratch_root)?;
+                runtime.create_scratch(&scratch_root.join(&thread.0))?
+            } else {
+                runtime.open_project(checkout.trim())?
+            };
+            let branch = if scratch { "" } else { branch.trim() };
             let project = if branch.is_empty() {
                 source
             } else {
@@ -479,7 +531,7 @@ impl Desktop {
             };
             if let Err(error) = runtime.dispatch(Command {
                 id: CommandId(Uuid::new_v4().to_string()),
-                thread_id: thread,
+                thread_id: thread.clone(),
                 action: Action::LaunchInstance {
                     project: project.id.clone(),
                     instance,
@@ -492,7 +544,20 @@ impl Desktop {
                 }
                 return Err(error.into());
             }
-            anyhow::Ok(())
+            let sent = if first_message.trim().is_empty() {
+                Ok(())
+            } else {
+                runtime
+                    .dispatch(Command {
+                        id: CommandId(Uuid::new_v4().to_string()),
+                        thread_id: thread,
+                        action: Action::Enqueue {
+                            text: first_message,
+                        },
+                    })
+                    .map(|_| ())
+            };
+            anyhow::Ok(sent)
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = launch.await;
@@ -502,17 +567,31 @@ impl Desktop {
                     v.launching = None;
                 }
                 match result {
-                    Ok(()) if still_open => {
-                        let selected = v.select(id, w, cx);
-                        v.report(selected, cx);
+                    Ok(sent) => {
+                        let result = (|| {
+                            if sent.is_err() {
+                                v.ensure_workspace(&id, w, cx)?;
+                                v.workspaces[&id]
+                                    .draft
+                                    .update(cx, |input, cx| input.set_value(message, w, cx));
+                            }
+                            if still_open {
+                                v.select(id, w, cx)?;
+                            }
+                            sent
+                        })();
+                        v.report(result, cx);
                     }
                     Err(error) => {
+                        if v.starter.read(cx).value().is_empty() {
+                            v.starter
+                                .update(cx, |input, cx| input.set_value(message, w, cx));
+                        }
                         v.error = Some(format!("Could not open {launch_name}. {error}"));
                         if still_open {
                             v.focus_workspace(w, cx);
                         }
                     }
-                    Ok(()) => {}
                 }
                 cx.notify();
             });
@@ -671,6 +750,121 @@ impl Desktop {
         }
         let check = self.provider_check.as_ref().map(|check| check.read(cx));
         let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
+        let toggle = control!(
+            "Conversation options",
+            Button::new("launch-options")
+                .ghost()
+                .small()
+                .label(if self.launch_options {
+                    "Back to message"
+                } else {
+                    "Options"
+                })
+                .on_click(cx.listener(|v, _, w, cx| {
+                    v.launch_options = !v.launch_options;
+                    v.focus_workspace(w, cx);
+                    cx.notify();
+                }))
+        );
+        if !self.launch_options {
+            let checkout = self.checkout.read(cx).value();
+            let project = std::path::Path::new(checkout.trim())
+                .file_name()
+                .and_then(|name| name.to_str());
+            let heading = project.map_or_else(
+                || "What should we build?".into(),
+                |name| format!("What should we build in {name}?"),
+            );
+            let composer = v_flex()
+                .capture_action(cx.listener(|view, action: &Enter, window, cx| {
+                    if action.secondary {
+                        cx.stop_propagation();
+                        if !view.starter.read(cx).value().trim().is_empty() {
+                            view.launch(window, cx);
+                        }
+                    }
+                }))
+                .w_full()
+                .p_3()
+                .gap_2()
+                .rounded_xl()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted.opacity(0.55))
+                .child(control!(
+                    "First message",
+                    Input::new(&self.starter).appearance(false)
+                ))
+                .child(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(self.model_control(self.launch_model.as_deref(), checkout_empty, cx))
+                        .child(control!(
+                            "Send first message",
+                            Button::new("send-first")
+                                .rounded(px(999.))
+                                .primary()
+                                .small()
+                                .icon(IconName::ArrowUp)
+                                .tooltip("Send first message (⌘Enter)")
+                                .disabled(self.starter.read(cx).value().trim().is_empty())
+                                .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
+                        )),
+                );
+            let body = v_flex()
+                .w_full()
+                .max_w(px(780.))
+                .p_4()
+                .gap_3()
+                .items_center()
+                .child(
+                    div()
+                        .w_full()
+                        .text_center()
+                        .text_3xl()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(heading),
+                )
+                .when(!checkout_empty, |body| {
+                    body.child(control!(
+                        "Start without a project",
+                        Button::new("projectless")
+                            .small()
+                            .ghost()
+                            .label("or start without a project")
+                            .on_click(cx.listener(|v, _, w, cx| {
+                                v.checkout.update(cx, |s, cx| s.set_value("", w, cx));
+                                v.branch.update(cx, |s, cx| s.set_value("", w, cx));
+                                v.focus_workspace(w, cx);
+                            }))
+                    ))
+                })
+                .child(composer)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .child(control!(
+                            "Choose project",
+                            Button::new("project")
+                                .ghost()
+                                .small()
+                                .icon(IconName::FolderOpen)
+                                .label(project.unwrap_or("Choose project").to_owned())
+                                .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
+                        ))
+                        .child(toggle),
+                );
+            return v_flex()
+                .id("starter")
+                .flex_1()
+                .min_h_0()
+                .items_center()
+                .overflow_y_scroll()
+                .child(body.flex_shrink_0().my_auto())
+                .into_any_element();
+        }
         let providers = self.runtime.provider_instances().map(|instance| {
             let id = instance.id.clone();
             let name =
@@ -713,10 +907,15 @@ impl Desktop {
                         Button::new("launch")
                             .small()
                             .primary()
-                            .label("Open conversation")
+                            .label(if self.starter.read(cx).value().trim().is_empty() {
+                                "Open conversation"
+                            } else {
+                                "Send first message"
+                            })
                             .icon(IconName::ArrowRight)
                             .disabled(
-                                checkout_empty || self.name.read(cx).value().trim().is_empty()
+                                self.starter.read(cx).value().trim().is_empty()
+                                    && self.name.read(cx).value().trim().is_empty()
                             )
                             .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
                     )),
@@ -763,14 +962,7 @@ impl Desktop {
             .max_w(px(736.))
             .p_4()
             .gap_3()
-            .child(
-                div()
-                    .mb_2()
-                    .text_center()
-                    .text_2xl()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("What are you working on?"),
-            )
+            .child(toggle)
             .child(launcher)
             .child(context)
             .child(

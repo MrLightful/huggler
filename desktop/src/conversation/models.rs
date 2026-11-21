@@ -187,16 +187,26 @@ impl Desktop {
         cx: &Context<Self>,
     ) -> Div {
         let title = model.unwrap_or(DEFAULT);
+        let starter = self.current.is_none() && !self.launch_options;
+        let display = if starter && model.is_none() {
+            format!(
+                "{} · Default",
+                self.runtime.output().provider_label(self.instance.as_str())
+            )
+        } else {
+            title.to_owned()
+        };
         h_flex()
             .min_w_0()
             .gap_2()
-            .child(label("Model"))
+            .when(!starter, |row| row.child(label("Model")))
             .child(control!(
                 format!("model/{title}"),
                 Button::new("choose-model")
                     .small()
+                    .when(starter, |button| button.ghost())
                     .dropdown_caret(true)
-                    .child(div().max_w(px(192.)).truncate().child(title.to_owned()))
+                    .child(div().max_w(px(192.)).truncate().child(display))
                     .tooltip(if disabled {
                         "Choose a checkout to load models".into()
                     } else {
