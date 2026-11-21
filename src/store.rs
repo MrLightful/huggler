@@ -225,6 +225,22 @@ fn start_message(
     Ok((id, msg, vec![started, seq], delivery))
 }
 
+fn start_durable_message(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+    text: &str,
+    model: Option<String>,
+    fresh_session: bool,
+) -> Result<(RunId, Option<RunJob>)> {
+    let (run, _, _, delivery) = start_message(tx, thread, text, model, None, true)?;
+    tx.execute(
+        "UPDATE turn_effect SET durable_launch=1, fresh_session=? WHERE run_id=?",
+        params![fresh_session, run.0],
+    )?;
+    let job = (delivery == PeerDelivery::Started).then(|| (thread.clone(), run.clone()));
+    Ok((run, job))
+}
+
 struct StateLock(File);
 
 impl Drop for StateLock {

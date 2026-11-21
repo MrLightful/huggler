@@ -109,22 +109,9 @@ impl Database {
             return Ok((run, None));
         }
         let (run, job) = if accept {
-            let (run, _, _, delivery) = start_message(
-                &tx,
-                thread,
-                &format!("Guest {name}: {text}"),
-                model,
-                None,
-                true,
-            )?;
-            tx.execute(
-                "UPDATE turn_effect SET durable_launch=1 WHERE run_id=?",
-                [&run.0],
-            )?;
-            (
-                Some(run.clone()),
-                (delivery == PeerDelivery::Started).then(|| (thread.clone(), run)),
-            )
+            let (run, job) =
+                start_durable_message(&tx, thread, &format!("Guest {name}: {text}"), model, false)?;
+            (Some(run), job)
         } else {
             (None, None)
         };

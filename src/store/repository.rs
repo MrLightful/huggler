@@ -174,15 +174,8 @@ impl Database {
         let mut result = (None, None);
         if previous.is_some_and(|s| s != state) {
             let text = format!("Repository update for {repo} item {item}\n{state}");
-            let (run, _, _, delivery) = start_message(&tx, &thread, &text, model, None, true)?;
-            tx.execute(
-                "UPDATE turn_effect SET durable_launch=1 WHERE run_id=?",
-                [&run.0],
-            )?;
-            result = (
-                Some(run.clone()),
-                (delivery == PeerDelivery::Started).then_some((thread, run)),
-            );
+            let (run, job) = start_durable_message(&tx, &thread, &text, model, false)?;
+            result = (Some(run), job);
         }
         tx.commit()?;
         Ok(result)

@@ -36,16 +36,17 @@ fn release(
     let model = tx.query_row("SELECT model FROM thread WHERE id=?", [&thread.0], |r| {
         r.get(0)
     })?;
-    let (run, _, _, delivery) = start_message(tx, &thread, &spec.prompt, model, None, true)?;
-    tx.execute(
-        "UPDATE turn_effect SET durable_launch=1, fresh_session=? WHERE run_id=?",
-        params![matches!(spec.destination, Destination::FreshSession), run.0],
+    let (run, job) = start_durable_message(
+        tx,
+        &thread,
+        &spec.prompt,
+        model,
+        matches!(spec.destination, Destination::FreshSession),
     )?;
     tx.execute(
         "INSERT INTO automation_run VALUES(?,?,?,?)",
         params![id.0, key, thread.0, run.0],
     )?;
-    let job = (delivery == PeerDelivery::Started).then(|| (thread.clone(), run.clone()));
     Ok((Some(Occurrence { key, thread, run }), job))
 }
 
