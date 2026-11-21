@@ -332,6 +332,5 @@ pub(crate) async fn execute(
         _ = stop.wait_for(|s|*s) => Err(Error::Closed),
         result = conversation => result,
     };
-    rpc.shutdown().await?;
-    outcome
+    rpc.finish(outcome).await
 }

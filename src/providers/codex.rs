@@ -483,6 +483,5 @@ pub(crate) async fn execute(
         _ = stop.wait_for(|v| *v) => Err(Error::Closed),
         answer = client.converse(turn, update,options.request_approvals,permissions,controls) => answer,
     };
-    client.rpc.shutdown().await?;
-    result
+    client.rpc.finish(result).await
 }

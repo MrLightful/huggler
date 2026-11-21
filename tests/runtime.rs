@@ -122,9 +122,42 @@ async fn start_stalled(dir: &Path) -> (Huggler, Receipt) {
     (rt, sent)
 }
 
+#[test]
+fn dropping_the_executor_stops_the_provider_helper() {
+    let dir = tempdir().unwrap();
+    let lease = fs::File::create(dir.path().join("model.lock")).unwrap();
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    executor.block_on(async {
+        let (_rt, _) = start_stalled(dir.path()).await;
+        assert!(matches!(
+            lease.try_lock(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
+    });
+    drop(executor);
+    wait_for_helper_exit(&lease);
+}
+
+fn wait_for_helper_exit(lease: &fs::File) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match lease.try_lock() {
+            Ok(()) => break,
+            Err(fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("provider helper retained its lock: {err}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn close_reaps_an_active_child_with_observers_still_attached() {
     let dir = tempdir().unwrap();
+    let lease = fs::File::create(dir.path().join("model.lock")).unwrap();
     let (rt, receipt) = start_stalled(dir.path()).await;
     assert!(matches!(
         rt.send(
@@ -148,6 +181,8 @@ async fn close_reaps_an_active_child_with_observers_still_attached() {
         std::io::Error::last_os_error().raw_os_error(),
         Some(libc::ESRCH)
     );
+    // The provider's helper inherited the lock and lives in its process group.
+    wait_for_helper_exit(&lease);
     let rt = Huggler::open(HugglerOptions::new(dir.path().join("state")))
         .await
         .unwrap();

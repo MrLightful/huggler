@@ -59,7 +59,21 @@ impl Rpc {
             .ok_or_else(|| protocol("provider stdout closed before turn completion"))?;
         serde_json::from_str(&line).map_err(|e| protocol(format!("invalid JSON-RPC frame: {e}")))
     }
-    pub async fn shutdown(&mut self) -> Result<()> {
+
+    #[cfg(unix)]
+    fn kill_process_group(&self) {
+        if let Some(pid) = self.child.id() {
+            // spawn() gives this unreaped child its own process group.
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        }
+    }
+
+    pub async fn finish(&mut self, outcome: Result<()>) -> Result<()> {
+        // On a host stop, a launcher can exit on EOF and leave its helpers running.
+        #[cfg(unix)]
+        if matches!(outcome, Err(Error::Closed)) {
+            self.kill_process_group();
+        }
         self.input.take();
         match timeout(Duration::from_secs(2), self.child.wait()).await {
             Ok(status) => {
@@ -67,15 +81,18 @@ impl Rpc {
             }
             Err(_) => {
                 #[cfg(unix)]
-                if let Some(pid) = self.child.id() {
-                    // spawn() gives the managed app-server its own process group.
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    }
-                }
+                self.kill_process_group();
                 self.child.kill().await?;
             }
         }
-        Ok(())
+        outcome
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Rpc {
+    fn drop(&mut self) {
+        // The executor can drop a worker before it finishes shutting down.
+        self.kill_process_group();
     }
 }
