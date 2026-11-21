@@ -20,6 +20,7 @@ id!(CommandId);
 id!(ThreadId);
 id!(RunId);
 id!(MessageId);
+id!(UploadId);
 id!(TaskId);
 id!(ProjectId);
 id!(RequestId);
@@ -155,13 +156,15 @@ pub struct UserInputOption {
     pub extensions: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize, rmcp::schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(untagged)]
 pub enum UserAnswer {
     Text(String),
     Choices(Vec<String>),
 }
+
+pub type QuestionAttachments = std::collections::BTreeMap<String, Vec<UploadId>>;
 
 pub type UserAnswers = std::collections::BTreeMap<String, UserAnswer>;
 
@@ -234,6 +237,10 @@ pub enum Action {
     },
     Send {
         text: String,
+    },
+    SendAttachments {
+        text: String,
+        uploads: Vec<UploadId>,
     },
     /// Send one message in Codex plan mode.
     SendPlan {

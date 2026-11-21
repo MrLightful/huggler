@@ -139,13 +139,38 @@ impl Database {
         ))
     }
 
-    pub fn claim_question(&self, id: &RequestId, responder: Option<&RunId>) -> Result<()> {
-        if self.db.execute(
+    pub fn claim_question(
+        &mut self,
+        id: &RequestId,
+        responder: Option<&RunId>,
+        thread: &ThreadId,
+        answers: &mut Option<UserAnswers>,
+        attachments: &QuestionAttachments,
+    ) -> Result<()> {
+        if attachments.values().map(Vec::len).sum::<usize>() > 8 {
+            return Err(Error::Invalid("answer accepts up to eight uploads".into()));
+        }
+        let tx = self.db.transaction()?;
+        for (question, ids) in attachments {
+            let answer = answers
+                .as_mut()
+                .and_then(|a| a.get_mut(question))
+                .ok_or_else(|| {
+                    Error::Invalid("attachment requires a matching question answer".into())
+                })?;
+            let mut values = match std::mem::replace(answer, UserAnswer::Choices(vec![])) {
+                UserAnswer::Text(text) => vec![text],
+                UserAnswer::Choices(values) => values,
+            };
+            values.extend(uploads::claim(&tx, thread, ids)?);
+            *answer = UserAnswer::Choices(values);
+        }
+        if tx.execute(
             "UPDATE user_question SET state='answering',responder_run=? WHERE id=? AND state='pending'",
             params![responder.map(|r| &r.0), id.0],
         )? != 1 {
             return Err(Error::Invalid("question is no longer pending".into()));
         }
-        Ok(())
+        Ok(tx.commit()?)
     }
 }

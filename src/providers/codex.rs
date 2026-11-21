@@ -297,8 +297,9 @@ impl Client {
                             }
                             Control::Answer { id, answers, reply } => {
                                 if let Some(wire_id) = questions.remove(&id) {
-                                    self.write_answers(wire_id, answers).await?;
-                                    update(Update::QuestionClosed { id, answered: true })?;
+                                    let answered = answers.is_some();
+                                    self.write_answers(wire_id, answers.unwrap_or_default()).await?;
+                                    update(Update::QuestionClosed { id, answered })?;
                                     let _ = reply.send(Ok(()));
                                 } else {
                                     let _ = reply.send(Err(Error::NotFound("live user-input request".into())));

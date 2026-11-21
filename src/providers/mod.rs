@@ -22,7 +22,7 @@ pub(crate) enum Control {
     Interrupt(ChildInterrupt),
     Answer {
         id: RequestId,
-        answers: UserAnswers,
+        answers: Option<UserAnswers>,
         reply: oneshot::Sender<Result<()>>,
     },
 }

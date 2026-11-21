@@ -614,10 +614,28 @@ impl Huggler {
             .access(|db| db.detail(thread, before, query, limit))
     }
 
+    /// Stage up to 64 KiB of UTF-8 plain text for one thread.
+    pub fn prepare_upload(
+        &self,
+        thread: &ThreadId,
+        name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<UploadId> {
+        self.shared
+            .access(|db| db.prepare_upload(thread, name, mime, bytes))
+    }
+    /// Discard an unclaimed upload. Repeated cleanup is safe.
+    pub fn discard_upload(&self, thread: &ThreadId, id: &UploadId) -> Result<()> {
+        self.shared.access(|db| db.discard_upload(thread, id))
+    }
+
+    /// Read the immutable bounded prefix captured at fork creation.
     pub fn fork_history(&self, thread: &ThreadId) -> Result<Option<ForkHistory>> {
         self.shared.access(|db| db.fork_history(thread))
     }
 
+    /// Expand a message preview to its complete stored text.
     pub fn read_message(&self, thread: &ThreadId, id: &MessageId) -> Result<Message> {
         self.shared.access(|db| db.read_message(thread, id))
     }

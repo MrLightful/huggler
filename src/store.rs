@@ -6,6 +6,7 @@ mod native_children;
 mod questions;
 mod queue;
 mod tasks;
+mod uploads;
 use crate::{
     contracts::*,
     providers::{Turn, Update},
@@ -47,6 +48,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/015.sql"),
     include_str!("../migrations/016.sql"),
     include_str!("../migrations/017.sql"),
+    include_str!("../migrations/018.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
@@ -460,7 +462,24 @@ impl Database {
                     )?);
                 }
             }
-            Action::Send { text } | Action::SendPlan { text } | Action::Enqueue { text } => {
+            Action::Send { text }
+            | Action::SendPlan { text }
+            | Action::Enqueue { text }
+            | Action::SendAttachments { text, .. } => {
+                let combined;
+                let text = if let Action::SendAttachments { uploads, .. } = &cmd.action {
+                    if !(1..=8).contains(&uploads.len()) {
+                        return Err(Error::Invalid("send between one and eight uploads".into()));
+                    }
+                    combined = format!(
+                        "{}\n\n{}",
+                        text,
+                        uploads::claim(&tx, thread, uploads)?.join("\n\n")
+                    );
+                    &combined
+                } else {
+                    text
+                };
                 let (id, msg, events, delivery) = start_message(
                     &tx,
                     thread,
