@@ -39,7 +39,12 @@ def main():
         run_window(executable, starter_state, [
             {"resize": [640, 440]}, {"key": "cmd-shift-n"},
             {"click": "Git checkout"}, {"type": str(checkout)}, {"click": "Back to message"},
-            {"click": "Start without a project"}, {"click": "First message"}, {"type": first},
+            {"click": "Start without a project"}, {"click": "model/Provider default"},
+            {"see": "provider/Codex"}, {"see": "⌘L to focus"}, {"key": "cmd-l"},
+            {"absent": "provider/Codex"}, {"absent": "⌘L to focus"},
+            {"click": "model/Provider default"}, {"see": "provider/Codex"},
+            {"click": "Hide conversations"}, {"absent": "provider/Codex"}, {"see": "⌘L to focus"},
+            {"key": "cmd-l"}, {"absent": "⌘L to focus"}, {"type": first}, {"click": "Show conversations"},
             {"click": "Send first message"}, {"see": "thread/" + first},
             {"see": "Codex/reply " + first},
         ], env)
@@ -49,7 +54,7 @@ def main():
             assert Path(root).parent == (starter_state / "scratch").resolve()
         run_window(executable, starter_state, [
             {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Git checkout"},
-            {"type": str(checkout / "missing")}, {"click": "Back to message"},
+            {"key": "cmd-l"}, {"type": str(checkout / "missing")}, {"click": "Back to message"},
             {"click": "First message"}, {"type": "Review my changes"}, {"key": "enter"},
             {"type": "Include the tests."}, {"key": "cmd-enter"}, {"contains": "Could not open"},
             {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"},
@@ -116,7 +121,10 @@ def main():
             *launch_thread(checkout, "Follow-up"), *send_message("First question"),
             {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/Explain the result."},
             {"see": "Suggested reply"}, {"click": "Message"}, {"type": "My own question"},
-            {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/My own question"},
+            {"click": "Suggested reply"}, {"key": "tab"}, {"resize": [640, 440]},
+            {"click": "Show changes"}, {"see": "Resize changes"}, {"key": "cmd-l"},
+            {"absent": "Refresh changes"}, {"key": "cmd-right"},
+            {"type": " about the tests"}, {"click": "Send"}, {"see": "You/My own question about the tests"},
         ], env)
     print("Native history paging, full message and suggested replies passed")
 

@@ -30,6 +30,8 @@ use huggler::{
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 use uuid::Uuid;
 
+const NARROW_VIEWPORT_WIDTH: Pixels = px(900.);
+
 struct Workspace {
     root: PathBuf,
     changes: Entity<Changes>,
@@ -438,6 +440,27 @@ impl Desktop {
         }
     }
 
+    pub(super) fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_settings || self.launching.is_some() {
+            return;
+        }
+        let input = match &self.current {
+            Some(_) => {
+                if window.viewport_size().width < NARROW_VIEWPORT_WIDTH
+                    && self.changes_sidebar.is_open(false)
+                {
+                    self.changes_sidebar.toggle(true);
+                }
+                &self.prompt
+            }
+            None if !self.launch_setup => &self.starter,
+            None => return,
+        };
+        self.model_picker = None;
+        input.focus_handle(cx).focus(window);
+        cx.notify();
+    }
+
     fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
@@ -744,7 +767,7 @@ impl Desktop {
             .tooltip(tooltip)
     }
 
-    fn launch_form(&self, compact: bool, cx: &Context<Self>) -> AnyElement {
+    fn launch_form(&self, compact: bool, window: &Window, cx: &Context<Self>) -> AnyElement {
         if self.launching.is_some() {
             return v_flex()
                 .size_full()
@@ -788,7 +811,7 @@ impl Desktop {
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted.opacity(0.55))
                 .children(self.attachment_list(&self.starter_attachments, cx))
-                .child(self.message_input("First message", &self.starter, cx))
+                .child(self.message_input("First message", &self.starter, window, cx))
                 .child(
                     h_flex()
                         .justify_end()
@@ -1179,7 +1202,12 @@ impl Desktop {
         activity
     }
 
-    fn conversation(&self, thread: &ConversationDetail, cx: &Context<Self>) -> Div {
+    fn conversation(
+        &self,
+        thread: &ConversationDetail,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
         let provider = self
             .runtime
             .output()
@@ -1402,7 +1430,7 @@ impl Desktop {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
                 .children(self.attachment_list(attachments, cx))
-                .child(self.message_input("Message", &self.prompt, cx))
+                .child(self.message_input("Message", &self.prompt, window, cx))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
                     let noun = if count == 1 { "message" } else { "messages" };
@@ -1513,7 +1541,7 @@ impl Render for Desktop {
 
         use sidebar::SidebarEdge;
         let viewport = f32::from(window.viewport_size().width);
-        let narrow = viewport < 900.;
+        let narrow = window.viewport_size().width < NARROW_VIEWPORT_WIDTH;
         let changes_open = self.changes_sidebar.is_open(!narrow);
         let left = self.navigation.fraction(true, window);
         let right = if self.current.is_some() && !self.show_settings {
@@ -1615,8 +1643,12 @@ impl Render for Desktop {
                         self.settings.clone().into_any_element()
                     } else {
                         match &self.current {
-                            Some(thread) => self.conversation(thread, cx).into_any_element(),
-                            None => self.launch_form(viewport - left_width * left < 800., cx),
+                            Some(thread) => {
+                                self.conversation(thread, window, cx).into_any_element()
+                            }
+                            None => {
+                                self.launch_form(viewport - left_width * left < 800., window, cx)
+                            }
                         }
                     })
                     .when_some(

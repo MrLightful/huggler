@@ -2,6 +2,7 @@ use super::*;
 use gpui_component::{
     Icon, StyledExt,
     input::{Escape, IndentInline, MoveDown, MoveUp},
+    kbd::Kbd,
     tooltip::Tooltip,
 };
 use huggler::ProviderSkill;
@@ -449,13 +450,33 @@ impl Desktop {
 
     pub(super) fn message_input(
         &self,
-        name: &'static str,
+        _name: &'static str,
         input: &Entity<InputState>,
+        window: &Window,
         cx: &Context<Self>,
     ) -> Div {
         let mut field = div()
             .relative()
-            .child(control!(name, Input::new(input).appearance(false)));
+            .child(control!(_name, Input::new(input).appearance(false)));
+        if input.read(cx).text().len() == 0 && !input.focus_handle(cx).is_focused(window) {
+            let shortcut = window
+                .highest_precedence_binding_for_action(&crate::FocusMessage)
+                .and_then(|binding| {
+                    binding
+                        .keystrokes()
+                        .first()
+                        .map(|key| Kbd::format(key.as_keystroke()))
+                });
+            field = field.when_some(shortcut, |field, shortcut| {
+                let text = SharedString::from(format!("{shortcut} to focus"));
+                field.child(
+                    control!(text.clone(), hint(text, cx).text_xs())
+                        .absolute()
+                        .top_1()
+                        .right_2(),
+                )
+            });
+        }
         let Some(menu) = &self.suggestions.menu else {
             return field;
         };
