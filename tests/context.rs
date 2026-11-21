@@ -757,7 +757,11 @@ async fn steering_settles_only_acknowledged_input_on_the_expected_turn() -> Resu
     .enumerate()
     {
         let run = rt
-            .send(CommandId(format!("send-{i}")), root.clone(), "ask".into())?
+            .dispatch(command(
+                &format!("send-{i}"),
+                &root,
+                Action::SendAuto { text: "ask".into() },
+            ))?
             .run_id
             .unwrap();
         question(&rt, &root).await?;
@@ -773,7 +777,17 @@ async fn steering_settles_only_acknowledged_input_on_the_expected_turn() -> Resu
             Err(Error::Unsupported(_))
         ));
         for input in inputs {
-            let cmd = steer(&root, &run, input);
+            let cmd = if *input == "clarification" {
+                command(
+                    input,
+                    &root,
+                    Action::SendAuto {
+                        text: (*input).into(),
+                    },
+                )
+            } else {
+                steer(&root, &run, input)
+            };
             let receipt = rt.dispatch(cmd.clone())?;
             assert_eq!(receipt.run_id.as_ref(), Some(&run));
             assert_eq!(rt.dispatch(cmd.clone())?, receipt);

@@ -378,7 +378,18 @@ impl Database {
         {
             return Err(Error::NotFound(thread.to_string()));
         }
-        match &cmd.action {
+        // Resolve automatic delivery in the receipt transaction. A retry uses
+        // the original intent even if a different turn is now active.
+        let automatic_steer = match &cmd.action {
+            Action::SendAuto { text } => {
+                steering::active_codex_turn(&tx, thread)?.map(|active| Action::Steer {
+                    active,
+                    text: text.clone(),
+                })
+            }
+            _ => None,
+        };
+        match automatic_steer.as_ref().unwrap_or(&cmd.action) {
             Action::Launch {
                 project,
                 name,
@@ -495,6 +506,7 @@ impl Database {
                 }
             }
             Action::Send { text }
+            | Action::SendAuto { text }
             | Action::SendPlan { text }
             | Action::Enqueue { text }
             | Action::SendAttachments { text, .. } => {
@@ -518,7 +530,7 @@ impl Database {
                     text,
                     selection.flatten(),
                     None,
-                    matches!(cmd.action, Action::Enqueue { .. }),
+                    matches!(cmd.action, Action::Enqueue { .. } | Action::SendAuto { .. }),
                 )?;
                 if matches!(cmd.action, Action::SendPlan { .. })
                     && tx.execute(

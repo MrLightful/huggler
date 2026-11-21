@@ -262,6 +262,11 @@ pub enum Action {
     Send {
         text: String,
     },
+    /// Steer an active Codex turn, or enqueue when the foreground cannot accept input.
+    /// On an idle thread the message starts immediately.
+    SendAuto {
+        text: String,
+    },
     SendAttachments {
         text: String,
         uploads: Vec<UploadId>,

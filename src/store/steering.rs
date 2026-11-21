@@ -1,5 +1,17 @@
 use super::*;
 
+pub(super) fn active_codex_turn(tx: &Transaction, thread: &ThreadId) -> Result<Option<RunId>> {
+    Ok(tx
+        .query_row(
+            "SELECT r.id FROM run r JOIN thread t ON t.id=r.thread_id
+         WHERE t.id=? AND t.provider='codex' AND r.status='running'
+         AND r.stop_requested=0 AND r.native_turn IS NOT NULL",
+            [&thread.0],
+            |r| Ok(RunId(r.get(0)?)),
+        )
+        .optional()?)
+}
+
 pub(super) fn request(
     tx: &Transaction,
     thread: &ThreadId,

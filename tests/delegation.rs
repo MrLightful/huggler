@@ -1339,7 +1339,18 @@ async fn host_queue_edits_survive_reopen_in_delivery_order() {
             )),
             Err(Error::Busy)
         ));
-        let a = rt.dispatch(enqueue("echo first")).unwrap().run_id.unwrap();
+        let automatic = cmd(
+            "auto",
+            Action::SendAuto {
+                text: "echo first".into(),
+            },
+        );
+        let received = rt.dispatch(automatic.clone()).unwrap();
+        let a = received.run_id.clone().unwrap();
+        assert_eq!(
+            rt.read(&thread).unwrap().runs.last().unwrap().status,
+            RunStatus::Queued
+        );
         let b = rt.dispatch(enqueue("echo second")).unwrap().run_id.unwrap();
         rt.dispatch(cmd("stop", Action::StopThread)).unwrap();
         assert_eq!(
@@ -1383,6 +1394,7 @@ async fn host_queue_edits_survive_reopen_in_delivery_order() {
             Some(b.clone())
         );
         completed(&rt, &thread, &a).await;
+        assert_eq!(rt.dispatch(automatic).unwrap(), received);
         assert_eq!(
             std::fs::read_to_string(repo.join("delivery-log")).unwrap(),
             "echo changed\necho first\n"
