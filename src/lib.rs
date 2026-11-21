@@ -15,3 +15,6 @@ pub use contracts::*;
 pub use providers::probe::ProviderReport;
 pub use providers::registry::ProviderInstance;
 pub use runtime::{Huggler, HugglerOptions, Subscription};
+
+#[cfg(feature = "application")]
+pub mod workspace;

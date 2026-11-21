@@ -361,3 +361,67 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
     assert_eq!(rt.read(&child.thread)?.runs.len(), 1);
     rt.close().await
 }
+
+#[cfg(feature = "application")]
+#[tokio::test]
+async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
+    use workspace::SetupStatus;
+    let dir = tempfile::tempdir()?;
+    let rt = Huggler::open(options(&dir.path().join("state"))).await?;
+    let scratch = rt.create_scratch(&dir.path().join("scratch"))?;
+    std::fs::write(scratch.root.join("original"), "scratch")?;
+    assert_eq!(rt.promote_scratch(&scratch.id)?.id, scratch.id);
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&scratch.root)
+                .status()
+                .unwrap()
+                .success()
+        )
+    };
+    git(&["add", "original"]);
+    git(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "scratch",
+    ]);
+    let cloned = rt.clone_project(scratch.root.to_str().unwrap(), &dir.path().join("clone"))?;
+    let project = rt.allocate_workspace(&cloned.id)?;
+    assert_eq!(rt.open_project(&project.root)?.id, project.id);
+    let a = launch(&rt, &project, "a", Provider::Codex);
+    let b = launch(&rt, &project, "b", Provider::Codex);
+    let failed = rt.setup_workspace(&project.id, Path::new("/usr/bin/false"), &[])?;
+    assert!(matches!(failed, SetupStatus::Failed(_)));
+    assert_eq!(rt.workspace_setup_status(&project.id)?, Some(failed));
+    let send = || rt.send(CommandId("release".into()), a.clone(), "ready".into());
+    assert!(send().is_err());
+    assert!(rt.read(&a)?.runs.is_empty());
+    assert_eq!(
+        rt.setup_workspace(&project.id, Path::new("/usr/bin/true"), &[])?,
+        SetupStatus::Ready
+    );
+    completed(&rt, &a, &send()?.run_id.unwrap()).await;
+    rt.delete_thread(&a)?;
+    assert!(matches!(
+        rt.release_workspace(&project.id),
+        Err(Error::Busy)
+    ));
+    rt.delete_thread(&b)?;
+    assert!(rt.release_workspace(&project.id).is_err());
+    std::fs::remove_file(project.root.join("frames.ndjson"))?;
+    rt.release_workspace(&project.id)?;
+    assert!(!project.root.exists());
+    assert_eq!(
+        std::fs::read_to_string(cloned.root.join("original"))?,
+        "scratch"
+    );
+    rt.close().await
+}

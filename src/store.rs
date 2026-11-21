@@ -18,6 +18,8 @@ mod steering;
 mod tasks;
 mod uploads;
 mod usage_limits;
+#[cfg(feature = "application")]
+mod workspaces;
 use crate::{
     contracts::*,
     providers::{Turn, Update},
@@ -70,6 +72,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/025.sql"),
     include_str!("../migrations/026.sql"),
     include_str!("../migrations/027.sql"),
+    include_str!("../migrations/028.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -166,6 +169,9 @@ fn start_message(
 ) -> Result<(RunId, MessageId, Vec<i64>, PeerDelivery)> {
     if text.trim().is_empty() {
         return Err(Error::Invalid("empty message".into()));
+    }
+    if tx.prepare("SELECT 1 FROM workspace_setup s JOIN thread t ON t.project=s.project WHERE t.id=? AND s.state!='ready'")?.exists([&thread.0])? {
+        return Err(Error::Invalid("workspace setup must succeed before starting a run".into()));
     }
     let (busy, held): (bool, bool) = tx.query_row(
         "SELECT count(*) FILTER (WHERE queue_held=0)>0, count(*) FILTER (WHERE queue_held=1)>0
@@ -283,6 +289,7 @@ impl Database {
         tx.execute_batch(
             "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
         )?;
+        tx.execute("UPDATE workspace_setup SET state='failed',detail='runtime closed during setup' WHERE state='running'", [])?;
         // Queue unclaimed task launches, wakes and peer messages for a new worker.
         // A claimed effect may already have reached the provider.
         tx.execute("UPDATE run SET status='queued' WHERE status='starting' AND stop_requested=0
