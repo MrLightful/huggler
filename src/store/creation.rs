@@ -60,19 +60,6 @@ fn prior_creations(tx: &Transaction, caller: &ThreadId, key: &str) -> Result<Vec
         .collect::<rusqlite::Result<_>>()?)
 }
 
-fn peer_title(title: Option<&str>, prompt: Option<&str>, index: usize) -> String {
-    let Some(detail) = title.or(prompt) else {
-        return format!("Peer {}", index + 1);
-    };
-    let detail = detail.trim();
-    if detail.chars().count() <= 80 {
-        return detail.into();
-    }
-    let mut title: String = detail.chars().take(77).collect();
-    title.push_str("...");
-    title
-}
-
 impl Database {
     pub fn create_threads(
         &mut self,
@@ -120,7 +107,9 @@ impl Database {
                 }
                 previous.peer
             } else {
-                let name = peer_title(title, prompt, position);
+                let name = title
+                    .map(crate::output::short_title)
+                    .unwrap_or_else(|| self.output.text.peer_title(prompt, position + 1));
                 let thread_id = create_agent_thread(&tx, &caller, &name, provider)?;
                 tx.execute(
                     "INSERT INTO peer_creation(caller_thread,request_key,position,thread_id,requested_title,requested_provider)

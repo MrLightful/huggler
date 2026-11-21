@@ -162,7 +162,12 @@ impl Database {
                 return Err(Error::Unsupported("remote worktree isolation".into()));
             }
             Write::Delegate { task, .. } => (
-                creation::create_agent_thread(&tx, &target.thread, "Remote task", None)?,
+                creation::create_agent_thread(
+                    &tx,
+                    &target.thread,
+                    self.output.text.remote_title(),
+                    None,
+                )?,
                 task,
             ),
         };
@@ -294,7 +299,10 @@ impl Database {
         let model = tx.query_row("SELECT model FROM thread WHERE id=?", [&parent.0], |r| {
             r.get(0)
         })?;
-        let result = format!("Remote task {key} {status:?}\n{}", text.unwrap_or_default());
+        let result =
+            self.output
+                .text
+                .remote_result(key, status, text.as_deref().unwrap_or_default());
         let (wake, _, _, delivery) =
             start_message(&tx, parent, &result, model, Some(origin), true)?;
         tx.execute(

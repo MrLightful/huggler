@@ -57,12 +57,17 @@ fn command(instance: &ProviderInstance) -> Result<Command> {
     let mut cmd = instance.command();
     cmd.args(["--mode", "rpc"])
         .env_remove("HUGGLER_MCP_TOKEN")
-        .env_remove("HUGGLER_MCP_URL");
+        .env_remove("HUGGLER_MCP_URL")
+        .env_remove("HUGGLER_MCP_PRESENTATION");
     Ok(cmd)
 }
 
-pub(super) async fn probe(instance: &ProviderInstance, cwd: &Path) -> Result<ProviderReport> {
-    let mut rpc = Rpc::open(command(instance)?, cwd)?;
+pub(super) async fn probe(
+    instance: &ProviderInstance,
+    output: &crate::AgentOutput,
+    cwd: &Path,
+) -> Result<ProviderReport> {
+    let mut rpc = Rpc::open(command(instance)?, cwd, output)?;
     request(&mut rpc, "get_state", json!({})).await?;
     let catalog = request(&mut rpc, "get_available_models", json!({})).await?;
     let mut report = ProviderReport::new("Pi RPC");
@@ -89,13 +94,19 @@ pub(crate) async fn execute(
         cmd.arg("--extension")
             .arg(path)
             .env("HUGGLER_MCP_URL", &tools.url)
-            .env("HUGGLER_MCP_TOKEN", &tools.token);
+            .env("HUGGLER_MCP_TOKEN", &tools.token)
+            .env("HUGGLER_MCP_PRESENTATION", json!({
+                "clientInfo": turn.output.client_info(),
+                "httpError": turn.output.text.label(&format!("{} MCP returned HTTP {{status}}", turn.output.title)),
+                "unexpectedReply": turn.output.text.label("Unexpected MCP reply"),
+                "toolFailed": turn.output.text.label(&format!("{} tool failed", turn.output.title)),
+            }).to_string());
     }
     if let Some(saved) = &turn.resume {
         let (file, _): (String, String) = serde_json::from_str(&saved.0)?;
         cmd.arg("--session").arg(file);
     }
-    let mut rpc = Rpc::open(cmd, &turn.cwd)?;
+    let mut rpc = Rpc::open(cmd, &turn.cwd, &turn.output)?;
     let result = tokio::select! {
         biased;
         _=stop.wait_for(|s|*s)=>Err(Error::Closed),

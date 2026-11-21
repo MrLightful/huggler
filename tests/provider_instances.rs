@@ -477,6 +477,15 @@ async fn pi_extension_calls_scoped_tool() {
     let mut pi = peer(dir.path(), "pi", Provider::Pi);
     pi.home = Some(dir.path().join("pi-home"));
     pi.pi_extension = Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("adapters/pi/huggler.mjs"));
+    opts.output.name = "atlas".into();
+    opts.output.tools.insert(
+        "thread_list".into(),
+        ToolPresentation {
+            name: Some("directory".into()),
+            title: Some("Find collaborators".into()),
+            ..Default::default()
+        },
+    );
     opts.instances.push(pi);
     opts.agent_tools = true;
     let rt = Huggler::open(opts).await.unwrap();

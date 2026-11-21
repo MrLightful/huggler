@@ -33,7 +33,11 @@ fn http_error(_: reqwest::Error) -> Error {
 }
 
 impl Server {
-    async fn connect(instance: &ProviderInstance, cwd: &Path) -> Result<Self> {
+    async fn connect(
+        instance: &ProviderInstance,
+        output: &crate::AgentOutput,
+        cwd: &Path,
+    ) -> Result<Self> {
         let (origin, password, managed) = if let Some(url) = &instance.server_url {
             let secret = instance
                 .password_env
@@ -53,7 +57,7 @@ impl Server {
                 .env("OPENCODE_PASSWORD", &secret)
                 .env("OPENCODE_SERVER_PASSWORD", &secret)
                 .env("OPENCODE_SERVER_USERNAME", "opencode");
-            let mut rpc = Rpc::open(command, cwd)?;
+            let mut rpc = Rpc::open(command, cwd, output)?;
             let port = loop {
                 let line = rpc.line().await?;
                 if let Some((_, port)) = line.split_once("server listening on http://127.0.0.1:") {
@@ -214,7 +218,7 @@ impl Server {
                 body["location"] = json!({"directory":self.directory});
                 let mut rules = vec![json!({"action":"*","resource":"*","effect":"deny"})];
                 if self.managed.is_some() && turn.agent_tools.is_some() {
-                    rules.push(json!({"action":"huggler_*","resource":"*","effect":"allow"}));
+                    rules.push(json!({"action":format!("{}_*", turn.output.name),"resource":"*","effect":"allow"}));
                 }
                 body["permissions"] = json!(rules);
                 if let Some(model) = &model {
@@ -223,7 +227,7 @@ impl Server {
             } else {
                 let mut rules = vec![json!({"permission":"*","pattern":"*","action":"deny"})];
                 if self.managed.is_some() && turn.agent_tools.is_some() {
-                    rules.push(json!({"permission":"huggler_*","pattern":"*","action":"allow"}));
+                    rules.push(json!({"permission":format!("{}_*", turn.output.name),"pattern":"*","action":"allow"}));
                 }
                 body["permission"] = json!(rules);
             }
@@ -268,8 +272,12 @@ fn valid_id(id: &str) -> Result<&str> {
     Ok(id)
 }
 
-pub(super) async fn probe(instance: &ProviderInstance, cwd: &Path) -> Result<ProviderReport> {
-    let server = Server::connect(instance, cwd).await?;
+pub(super) async fn probe(
+    instance: &ProviderInstance,
+    output: &crate::AgentOutput,
+    cwd: &Path,
+) -> Result<ProviderReport> {
+    let server = Server::connect(instance, output, cwd).await?;
     let mut report = ProviderReport::new(if server.v2 {
         "OpenCode v2 HTTP/SSE"
     } else {
@@ -317,7 +325,7 @@ pub(crate) async fn execute(
     update: impl Fn(Update) -> Result<()>,
 ) -> Result<()> {
     let setup = async {
-        let server = Server::connect(instance, &turn.cwd).await?;
+        let server = Server::connect(instance, &turn.output, &turn.cwd).await?;
         if server.managed.is_some()
             && let Some(tools) = &turn.agent_tools
         {
@@ -327,19 +335,20 @@ pub(crate) async fn execute(
                 server
                     .checked(
                         Method::PUT,
-                        "/api/experimental/mcp/huggler",
+                        &format!("/api/experimental/mcp/{}", turn.output.name),
                         Some(&json!({"config":config})),
                     )
                     .await?;
                 // Older 2.x servers refresh their tool catalog asynchronously after connecting.
                 tokio::time::sleep(Duration::from_millis(250)).await;
             } else {
-                let config = json!({"name":"huggler","config":config});
+                let config = json!({"name":turn.output.name,"config":config});
                 let status = server.json(Method::POST, "/mcp", Some(&config)).await?;
-                if status["huggler"]["status"] != "connected" {
-                    return Err(protocol(
-                        "OpenCode could not connect to the Huggler MCP server",
-                    ));
+                if status[&turn.output.name]["status"] != "connected" {
+                    return Err(protocol(format!(
+                        "OpenCode could not connect to the {} MCP server",
+                        turn.output.title
+                    )));
                 }
             }
         }

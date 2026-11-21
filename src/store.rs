@@ -30,7 +30,7 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use std::{
-    fs::{self, File},
+    fs::File,
     path::{Path, PathBuf},
 };
 
@@ -83,6 +83,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/033.sql"),
     include_str!("../migrations/034.sql"),
     include_str!("../migrations/035.sql"),
+    include_str!("../migrations/036.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -252,8 +253,10 @@ impl Drop for StateLock {
 }
 
 pub(crate) struct Database {
+    output: std::sync::Arc<crate::AgentOutput>,
     db: Connection,
-    worktree_dir: PathBuf,
+    state_dir: PathBuf,
+    storage: crate::StorageLayout,
     secrets: std::collections::HashMap<SecretRequestId, application::Secret>,
     // Drop after SQLite closes.
     _lock: StateLock,
@@ -264,33 +267,33 @@ impl Database {
     pub fn open(dir: &Path) -> Result<Self> {
         Self::open_with_registry(
             dir,
+            Default::default(),
+            Default::default(),
             &crate::providers::registry::registry(&Default::default(), &Default::default(), &[])?,
         )
     }
 
     pub fn open_with_registry(
         dir: &Path,
+        storage: crate::StorageLayout,
+        output: std::sync::Arc<crate::AgentOutput>,
         registry: &crate::providers::registry::Registry,
     ) -> Result<Self> {
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.recursive(true).create(dir)?;
+        storage.validate()?;
+        let state_dir = crate::layout::private_dir(dir)?;
+        let (database_path, lock_path) = storage.state_files(&state_dir)?;
         let lock = File::options()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(dir.join("runtime.lock"))?;
+            .open(lock_path)?;
         lock.try_lock().map_err(|err| match err {
             std::fs::TryLockError::WouldBlock => Error::AlreadyOpen,
             std::fs::TryLockError::Error(e) => Error::Io(e),
         })?;
         let lock = StateLock(lock);
-        let mut db = Connection::open(dir.join("huggler.sqlite3"))?;
+        let mut db = Connection::open(database_path)?;
         db.execute_batch(
             "PRAGMA foreign_keys=OFF; PRAGMA journal_mode=WAL; PRAGMA temp_store=MEMORY;",
         )?;
@@ -325,7 +328,10 @@ impl Database {
         tx.execute_batch(
             "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
         )?;
-        tx.execute("UPDATE workspace_setup SET state='failed',detail='runtime closed during setup' WHERE state='running'", [])?;
+        tx.execute(
+            "UPDATE workspace_setup SET state='failed',detail=? WHERE state='running'",
+            [output.text.label("runtime closed during setup")],
+        )?;
         tx.execute_batch("CREATE TEMP TABLE discovered_tool(run TEXT, name TEXT, PRIMARY KEY(run,name));
             CREATE TEMP TRIGGER forget_tools AFTER DELETE ON agent_grant BEGIN DELETE FROM discovered_tool WHERE run=OLD.run_id; END;
             UPDATE secret_request SET state='expired' WHERE state IN ('requested','approved');")?;
@@ -354,14 +360,22 @@ impl Database {
             } else {
                 "runtime exited before provider claim; prompt was not sent"
             };
-            Self::finish_tx(&tx, &thread, &id, Err(Error::Provider(reason.into())))?;
+            Self::finish_tx(
+                &output,
+                &tx,
+                &thread,
+                &id,
+                Err(Error::Provider(reason.into())),
+            )?;
         }
         native_children::disconnect(&tx, None)?;
         tx.commit()?;
         Ok(Self {
             db,
             secrets: Default::default(),
-            worktree_dir: dir.canonicalize()?.join("worktrees"),
+            state_dir,
+            storage,
+            output,
             _lock: lock,
         })
     }
@@ -507,7 +521,14 @@ impl Database {
                     params![thread.0,name,instance.as_str(),driver,model,source.0])?;
                 if *mode == ForkMode::Checkpoint {
                     let (common_dir, commit) = checkpoints::revision(&tx, source, through)?;
-                    let path = self.worktree_dir.join(new_id());
+                    let project: String = tx.query_row(
+                        "SELECT p.root FROM project p JOIN thread t ON t.project=p.id WHERE t.id=?",
+                        [&source.0],
+                        |r| r.get(0),
+                    )?;
+                    let path =
+                        self.storage
+                            .checkout(&self.state_dir, Path::new(&project), &new_id())?;
                     checkpoints::reserve(&tx, thread, &path, &common_dir, &commit)?;
                 }
                 context::save_fork(&tx, thread, &history, instance)?;
@@ -536,7 +557,11 @@ impl Database {
                     return Err(Error::Invalid("empty merge prompt".into()));
                 }
                 let history = context::capture(&tx, source, through, ForkMode::Portable, false)?;
-                let prompt = context::prompt(&serde_json::to_string(&history)?, text);
+                let prompt = self.output.text.history(
+                    &self.output.title,
+                    &serde_json::to_string(&history)?,
+                    text,
+                );
                 let (run, msg, events, _) =
                     start_message(&tx, thread, &prompt, selection.flatten(), None, false)?;
                 work.start.push((thread.clone(), run.clone()));
@@ -569,10 +594,9 @@ impl Database {
                     if !(1..=8).contains(&uploads.len()) {
                         return Err(Error::Invalid("send between one and eight uploads".into()));
                     }
-                    combined = format!(
-                        "{}\n\n{}",
+                    combined = self.output.text.with_attachments(
                         text,
-                        uploads::claim(&tx, thread, uploads)?.join("\n\n")
+                        &uploads::claim(&*self.output.text, &tx, thread, uploads)?,
                     );
                     &combined
                 } else {
@@ -610,9 +634,9 @@ impl Database {
                 work.steer = Some((active.clone(), text.clone()));
             }
             Action::Restart { active, text } => {
-                if tx.execute("UPDATE run SET stop_requested=1,stop_reason='Restarted by the host'
+                if tx.execute("UPDATE run SET stop_requested=1,stop_reason=?
                     WHERE thread_id=? AND id=? AND stop_requested=0 AND status IN ('starting','running')",
-                    params![thread.0,active.0])? == 0 {
+                    params![self.output.text.label("Restarted by the host"),thread.0,active.0])? == 0 {
                     return Err(Error::Invalid("expected an active foreground run".into()));
                 }
                 let first = tx
@@ -664,10 +688,10 @@ impl Database {
             }
             Action::CancelQueued { run } => {
                 queue::require_queued(&tx, thread, run)?;
-                Self::finish_tx(&tx, thread, run, Err(Error::Interrupted))?;
+                Self::finish_tx(&self.output, &tx, thread, run, Err(Error::Interrupted))?;
                 receipt.event_sequences.push(tx.last_insert_rowid());
                 receipt.run_id = Some(run.clone());
-                tasks::reconcile(&tx, &mut work.start)?;
+                tasks::reconcile(&self.output, &tx, &mut work.start)?;
             }
             Action::StopThread | Action::ResumeQueue => {
                 let cursor: i64 = tx.query_row(
@@ -676,10 +700,10 @@ impl Database {
                     |r| r.get(0),
                 )?;
                 if cmd.action == Action::StopThread {
-                    work.stop = interrupts::stop_thread(&tx, thread)?;
+                    work.stop = interrupts::stop_thread(&self.output, &tx, thread)?;
                     // Disposing a held task can release its owner's completion
                     // even when every worker has already exited.
-                    tasks::reconcile(&tx, &mut work.start)?;
+                    tasks::reconcile(&self.output, &tx, &mut work.start)?;
                 } else {
                     interrupts::set_queue_hold(&tx, thread, false)?;
                     if let Some(run) = Self::next_queued(&tx, thread)? {
@@ -744,6 +768,7 @@ impl Database {
             [&id.0],
             |r| {
                 Ok(Turn {
+                    output: self.output.clone(),
                     has_app_context: false,
                     sample_suggestion: false,
                     fork: None,
@@ -754,10 +779,7 @@ impl Database {
                     cwd: r.get::<_, String>(0)?.into(),
                     name: r.get(1)?,
                     text: match r.get::<_, Option<String>>(6)? {
-                        Some(origin) => format!(
-                            "Peer message from Huggler {origin}\n\n{}",
-                            r.get::<_, String>(2)?
-                        ),
+                        Some(origin) => self.output.text.peer_message(&self.output.title, &origin, &r.get::<_, String>(2)?),
                         None => r.get(2)?,
                     },
                     model: r.get(3)?,
@@ -806,7 +828,7 @@ impl Database {
             "UPDATE app_context SET claimed_run=?1 WHERE thread=(SELECT thread_id FROM run WHERE id=?1) RETURNING content",
             [&id.0], |r|r.get::<_,String>(0)).optional()? {
             turn.has_app_context = true;
-            turn.text = format!("MCP App context (host-approved data):\n{context}\n\n{}", turn.text);
+            turn.text = self.output.text.app_context(&context, &turn.text);
         }
         tx.execute("UPDATE run SET session_generation=(SELECT session_reset FROM thread WHERE id=run.thread_id) WHERE id=?", [&id.0])?;
         if tx.execute(
@@ -898,7 +920,7 @@ impl Database {
                     .exists(params![id.0, thread.0])? {
                     return Err(Error::Interrupted);
                 }
-                Self::finish_tx(&tx, thread, id, Ok(()))?;
+                Self::finish_tx(&self.output, &tx, thread, id, Ok(()))?;
                 tx.execute("DELETE FROM agent_grant WHERE run_id=?", [&id.0])?;
             }
             Update::Bound(native_thread) => {
@@ -1023,6 +1045,7 @@ impl Database {
     }
 
     fn finish_tx(
+        output: &crate::AgentOutput,
         tx: &Transaction<'_>,
         thread: &ThreadId,
         id: &RunId,
@@ -1037,11 +1060,11 @@ impl Database {
             usage_limits::record(tx, thread, id, *reset_at)?;
         }
         let interrupted = matches!(result, Err(Error::Interrupted));
-        let error = result.err().map(|e| e.to_string());
+        let error = result.err().map(|e| output.text.run_error(&e));
         tx.execute(
             "UPDATE run SET queue_held=0, status=CASE WHEN status='waiting' THEN 'completed' WHEN stop_requested OR ?3 THEN 'interrupted' WHEN ?1 IS NULL THEN 'completed' ELSE 'failed' END,
-                 error=CASE WHEN status='waiting' THEN NULL WHEN stop_requested THEN coalesce(stop_reason,'task cancelled') ELSE ?1 END WHERE id=?2",
-            params![error, id.0,interrupted],
+                 error=CASE WHEN status='waiting' THEN NULL WHEN stop_requested THEN coalesce(stop_reason,?4) ELSE ?1 END WHERE id=?2",
+            params![error, id.0,interrupted,output.text.label("task cancelled")],
         )?;
         run_event(tx, thread, id)?;
         tx.execute("DELETE FROM turn_effect WHERE run_id=?", [&id.0])?;
@@ -1058,7 +1081,7 @@ impl Database {
             |r| r.get(0),
         )?;
         if unfinished {
-            Self::finish_tx(&tx, thread, id, result)?;
+            Self::finish_tx(&self.output, &tx, thread, id, result)?;
         }
         tx.execute("DELETE FROM agent_grant WHERE run_id=?", [&id.0])?;
         Ok(tx.commit()?)
@@ -1091,7 +1114,7 @@ impl Database {
                 jobs.push((thread, run));
             }
         }
-        tasks::reconcile(&tx, &mut jobs)?;
+        tasks::reconcile(&self.output, &tx, &mut jobs)?;
         tx.commit()?;
         Ok(jobs)
     }

@@ -27,7 +27,10 @@ use tokio::{
 
 #[derive(Clone, Debug)]
 pub struct HugglerOptions {
+    /// Base directory for relative storage paths.
     pub state_dir: PathBuf,
+    pub storage: crate::StorageLayout,
+    pub output: crate::AgentOutput,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
     pub agent_policy: crate::application::AgentPolicy,
@@ -43,6 +46,8 @@ impl HugglerOptions {
     pub fn new(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
+            storage: Default::default(),
+            output: Default::default(),
             agent_tools: false,
             agent_policy: Default::default(),
             auto_resume_usage_limits: false,
@@ -55,6 +60,8 @@ impl HugglerOptions {
 }
 
 pub(crate) struct Shared {
+    pub(crate) output: Arc<crate::AgentOutput>,
+    pub(crate) tool_catalog: crate::mcp::ToolCatalog,
     #[cfg(feature = "application")]
     pub(crate) services: Mutex<crate::services::Registry>,
     pub(crate) agent_policy: crate::application::AgentPolicy,
@@ -366,7 +373,7 @@ impl Shared {
     }
 }
 
-/// The owner of a state directory. Share this handle via Arc inside the host.
+/// The owner of a Huggler database. Share this handle via Arc inside the host.
 pub struct Huggler {
     pub(crate) shared: Arc<Shared>,
     closed: watch::Sender<bool>,
@@ -375,17 +382,22 @@ pub struct Huggler {
 impl Huggler {
     /// Requires a Tokio runtime with I/O and time enabled.
     pub async fn open(options: HugglerOptions) -> Result<Self> {
-        let dir = options.state_dir.clone();
+        let dir = options.state_dir;
+        let storage = options.storage;
         let registry = crate::providers::registry::registry(
             &options.codex,
             &options.claude_agent,
             &options.instances,
         )?;
+        let tool_catalog = crate::mcp::catalog(&options.output)?;
+        let output = Arc::new(options.output);
+        let database_output = output.clone();
         let configured = registry.clone();
-        let mut db =
-            tokio::task::spawn_blocking(move || Database::open_with_registry(&dir, &configured))
-                .await
-                .map_err(|e| Error::Worker(e.to_string()))??;
+        let mut db = tokio::task::spawn_blocking(move || {
+            Database::open_with_registry(&dir, storage, database_output, &configured)
+        })
+        .await
+        .map_err(|e| Error::Worker(e.to_string()))??;
         let listener = if options.agent_tools {
             Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?)
         } else {
@@ -400,6 +412,8 @@ impl Huggler {
             #[cfg(feature = "application")]
             services: Mutex::default(),
             agent_policy: options.agent_policy,
+            output,
+            tool_catalog,
             prompt_suggestions: options.prompt_suggestions,
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
@@ -481,7 +495,7 @@ impl Huggler {
             .ok_or_else(|| Error::NotFound(instance.to_string()))?;
         let snapshot = match source {
             ImportSource::AcpRegistry(native) => {
-                claude_agent::load_history(provider, &cwd, native).await?
+                claude_agent::load_history(provider, &self.shared.output, &cwd, native).await?
             }
             file => tokio::task::spawn_blocking(move || crate::imports::read_file(file))
                 .await
@@ -640,6 +654,11 @@ impl Huggler {
         Ok(revoked)
     }
 
+    /// Effective host-selected presentation, including provider display labels.
+    pub fn output(&self) -> &crate::AgentOutput {
+        &self.shared.output
+    }
+
     /// Enumerate configured instances in stable ID order without starting a provider.
     pub fn provider_instances(&self) -> impl Iterator<Item = &crate::ProviderInstance> {
         self.shared.registry.values()
@@ -659,6 +678,7 @@ impl Huggler {
             .ok_or_else(|| Error::NotFound(format!("provider instance {id}")))?
             .clone();
         let cwd = cwd.as_ref().canonicalize()?;
+        let output = self.shared.output.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
             let mut gate = self.shared.workers.lock().unwrap();
@@ -666,7 +686,7 @@ impl Huggler {
             let mut stop = self.shared.stop.subscribe();
             workers.spawn_on(
                 async move {
-                    let probe = crate::providers::probe::inspect(&instance, &cwd);
+                    let probe = crate::providers::probe::inspect(&instance, &output, &cwd);
                     let deadline = std::time::Duration::from_secs(15);
                     let result = tokio::select! {
                         _ = stop.wait_for(|stopped| *stopped) => Err(Error::Closed),

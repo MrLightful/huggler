@@ -8,7 +8,7 @@ impl Database {
     pub fn allocate_workspace(&mut self, source: &ProjectId) -> Result<Project> {
         let root = self.project_root(source)?;
         let (repository, commit) = worktree::base(&root)?;
-        let path = self.worktree_dir.join(new_id());
+        let path = self.storage.checkout(&self.state_dir, &root, &new_id())?;
         let checkout = Worktree {
             path: path
                 .to_str()
@@ -77,9 +77,10 @@ impl Database {
         if in_use {
             return Err(Error::Busy);
         }
+        // The allocation row owns this immutable project path, including after a
+        // layout change. Unmanaged projects cannot reach the Git removal below.
         if root.try_exists()? {
             if root.canonicalize()? != root
-                || !root.starts_with(&self.worktree_dir)
                 || !root.join(".git").is_file()
                 || worktree::clean_base(&root)? != (repository.clone(), commit)
                 || !git(

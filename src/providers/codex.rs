@@ -79,7 +79,7 @@ impl Client {
                 ) {
                     return Ok(frame);
                 }
-                self.rpc.write(json!({"id":frame["id"],"error":{"code":-32601,"message":"Host request unsupported"}})).await?;
+                self.rpc.write(json!({"id":frame["id"],"error":self.rpc.error(-32601, "Host request unsupported")})).await?;
                 continue;
             }
             return Ok(frame);
@@ -131,18 +131,29 @@ impl Client {
         }
     }
 
-    async fn sample_suggestion(&mut self, thread: &str, turn: &str) -> Option<String> {
-        let request = self.request("thread/sample", json!({
-            "threadId": thread, "expectedTurnId": turn, "effort": "low",
-            "prompt": "Suggest one short follow-up the user might type next. Return only that message, or empty text if none is useful."
-        }));
+    async fn sample_suggestion(
+        &mut self,
+        text: &dyn crate::AgentText,
+        thread: &str,
+        turn: &str,
+    ) -> Option<String> {
+        let request = self.request(
+            "thread/sample",
+            json!({
+                "threadId": thread, "expectedTurnId": turn, "effort": "low",
+                "prompt": text.suggestion_prompt()
+            }),
+        );
         let response = tokio::time::timeout(std::time::Duration::from_secs(5), request)
             .await
             .ok()?
             .ok()?;
+        let task_title = text.delegated_title();
         let text = response["text"].as_str()?.trim();
-        (!text.is_empty() && text.len() <= 1024 && !text.starts_with("Delegated task"))
-            .then(|| text.to_owned())
+        (!text.is_empty()
+            && text.len() <= 1024
+            && (task_title.is_empty() || !text.starts_with(task_title)))
+        .then(|| text.to_owned())
     }
 
     async fn write_answers(&mut self, wire_id: Value, answers: UserAnswers) -> Result<()> {
@@ -197,7 +208,7 @@ impl Client {
         mut controls: mpsc::UnboundedReceiver<Control>,
     ) -> Result<()> {
         self.request("initialize", json!({
-            "clientInfo":{"name":"huggler","title":"Huggler","version":env!("CARGO_PKG_VERSION")},
+            "clientInfo":turn.output.client_info(),
             "capabilities":{"experimentalApi":true,"optOutNotificationMethods":["turn/diff/updated"]}
         })).await?;
         self.rpc.write(json!({"method":"initialized"})).await?;
@@ -212,7 +223,7 @@ impl Client {
             "features.concurrent_reasoning_summaries":true
         }});
         if let Some(tools) = &turn.agent_tools {
-            session["config"]["mcp_servers.huggler"] = json!({
+            session["config"][format!("mcp_servers.{}", turn.output.name)] = json!({
                 "url": tools.url, "bearer_token_env_var": "HUGGLER_MCP_TOKEN",
                 "required": true
             });
@@ -426,7 +437,7 @@ impl Client {
                     !foreground_complete && p["threadId"] == thread && p["turnId"] == id;
                 if frame["method"] == "item/tool/requestUserInput" && root_request {
                     let Ok(items) = Vec::<UserInputQuestion>::deserialize(&p["questions"]) else {
-                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"Invalid questions"}})).await?;
+                        self.rpc.write(json!({"id":wire_id,"error":self.rpc.error(-32602, "Invalid questions")})).await?;
                         continue;
                     };
                     let mut ids = HashSet::new();
@@ -434,7 +445,7 @@ impl Client {
                         || items.iter().any(|q| q.id.is_empty() || !ids.insert(&q.id))
                         || questions.values().any(|id| id == wire_id)
                     {
-                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"Invalid question IDs"}})).await?;
+                        self.rpc.write(json!({"id":wire_id,"error":self.rpc.error(-32602, "Invalid question IDs")})).await?;
                         continue;
                     }
                     let id = RequestId(uuid::Uuid::new_v4().to_string());
@@ -447,30 +458,35 @@ impl Client {
                     continue;
                 }
                 if !request_approvals || (!root_request && child.is_none()) {
-                    self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"No matching interactive run"}})).await?;
+                    self.rpc.write(json!({"id":wire_id,"error":self.rpc.error(-32602, "No matching interactive run")})).await?;
                     continue;
                 }
                 let (approval, title) = match frame["method"].as_str() {
                     Some("item/permissions/requestApproval") => (
                         Approval::Permissions(p["permissions"].clone()),
-                        "Grant permissions for this turn",
+                        turn.output.text.label("Grant permissions for this turn"),
                     ),
                     Some("mcpServer/elicitation/request")
                         if turn.agent_tools.is_some()
-                            && p["serverName"] == "huggler"
+                            && p["serverName"] == turn.output.name
                             && p["mode"] == "form"
                             && p["_meta"]["codex_approval_kind"] == "mcp_tool_call" =>
                     {
                         (
                             Approval::Mcp,
-                            p["message"].as_str().unwrap_or("Use Huggler agent tool"),
+                            p["message"].as_str().map(str::to_owned).unwrap_or_else(|| {
+                                turn.output
+                                    .text
+                                    .label(&format!("Use {} agent tool", turn.output.title))
+                            }),
                         )
                     }
-                    Some("item/commandExecution/requestApproval") => {
-                        (Approval::Command, "Run command outside the sandbox")
-                    }
+                    Some("item/commandExecution/requestApproval") => (
+                        Approval::Command,
+                        turn.output.text.label("Run command outside the sandbox"),
+                    ),
                     _ => {
-                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32601,"message":"Unsupported host request"}})).await?;
+                        self.rpc.write(json!({"id":wire_id,"error":self.rpc.error(-32601, "Unsupported host request")})).await?;
                         continue;
                     }
                 };
@@ -490,7 +506,7 @@ impl Client {
                 })
                 .map(|(id, name, kind)| PermissionOption {
                     option_id: id.into(),
-                    name: name.into(),
+                    name: turn.output.text.label(name),
                     kind: kind.into(),
                 })
                 .collect();
@@ -608,7 +624,9 @@ impl Client {
                     if !children.active() && interrupt_replies.is_empty() {
                         if turn.sample_suggestion {
                             update(Update::ForegroundComplete)?;
-                            if let Some(text) = self.sample_suggestion(thread, id).await {
+                            if let Some(text) =
+                                self.sample_suggestion(&*turn.output.text, thread, id).await
+                            {
                                 update(Update::PromptSuggestion(text))?;
                             }
                         }

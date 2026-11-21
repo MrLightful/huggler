@@ -109,8 +109,13 @@ impl Database {
             return Ok((run, None));
         }
         let (run, job) = if accept {
-            let (run, job) =
-                start_durable_message(&tx, thread, &format!("Guest {name}: {text}"), model, false)?;
+            let (run, job) = start_durable_message(
+                &tx,
+                thread,
+                &self.output.text.guest_message(&name, &text),
+                model,
+                false,
+            )?;
             (Some(run), job)
         } else {
             (None, None)

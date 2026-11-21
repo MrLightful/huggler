@@ -95,10 +95,6 @@ pub(super) fn save_fork(
     Ok(())
 }
 
-pub(super) fn prompt(context: &str, text: &str) -> String {
-    format!("Conversation history from Huggler (JSON)\n{context}\n\n{text}")
-}
-
 pub(super) fn prepare(tx: &Transaction, id: &RunId, scope: &str, turn: &mut Turn) -> Result<()> {
     if turn.resume.is_some() {
         return Ok(());
@@ -114,7 +110,10 @@ pub(super) fn prepare(tx: &Transaction, id: &RunId, scope: &str, turn: &mut Turn
             }
             turn.fork = Some((NativeThreadId(parent), NativeTurnId(row.get(2)?)));
         } else {
-            turn.text = prompt(&row.get::<_, String>(0)?, &turn.text);
+            turn.text =
+                turn.output
+                    .text
+                    .history(&turn.output.title, &row.get::<_, String>(0)?, &turn.text);
         }
     }
     Ok(())

@@ -581,11 +581,23 @@ async fn nested_results_wake_only_the_followup_that_requested_them() {
 
 #[tokio::test]
 async fn stop_thread_holds_owned_queues_across_reopen_until_each_resumes() {
+    #[derive(Debug)]
+    struct StudioStops;
+    impl AgentText for StudioStops {
+        fn label(&self, text: &str) -> String {
+            match text {
+                "task cancelled" => "Assignment withdrawn".into(),
+                "Stopped by the host" => "Studio stopped this turn".into(),
+                _ => text.into(),
+            }
+        }
+    }
     timeout(Duration::from_secs(20), async {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("checkout");
         checkout(&repo);
-        let options = options(&dir.path().join("state"));
+        let mut options = options(&dir.path().join("state"));
+        options.output.text = std::sync::Arc::new(StudioStops);
         let rt = Huggler::open(options.clone()).await.unwrap();
         let project = rt.open_project(&repo).unwrap();
         let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
@@ -630,7 +642,7 @@ async fn stop_thread_holds_owned_queues_across_reopen_until_each_resumes() {
         ] {
             let result = rt.wait(owner, run).await.unwrap();
             assert_eq!(result.status, RunStatus::Interrupted);
-            assert_eq!(result.error.as_deref(), Some("Stopped by the host"));
+            assert_eq!(result.error.as_deref(), Some("Studio stopped this turn"));
             assert!(rt.read(owner).unwrap().permissions.is_empty());
         }
         let peer_snapshot = rt.read(&peer).unwrap();
@@ -647,6 +659,7 @@ async fn stop_thread_holds_owned_queues_across_reopen_until_each_resumes() {
             Some(&branch.child_run_id)
         );
         assert_eq!(saved.tasks[0].status, RunStatus::Interrupted);
+        assert_eq!(saved.tasks[0].result.as_deref(), Some("Assignment withdrawn"));
         assert_eq!(saved.tasks[1].result_run_id, review.result_run_id);
         assert_eq!(saved.tasks[1].result.as_deref(), Some("2+2=4"));
         assert!(
@@ -660,6 +673,7 @@ async fn stop_thread_holds_owned_queues_across_reopen_until_each_resumes() {
         assert_eq!(nested.delivery, CompletionDelivery::Disposed);
         rt.close().await.unwrap();
 
+        options.output = AgentOutput::default();
         let rt = Huggler::open(options).await.unwrap();
         assert_eq!(
             rt.resume_queue(old_resume.command_id.clone(), parent.clone())
@@ -667,6 +681,7 @@ async fn stop_thread_holds_owned_queues_across_reopen_until_each_resumes() {
             old_resume
         );
         let reopened = rt.read(&parent).unwrap();
+        assert_eq!(reopened.tasks[0].result, saved.tasks[0].result);
         assert_eq!(reopened.cursor, saved.cursor);
         for (run, expected) in reopened.runs[2..].iter().zip(&queued) {
             assert_eq!(&run.id, expected);
@@ -1148,6 +1163,8 @@ async fn exercise_worktree_delegation() {
     let repo = dir.path().join("repository with spaces");
     checkout(&repo);
     let mut options = options(&dir.path().join("state"));
+    options.storage.worktree_root = WorktreeRoot::ProjectRelative(".my-host/checkouts".into());
+    options.storage.worktree_name = "agent-{id}".into();
     options.instances.push(ProviderInstance::new(
         "review-profile",
         Provider::ClaudeAgent,
@@ -1183,7 +1200,14 @@ async fn exercise_worktree_delegation() {
     assert_eq!(task.result.as_deref(), Some("initial"));
     let child = &task.child_thread_id;
     let path = rt.read(child).unwrap().worktree_path.unwrap();
-    assert_ne!(path, project.root);
+    assert_eq!(
+        path,
+        project
+            .root
+            .join(".my-host/checkouts")
+            .join(format!("agent-{child}"))
+    );
+    assert!(!options.state_dir.join("worktrees").exists());
     assert_eq!(git(&path, &["rev-parse", "HEAD"]), base);
     assert_eq!(
         std::fs::read_to_string(path.join("tracked.txt")).unwrap(),
@@ -1202,6 +1226,7 @@ async fn exercise_worktree_delegation() {
 
     // An accepted retry does not need a resolvable parent HEAD.
     git(&repo, &["symbolic-ref", "HEAD", "refs/heads/unborn"]);
+    options.storage.worktree_root = WorktreeRoot::ProjectRelative(".my-host/new checkouts".into());
     let rt = Huggler::open(options).await.unwrap();
     let retry = checkout_task(&rt, &author, "retry", isolated).await;
     assert_eq!(retry, task);
@@ -1300,7 +1325,10 @@ async fn exercise_worktree_delegation() {
         .unwrap()
         .worktree_path
         .unwrap();
-    assert_ne!(nested_path, path);
+    assert_eq!(
+        nested_path.parent().unwrap(),
+        project.root.join(".my-host/new checkouts")
+    );
     assert_eq!(git(&nested_path, &["rev-parse", "HEAD"]), child_base);
     assert_eq!(nested.result.as_deref(), Some("resumed"));
     assert_eq!(

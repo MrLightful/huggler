@@ -79,22 +79,50 @@ for line in sys.stdin:
     method = frame.get("method")
     params = frame.get("params", {})
     if method == "initialize":
+        client = params["clientInfo"]
+        assert client["name"] in ("huggler", "atlas")
         emit(id=frame["id"], result={"protocolVersion": 1, "agentCapabilities": {
             "loadSession": True, "mcpCapabilities": {"http": True}}})
     elif method in ("session/new", "session/load"):
         assert Path(params["cwd"]).resolve() == Path.cwd()
         session = params.get("sessionId", str(uuid.uuid4()))
         server, = params["mcpServers"]
-        assert server["name"] == "huggler" and server["type"] == "http"
+        assert server["name"] == client["name"] and server["type"] == "http"
         auth = {h["name"]: h["value"] for h in server["headers"]}
         init = mcp("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                                   "clientInfo": {"name": "peer-fixture", "version": "1"}})
-        assert init["result"]["serverInfo"]["name"] == "huggler"
+        info = init["result"]["serverInfo"]
+        assert info["name"] == client["name"]
+        if client["name"] == "atlas":
+            assert info["version"] == client["version"] == "7"
+            assert info["title"] == client["title"] == "Atlas Studio"
+            assert init["result"]["instructions"] == "Use the directory to find collaborators."
         emit(id=frame["id"], result={"sessionId": session, "modes": {"currentModeId": "default"}})
     elif method == "session/prompt":
         prompt_id = frame["id"]
         text = params["prompt"][0]["text"]
         tools = mcp("tools/list", {})["result"]["tools"]
+        if client["name"] == "atlas":
+            if text == "exercise catalog":
+                assert {t["name"] for t in tools} == {"find", "capabilities"}
+                available = call("capabilities")
+                assert available["deferred"] and set(available["tools"]) == {
+                    "find", "capabilities", "start_peer", "deliver"}
+                assert call("deliver") == {"failure": "denied"}
+                assert call("find", query="task_cancel")["tools"] == []
+                entry, = call("find", query="deliver")["tools"]
+                assert (entry["name"], entry["title"], entry["description"]) == (
+                    "deliver", "Send a note", "Send the original Huggler wording.")
+                assert entry["inputSchema"]["properties"]["clientRequestId"]["description"] == "Retry key"
+                assert call("thread_send") == {"failure": "denied"}
+                call("find", query="start_peer")
+                peer, = call("start_peer", clientRequestId="make", threads=[{}])["threads"]
+                receipt = call("deliver", threadId=peer["threadId"], clientRequestId="note",
+                               message="Keep Huggler in this message.")
+                finish(json.dumps(receipt))
+            else:
+                finish(text)
+            continue
         if text == "direct notice":
             assert {t["name"] for t in tools} == {"orchestrator_capabilities", "send_to_user"}
             assert call("orchestrator_capabilities")["deferred"] is False

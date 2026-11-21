@@ -48,7 +48,8 @@ def launch_and_quit(app, case):
             process.wait()
     with sqlite3.connect(database) as db:
         schema = db.execute("PRAGMA user_version").fetchone()[0]
-        assert schema == 35, schema
+        expected = max(int(path.stem) for path in (ROOT / "migrations").glob("[0-9]*.sql"))
+        assert schema == expected, (schema, expected)
         print("Production app opened default state and quit, schema", schema)
 
 

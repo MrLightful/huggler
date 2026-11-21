@@ -112,7 +112,11 @@ pub(super) fn prepare(tx: &Transaction, run: &RunId, turn: &mut Turn) -> Result<
         .optional()?
     {
         let history = context::capture(tx, &thread, &through, ForkMode::Portable, false)?;
-        turn.text = context::prompt(&serde_json::to_string(&history)?, &turn.text);
+        turn.text = turn.output.text.history(
+            &turn.output.title,
+            &serde_json::to_string(&history)?,
+            &turn.text,
+        );
     }
     Ok(())
 }

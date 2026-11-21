@@ -49,7 +49,7 @@ impl Huggler {
                                     unsafe { libc::kill(-(id as i32), libc::SIGKILL); }
                                 }
                                 let _ = child.kill().await;
-                                Some("runtime closed during setup".into())
+                                Some(shared.output.text.label("runtime closed during setup"))
                             }
                         },
                     };

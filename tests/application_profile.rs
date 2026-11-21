@@ -550,7 +550,10 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
 async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
     use workspace::SetupStatus;
     let dir = tempfile::tempdir()?;
-    let rt = Huggler::open(options(&dir.path().join("state"))).await?;
+    let mut opts = options(&dir.path().join("state"));
+    let pool = dir.path().join("external pool");
+    opts.storage.worktree_root = WorktreeRoot::Shared(pool.clone());
+    let rt = Huggler::open(opts.clone()).await?;
     let scratch = rt.create_scratch(&dir.path().join("scratch"))?;
     std::fs::write(scratch.root.join("original"), "scratch")?;
     assert_eq!(rt.promote_scratch(&scratch.id)?.id, scratch.id);
@@ -603,6 +606,10 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
         ));
     }
     let project = rt.allocate_workspace(&cloned.id)?;
+    assert_eq!(project.root.parent().unwrap(), pool.canonicalize()?);
+    rt.close().await?;
+    opts.storage.worktree_root = WorktreeRoot::Shared("new pool".into());
+    let rt = Huggler::open(opts).await?;
     assert_eq!(rt.allocated_workspaces(&cloned.id)?[0].id, project.id);
     assert_eq!(rt.open_project(&project.root)?.id, project.id);
     let a = launch(&rt, &project, "a", Provider::Codex);

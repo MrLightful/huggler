@@ -468,7 +468,8 @@ async fn checkpoint_forks_restore_only_the_destination_checkout() -> Result<()> 
         git(&["add", "tracked"]);
         git(&["commit", "-qm", content]);
     };
-    let opts = options(&dir.path().join("state"));
+    let mut opts = options(&dir.path().join("state"));
+    opts.storage.worktree_root = WorktreeRoot::Shared("host checkouts".into());
     let rt = Huggler::open(opts.clone()).await?;
     let project = rt.open_project(&repo)?;
     let root = launch(&rt, &project, "root", Provider::Codex);
@@ -533,6 +534,12 @@ async fn checkpoint_forks_restore_only_the_destination_checkout() -> Result<()> 
             .read(&cmd.thread_id)?
             .worktree_path
             .unwrap_or_else(|| repo.clone());
+        if mode == ForkMode::Checkpoint {
+            assert_eq!(
+                cwd.parent().unwrap(),
+                opts.state_dir.canonicalize()?.join("host checkouts")
+            );
+        }
         assert_eq!(fs::read_to_string(cwd.join("tracked"))?, expected);
         let start = frames(&cwd, "turn/start").pop().unwrap();
         let prompt = start["input"][0]["text"].as_str().unwrap();
@@ -1031,6 +1038,17 @@ async fn prompt_suggestions_settle_independently_and_stay_with_the_latest_turn()
     rt.close().await?;
     assert!(frames(&repo, "thread/sample").is_empty());
 
+    #[derive(Debug)]
+    struct SuggestionText;
+    impl AgentText for SuggestionText {
+        fn suggestion_prompt(&self) -> &str {
+            "Propose the next question."
+        }
+    }
+    opts.output.text = std::sync::Arc::new(SuggestionText);
+    opts.output.name = "studio".into();
+    opts.output.title = "Studio".into();
+    opts.output.version = "7".into();
     opts.prompt_suggestions = true;
     let rt = Huggler::open(opts.clone()).await?;
     let send = |prompt: &str| {
@@ -1087,7 +1105,18 @@ async fn prompt_suggestions_settle_independently_and_stay_with_the_latest_turn()
     })
     .await
     .unwrap()?;
-    assert_eq!(frames(&repo, "thread/sample").len(), 4);
+    let samples = frames(&repo, "thread/sample");
+    assert_eq!(samples.len(), 4);
+    assert!(
+        samples
+            .iter()
+            .all(|p| p["prompt"] == "Propose the next question.")
+    );
+    let init = frames(&repo, "initialize").pop().unwrap();
+    assert_eq!(
+        init["clientInfo"],
+        serde_json::json!({"name":"studio","title":"Studio","version":"7"})
+    );
     rt.close().await?;
     let rt = Huggler::open(opts).await?;
     let detail = rt.detail(&root, None, "", 100)?;
