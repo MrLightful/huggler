@@ -6,9 +6,67 @@ use super::{
     rpc::{Rpc, protocol},
 };
 use crate::{
-    Error, NativeChildTurn, NativeThreadId, NativeTurnId, PermissionOption, PermissionRequest,
-    RequestId, Result, UserAnswer, UserAnswers, UserInputQuestion, UserInputRequest,
+    ActivityItem, ActivityKind, ActivityStatus, Error, NativeChildTurn, NativeThreadId,
+    NativeTurnId, PermissionOption, PermissionRequest, RequestId, Result, UserAnswer, UserAnswers,
+    UserInputQuestion, UserInputRequest,
 };
+
+fn activity_item(item: &Value, completed: bool) -> Option<ActivityItem> {
+    let field = |key: &str| item[key].as_str().unwrap_or_default();
+    let (kind, title) = match field("type") {
+        "commandExecution" => (ActivityKind::Command, field("command").into()),
+        "fileChange" => {
+            let paths = item["changes"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let mut title = paths
+                .first()
+                .and_then(|path| path["path"].as_str())
+                .unwrap_or_default()
+                .to_owned();
+            if paths.len() > 1 {
+                title.push_str(&format!(" (+{} more)", paths.len() - 1));
+            }
+            (ActivityKind::FileChange, title)
+        }
+        "mcpToolCall" => (
+            ActivityKind::Tool,
+            format!("{} / {}", field("server"), field("tool")),
+        ),
+        "dynamicToolCall" => (ActivityKind::Tool, field("tool").into()),
+        "webSearch" => (ActivityKind::Search, field("query").into()),
+        "imageView" => (
+            ActivityKind::Tool,
+            format!("View image · {}", field("path")),
+        ),
+        "imageGeneration" => (ActivityKind::Tool, "Generate image".into()),
+        "collabAgentToolCall" => (ActivityKind::Agent, field("tool").into()),
+        "agentMessage" if completed && item["phase"] == "commentary" => {
+            (ActivityKind::Commentary, field("text").into())
+        }
+        "contextCompaction" if completed => (ActivityKind::Compaction, String::new()),
+        _ => return None,
+    };
+    let status = match field("status") {
+        "failed" | "declined" => ActivityStatus::Failed,
+        "interrupted" | "cancelled" => ActivityStatus::Interrupted,
+        _ if item["exitCode"].as_i64().is_some_and(|code| code != 0)
+            || item["success"] == false =>
+        {
+            ActivityStatus::Failed
+        }
+        _ if completed => ActivityStatus::Completed,
+        _ => ActivityStatus::Running,
+    };
+    Some(ActivityItem {
+        id: item["id"].as_str()?.into(),
+        kind,
+        title,
+        status,
+        timestamp_ms: None,
+    })
+}
 use children::Children;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -577,6 +635,13 @@ impl Client {
             if foreground_complete || p["threadId"] != thread {
                 continue;
             }
+            if p["turnId"] == id
+                && let Some(method @ ("item/started" | "item/completed")) = frame["method"].as_str()
+                && p["item"]["type"] != "commandExecution"
+                && let Some(item) = activity_item(&p["item"], method == "item/completed")
+            {
+                update(Update::Activity(item))?;
+            }
             match frame["method"].as_str() {
                 Some("item/commandExecution/outputDelta") if p["turnId"] == id => {
                     if let (Some(item), Some(delta)) = (p["itemId"].as_str(), p["delta"].as_str()) {
@@ -594,6 +659,7 @@ impl Client {
                         update(Update::CommandOutput {
                             item: item.into(),
                             frame: CommandFrame::Snapshot {
+                                activity: activity_item(&p["item"], method == "item/completed"),
                                 output,
                                 finished: method == "item/completed",
                             },

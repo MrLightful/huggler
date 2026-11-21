@@ -246,7 +246,7 @@ impl Database {
              END,
              CASE WHEN m.attachment_caption IS NOT NULL THEN
                 (SELECT json_group_array(name ORDER BY position) FROM message_attachment WHERE message_id=m.id)
-             END
+             END, m.timestamp_ms, max(0,r.finished_at_ms-r.started_at_ms)
              FROM run r CROSS JOIN message m ON m.run_id=r.id WHERE r.thread_id=?1
              AND coalesce(r.delivery_slot,r.ordinal)<=?2
              AND (coalesce(r.delivery_slot,r.ordinal),m.rowid)<(?2,?3)
@@ -267,6 +267,8 @@ impl Database {
                     let (preview, truncated) = history_preview(r.get_ref(3)?.as_blob()?, 3)?;
                     Ok(HistoryItem {
                         message: decode_message(r, preview.into())?,
+                        timestamp_ms: r.get(7)?,
+                        turn_duration_ms: r.get(8)?,
                         files: match r.get_ref(5)?.as_blob_or_null()? {
                             Some(bytes) => {
                                 let (caption, truncated) = history_preview(bytes, 5)?;
@@ -315,10 +317,14 @@ impl Database {
         const LIMIT: usize = 4096;
         let mut statement = self.db.prepare(
             "SELECT substr(json_extract(change,'$.text'), -4096)
-             FROM event WHERE thread_id=?
+             FROM event WHERE thread_id=?1
+               AND sequence > coalesce((
+                   SELECT max(sequence) FROM run_activity
+                   WHERE run_id=?2 AND json_extract(item,'$.kind')='commentary'
+               ),0)
                AND json_extract(change,'$.type')='output_delta'
                AND json_extract(change,'$.text')!=''
-               AND json_extract(change,'$.run_id')=?
+               AND json_extract(change,'$.run_id')=?2
              ORDER BY sequence DESC",
         )?;
         let chunks =
@@ -385,12 +391,23 @@ impl Database {
         )?;
         let mut streaming_text = String::new();
         let mut command_items = Vec::new();
+        let mut runs: Vec<_> = history
+            .messages
+            .iter()
+            .map(|item| &item.message.run_id)
+            .collect();
         if let Some(run) = foreground_run.as_ref().or(latest_run.as_ref()) {
             if run.status == RunStatus::Running {
                 streaming_text = self.streaming_text(thread, &run.id)?;
             }
             command_items = self.command_items(thread, &run.id)?;
+            if before.is_none() {
+                runs.push(&run.id);
+            }
         }
+        runs.sort_unstable_by_key(|run| &run.0);
+        runs.dedup();
+        let activity = self.activity(thread, &runs)?;
         let native_children = self
             .db
             .prepare(
@@ -412,6 +429,7 @@ impl Database {
             queue_held,
             streaming_text,
             command_items,
+            activity,
             questions: self.open_questions(thread)?,
             history,
             native_children,

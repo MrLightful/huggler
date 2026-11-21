@@ -71,7 +71,7 @@ def check(mode):
             env = dict(os.environ, PATH="/usr/bin:/bin:/usr/sbin:/sbin")
         env[variable] = str(Path(path).resolve(strict=True))
         controls = launch_thread(checkout, name, "Codex" if provider == "codex" else "Claude Agent")
-        controls.extend(send_message(prompt))
+        controls.extend([{"click": "Show conversations"}, *send_message(prompt)])
         if replay:
             controls.extend([{"permission_from": "/root/relay/writer"}, {"click": "permission/allow_once"},
                              {"see": f"Ready/{name}/Completed"}])

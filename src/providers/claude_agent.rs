@@ -364,6 +364,29 @@ pub(crate) async fn execute(
                         continue;
                     };
                     let notification = &params["update"];
+                    if !foreground_complete
+                        && target == session
+                        && matches!(
+                            notification["sessionUpdate"].as_str(),
+                            Some("tool_call" | "tool_call_update")
+                        )
+                        && let Some(id) = notification["toolCallId"].as_str()
+                    {
+                        use crate::{ActivityItem, ActivityKind, ActivityStatus};
+                        let status = match notification["status"].as_str() {
+                            Some("completed") => ActivityStatus::Completed,
+                            Some("failed") => ActivityStatus::Failed,
+                            Some("pending" | "in_progress") => ActivityStatus::Running,
+                            _ => ActivityStatus::Unknown,
+                        };
+                        update(Update::Activity(ActivityItem {
+                            id: id.into(),
+                            kind: ActivityKind::Tool,
+                            title: notification["title"].as_str().unwrap_or_default().into(),
+                            status,
+                            timestamp_ms: None,
+                        }))?;
+                    }
                     if notification["sessionUpdate"] == "subagent_update" {
                         if let Some(child) = client.children.announcement(&session, params, false) {
                             let finished =

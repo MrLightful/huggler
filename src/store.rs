@@ -1,3 +1,4 @@
+mod activity;
 mod application;
 #[cfg(feature = "application")]
 mod automation;
@@ -88,9 +89,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/038.sql"),
     include_str!("../migrations/039.sql"),
     include_str!("../migrations/040.sql"),
+    include_str!("../migrations/041.sql"),
+    include_str!("../migrations/042.sql"),
 ];
 
-const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
+const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion, started_at_ms";
 
 fn run_status(status: &str) -> rusqlite::Result<RunStatus> {
     Ok(match status {
@@ -116,6 +119,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         delivery_slot: row.get(6)?,
         usage_limit_reset_at: row.get(7)?,
         prompt_suggestion: row.get(8)?,
+        started_at_ms: row.get(9)?,
     })
 }
 
@@ -173,7 +177,9 @@ fn message(
         Role::Assistant => "assistant",
     };
     tx.execute(
-        "INSERT INTO message(id,run_id,role,text,origin) VALUES(?,?,?,?,?)",
+        "INSERT INTO message(id,run_id,role,text,origin,timestamp_ms)
+         SELECT ?1,id,?3,?4,?5,CASE WHEN status<>'completed' THEN CAST(unixepoch('subsec')*1000 AS INTEGER) END
+         FROM run WHERE id=?2",
         params![
             id.0,
             run_id.0,
@@ -249,10 +255,11 @@ fn start_message(
     tx.execute("DELETE FROM usage_recovery WHERE thread_id=?", [&thread.0])?;
     let id = RunId(new_id());
     tx.execute(
-        "INSERT INTO run(id,thread_id,status,queue_held,ordinal,task_id)
+        "INSERT INTO run(id,thread_id,status,queue_held,ordinal,task_id,started_at_ms)
          SELECT ?1,?2,?3,?4,COALESCE(MAX(ordinal),0)+1,
             (SELECT id FROM delegated_task WHERE NOT ?4 AND child_thread=?2 AND request_key IS NOT NULL
-             AND result_run IS NULL AND delivery='pending')
+             AND result_run IS NULL AND delivery='pending'),
+            CASE WHEN ?3='starting' THEN CAST(unixepoch('subsec')*1000 AS INTEGER) END
          FROM run WHERE thread_id=?2",
         params![id.0, thread.0, status, delivery == PeerDelivery::Queued && held],
     )?;
@@ -348,25 +355,18 @@ impl Database {
         let tx = db.transaction()?;
         let mut version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let latest = MIGRATIONS.len() as i64;
-        // Separate development builds shared this database. One used version 41
-        // for attachments and another used 41 and 42 for transcript data.
-        let has_transcript_activity = matches!(version, 41 | 42)
-            && tx
+        // The attachment preview also used version 41 before the numbered
+        // transcript migrations. Bring that schema through both migrations.
+        if version == 41
+            && uploads::uses_preview_schema(&tx)?
+            && !tx
                 .prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='run_activity'")?
-                .exists([])?;
-        if version == 41 && !has_transcript_activity && uploads::uses_preview_schema(&tx)? {
+                .exists([])?
+        {
             version = 40;
             tx.pragma_update(None, "user_version", version)?;
         }
-        let transcript_preview = has_transcript_activity
-            && (version == 41 || tx.query_row(
-                "SELECT (SELECT count(*) FROM pragma_table_info('message') WHERE name='timestamp_ms')
-                      + (SELECT count(*) FROM pragma_table_info('run')
-                         WHERE name IN ('started_at_ms','finished_at_ms')) = 3",
-                [],
-                |row| row.get::<_, bool>(0),
-            )?);
-        if !(0..=latest).contains(&version) && !transcript_preview {
+        if !(0..=latest).contains(&version) {
             return Err(Error::SchemaVersion(version));
         }
         for migration in MIGRATIONS.iter().skip(version as usize) {
@@ -1005,6 +1005,7 @@ impl Database {
                 tx.execute("DELETE FROM app_context WHERE thread=? AND claimed_run=?", params![thread.0, id.0])?;
             }
             Update::Steer(command,outcome) => steering::settle(&tx, thread,id,&command,outcome)?,
+            Update::Activity(item) => activity::record(&tx, thread, id, item)?,
             Update::CommandOutput { item, frame } => command_output::record(&tx,thread,id,&item,frame)?,
             Update::Output(text) => {
                 event(&tx, thread, Change::OutputDelta { run_id: id.clone(), text })?;
@@ -1068,7 +1069,8 @@ impl Database {
             }
             Update::Finalizing(text) => {
                 if tx.execute(
-                    "UPDATE run SET status='waiting' WHERE id=? AND thread_id=? AND status='running' AND stop_requested=0",
+                    "UPDATE run SET status='waiting',finished_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER)
+                     WHERE id=? AND thread_id=? AND status='running' AND stop_requested=0",
                     params![id.0, thread.0],
                 )? == 0
                 {
@@ -1187,6 +1189,7 @@ impl Database {
         let error = result.err().map(|e| output.text.run_error(&e));
         tx.execute(
             "UPDATE run SET queue_held=0, status=CASE WHEN status='waiting' THEN 'completed' WHEN stop_requested OR ?3 THEN 'interrupted' WHEN ?1 IS NULL THEN 'completed' ELSE 'failed' END,
+                 finished_at_ms=coalesce(finished_at_ms,CAST(unixepoch('subsec')*1000 AS INTEGER)),
                  error=CASE WHEN status='waiting' THEN NULL WHEN stop_requested THEN coalesce(stop_reason,?4) ELSE ?1 END WHERE id=?2",
             params![error, id.0,interrupted,output.text.label("task cancelled")],
         )?;
@@ -1214,7 +1217,8 @@ impl Database {
     /// Promote the oldest queued message when the previous run has settled.
     fn next_queued(tx: &Transaction, thread: &ThreadId) -> Result<Option<RunId>> {
         let id = tx.query_row(
-            "UPDATE run SET status='starting' WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' AND queue_held=0 ORDER BY coalesce(delivery_slot,ordinal) LIMIT 1)
+            "UPDATE run SET status='starting',started_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER)
+             WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' AND queue_held=0 ORDER BY coalesce(delivery_slot,ordinal) LIMIT 1)
              AND NOT EXISTS(SELECT 1 FROM run WHERE thread_id=?1 AND status IN ('starting','running','waiting')) RETURNING id",
             [&thread.0], |r| Ok(RunId(r.get(0)?)),
         ).optional()?;
@@ -1610,7 +1614,7 @@ mod tests {
         assert_eq!(
             db.db
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-            version
+            MIGRATIONS.len() as i64
         );
         if version >= 41 {
             assert!(
@@ -1695,7 +1699,7 @@ mod tests {
         assert_eq!(
             db.db
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-            40
+            MIGRATIONS.len() as i64
         );
         let thread = ThreadId("t".into());
         assert_eq!(

@@ -66,6 +66,7 @@ impl Turn {
 pub(crate) enum CommandFrame {
     Append(String),
     Snapshot {
+        activity: Option<crate::ActivityItem>,
         output: Option<String>,
         finished: bool,
     },
@@ -73,6 +74,7 @@ pub(crate) enum CommandFrame {
 
 pub(crate) enum Update {
     SubmittingAppContext,
+    Activity(crate::ActivityItem),
     CommandOutput {
         item: String,
         frame: CommandFrame,

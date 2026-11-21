@@ -33,6 +33,12 @@ for line in sys.stdin:
         if prompt == "command output":
             emit(method="item/completed", params={"threadId": session, "turnId": turn, "item": {
                 "type": "commandExecution", "id": "build", "aggregatedOutput": "final report"}})
+            for item in [
+                {"type": "contextCompaction", "id": "compact"},
+                {"type": "mcpToolCall", "id": "lookup", "server": "docs", "tool": "lookup", "status": "failed"},
+                {"type": "agentMessage", "id": "progress", "phase": "commentary", "text": "Checking the report."},
+            ]:
+                emit(method="item/completed", params={"threadId": session, "turnId": turn, "item": item})
         completed()
         continue
     if "id" not in frame:
@@ -116,6 +122,8 @@ for line in sys.stdin:
         turn = str(uuid4())
         result = {"turn": {"id": turn}}
         if prompt == "command output":
+            emit(method="item/started", params={"threadId": session, "turnId": turn, "item": {
+                "type": "commandExecution", "id": "build", "command": "make check", "status": "inProgress"}})
             for target, item, delta in [(turn, "build", "prefix" + "界" * 20000 + "end"),
                                         ("prior", "foreign", "wrong")]:
                 emit(method="item/commandExecution/outputDelta", params={

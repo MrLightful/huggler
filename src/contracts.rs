@@ -377,6 +377,11 @@ impl RunStatus {
     pub fn terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Interrupted)
     }
+
+    /// The provider can still produce conversational output for this run.
+    pub fn producing_output(self) -> bool {
+        matches!(self, Self::Starting | Self::Running)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -384,6 +389,9 @@ pub struct Run {
     pub id: RunId,
     pub ordinal: i64,
     pub status: RunStatus,
+    /// Unix milliseconds when this run took the foreground slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
     /// Explicit queue resume is required before this run can start.
     #[serde(default)]
     pub queue_held: bool,
@@ -452,6 +460,62 @@ pub struct CommandOutput {
     pub closed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    Command,
+    FileChange,
+    Tool,
+    Search,
+    Agent,
+    Commentary,
+    Compaction,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityStatus {
+    Running,
+    Completed,
+    Failed,
+    Interrupted,
+    Unknown,
+}
+
+/// A provider-reported item. Command output is available through the separate tail API.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityItem {
+    pub id: String,
+    pub kind: ActivityKind,
+    pub title: String,
+    pub status: ActivityStatus,
+    /// Unix milliseconds when the provider's commentary was received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunActivity {
+    pub run_id: RunId,
+    pub status: RunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_duration_ms: Option<i64>,
+    /// Counts across the whole run when live or when the item list is truncated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts: Option<ActivityCounts>,
+    /// Most recent records in discovery order. For a live run, this also
+    /// retains the latest commentary and tool call when they precede the tail.
+    pub items: Vec<ActivityItem>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityCounts {
+    pub tools: u32,
+    pub messages: u32,
+    pub failed: u32,
+}
+
 /// Continue a history query on the same thread, filter and snapshot.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryCursor {
@@ -487,6 +551,12 @@ pub struct MessageFiles {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryItem {
     pub message: Message,
+    /// Unix milliseconds when Huggler received this message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_ms: Option<i64>,
+    /// Elapsed run time when foreground work finishes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_duration_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<MessageFiles>,
     pub truncated: bool,
@@ -524,6 +594,8 @@ pub struct ConversationDetail {
     /// Command output IDs on the foreground run, or the latest run when idle.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command_items: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<RunActivity>,
     #[serde(default)]
     pub questions: Vec<UserInputRequest>,
     pub permissions: Vec<PermissionRequest>,
@@ -707,6 +779,10 @@ impl From<ThreadSnapshot> for Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    /// Read a fresh detail snapshot for the run's activity.
+    ActivityChanged {
+        run_id: RunId,
+    },
     /// An item can now be expanded through the scoped command-output API.
     CommandOutputAvailable {
         run_id: RunId,

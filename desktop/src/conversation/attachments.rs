@@ -158,15 +158,20 @@ impl Desktop {
         let preview_key = key.clone();
         let preview_thread = thread.clone();
         v_flex()
-            .items_start()
+            .min_w_0()
             .gap_1()
-            .child(control!(
+            .child(h_flex().min_w_0().child(control!(
                 format!("attachment/{message}/{position}/{name}"),
                 Button::new(button_id.clone())
                     .small()
                     .compact()
+                    .ghost()
+                    .max_w_full()
+                    .min_w_0()
+                    .justify_start()
                     .icon(if expanded { IconName::ChevronDown } else { IconName::ChevronRight })
-                    .child(div().max_w(px(240.)).truncate().child(name.to_owned()))
+                    .child(Icon::new(IconName::File).xsmall().flex_shrink_0())
+                    .child(div().min_w_0().max_w(px(270.)).truncate().child(name.to_owned()))
                     .tooltip(format!("{} {}", if expanded { "Hide" } else { "Preview" }, name))
                     .on_click(cx.listener(move |view, _, window, cx| {
                         if expanded {
@@ -176,7 +181,7 @@ impl Desktop {
                             view.load_file_preview(preview_thread.clone(), preview_key.clone(), window, cx);
                         }
                     }))
-            ))
+            )))
             .when_some(preview, |row, preview| row.child(match preview {
                 FilePreview::Loading => hint("Loading attachment…", cx),
                 FilePreview::Failed(error) => div().text_sm().text_color(cx.theme().danger).child(error.clone()),
@@ -184,14 +189,12 @@ impl Desktop {
                     let body = match &preview.body {
                         PreviewBody::Text { text, truncated } => {
                             let body = if text.is_empty() { "Empty file".into() } else { text.clone() };
-                            v_flex().gap_1().child(
-                                div()
-                                    .id(SharedString::from(format!("preview-{button_id}")))
-                                    .w_full().max_h(px(176.)).overflow_y_scroll()
-                                    .rounded_md().p_2().bg(cx.theme().muted)
-                                    .text_sm().font_family("monospace")
-                                    .child(control!(format!("file preview/{body}"), body))
-                            ).when(*truncated, |row| row.child(hint("Showing the first 64 KiB. Save the file for the full text.", cx)))
+                            v_flex().gap_1().child(super::transcript::text_preview(
+                                SharedString::from(format!("preview-{button_id}")),
+                                control!(format!("file preview/{body}"), body),
+                                px(176.),
+                                cx,
+                            )).when(*truncated, |row| row.child(hint("Showing the first 64 KiB. Save the file for the full text.", cx)))
                         }
                         PreviewBody::Image(image) => div().w_full().max_w(px(420.)).child(control!(
                             format!("image preview/{}", preview.name),

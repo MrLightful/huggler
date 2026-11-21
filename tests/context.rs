@@ -1001,6 +1001,14 @@ async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result
         .unwrap();
     let q = question(&rt, &thread).await?;
     assert_eq!(rt.command_items(&thread, &run)?, ["build"]);
+    let active = rt.detail(&thread, None, "", 32)?;
+    assert!(active.history.messages[0].timestamp_ms.unwrap() > 0);
+    assert!(active.history.messages[0].turn_duration_ms.is_none());
+    let active = active.activity;
+    assert_eq!(active[0].items.len(), 1);
+    assert_eq!(active[0].items[0].title, "make check");
+    assert_eq!(active[0].items[0].status, ActivityStatus::Running);
+    assert!(rt.detail(&other, None, "", 32)?.activity.is_empty());
     let live = rt.command_output(&thread, &run, "build", None).await?;
     assert!(live.truncated && !live.closed);
     assert!(live.text.len() <= 32768 && live.text.starts_with('界') && live.text.ends_with("end"));
@@ -1020,6 +1028,27 @@ async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result
     assert!(finished.closed && !finished.truncated && finished.revision > live.revision);
     assert_eq!(finished.text, "final report");
     completed(&rt, &thread, &run).await;
+    let settled = rt.detail(&thread, None, "", 32)?;
+    let messages = &settled.history.messages;
+    assert_eq!(messages.len(), 2);
+    assert!(messages[1].timestamp_ms.unwrap() >= messages[0].timestamp_ms.unwrap());
+    assert!(messages[1].turn_duration_ms.unwrap() >= 0);
+    assert_eq!(messages[1].turn_duration_ms, messages[0].turn_duration_ms);
+    let activity = settled.activity;
+    let items = &activity[0].items;
+    assert_eq!(
+        items.iter().map(|item| item.kind).collect::<Vec<_>>(),
+        [
+            ActivityKind::Command,
+            ActivityKind::Compaction,
+            ActivityKind::Tool,
+            ActivityKind::Commentary,
+        ]
+    );
+    assert_eq!(items[0].title, "make check");
+    assert_eq!(items[0].status, ActivityStatus::Completed);
+    assert_eq!(items[2].status, ActivityStatus::Failed);
+    assert!(items[3].timestamp_ms.unwrap() >= messages[0].timestamp_ms.unwrap());
     let (snapshot, mut events) = rt.subscribe(&thread, Some(0))?;
     loop {
         let event = events.next().await?;
@@ -1032,6 +1061,12 @@ async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result
     rt.close().await?;
     let rt = Huggler::open(opts).await?;
     assert_eq!(rt.command_items(&thread, &run)?, ["build"]);
+    let reopened = rt.detail(&thread, None, "", 32)?;
+    assert_eq!(reopened.activity, activity);
+    for (reopened, original) in reopened.history.messages.iter().zip(messages) {
+        assert_eq!(reopened.timestamp_ms, original.timestamp_ms);
+        assert_eq!(reopened.turn_duration_ms, original.turn_duration_ms);
+    }
     assert_eq!(
         rt.command_output(&thread, &run, "build", None).await?,
         finished

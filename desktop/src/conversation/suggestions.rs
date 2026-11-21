@@ -1,7 +1,7 @@
 use super::*;
 use gpui_component::{
     Icon, StyledExt,
-    input::{Escape, IndentInline, MoveDown, MoveUp},
+    input::{Enter, Escape, IndentInline, MoveDown, MoveUp},
     kbd::Kbd,
     tooltip::Tooltip,
 };
@@ -420,16 +420,16 @@ impl Desktop {
         choice: Option<(Trigger, String)>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(menu) = &self.suggestions.menu else {
-            return;
+            return false;
         };
         let replacement = match choice {
             Some((trigger, replacement)) if trigger == menu.trigger => replacement,
-            Some(_) => return,
+            Some(_) => return false,
             None => {
                 let Some(choice) = menu.choices.get(menu.selected) else {
-                    return;
+                    return false;
                 };
                 choice.replacement.clone()
             }
@@ -437,7 +437,7 @@ impl Desktop {
         if !self.composer_is_active(input)
             || Self::trigger(input, window, cx).as_ref() != Some(&menu.trigger)
         {
-            return;
+            return false;
         }
         let menu = self.suggestions.menu.take().unwrap();
         input.update(cx, |input, cx| {
@@ -446,6 +446,7 @@ impl Desktop {
         });
         cx.stop_propagation();
         cx.notify();
+        true
     }
 
     pub(super) fn message_input(
@@ -456,7 +457,30 @@ impl Desktop {
         cx: &Context<Self>,
     ) -> Div {
         let mut field = div()
+            .key_context(COMPOSER_CONTEXT)
             .relative()
+            .capture_action({
+                let input = input.clone();
+                cx.listener(move |view, action: &Enter, window, cx| {
+                    if action.secondary
+                        || !input.focus_handle(cx).is_focused(window)
+                        || view.accept_suggestion(&input, None, window, cx)
+                    {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    if input == view.starter {
+                        if !input.read(cx).value().trim().is_empty()
+                            || !view.starter_attachments.is_empty()
+                        {
+                            view.launch(window, cx);
+                        }
+                    } else {
+                        let result = view.send(window, cx);
+                        view.report(result, cx);
+                    }
+                })
+            })
             .child(control!(_name, Input::new(input).appearance(false)));
         if input.read(cx).text().len() == 0 && !input.focus_handle(cx).is_focused(window) {
             let shortcut = window
@@ -561,14 +585,6 @@ impl Desktop {
             .capture_action(
                 cx.listener(|view, _: &MoveDown, _, cx| view.move_suggestion(false, cx)),
             )
-            .capture_action({
-                let input = input.clone();
-                cx.listener(move |view, action: &Enter, window, cx| {
-                    if !action.secondary {
-                        view.accept_suggestion(&input, None, window, cx);
-                    }
-                })
-            })
             .capture_action({
                 let input = input.clone();
                 cx.listener(move |view, _: &IndentInline, window, cx| {

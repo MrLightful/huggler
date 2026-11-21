@@ -104,6 +104,7 @@ export type RunStatus = "queued" | "starting" | "running" | "waiting" | "interru
 interface RunFields {
   id: RunId
   ordinal: string
+  startedAtMs: number | null
   queueHeld: boolean
   deliverySlot: string | null
   nativeTurn: NativeTurnId | null
@@ -183,6 +184,20 @@ export interface Thread extends ThreadSummary {
   cursor: EventCursor
 }
 export interface HistoryOptions { before?: HistoryCursor; query?: string; limit?: number }
+export interface RunActivity {
+  runId: RunId
+  status: Run["status"]
+  turnDurationMs: number | null
+  counts: { tools: number; messages: number; failed: number } | null
+  items: {
+    id: string
+    kind: "command" | "file_change" | "tool" | "search" | "agent" | "commentary" | "compaction"
+    title: string
+    status: "running" | "completed" | "failed" | "interrupted" | "unknown"
+    timestampMs: number | null
+  }[]
+  truncated: boolean
+}
 export interface ConversationDetail extends ThreadSummary {
   settled: boolean
   providerInstanceId: ProviderInstanceId
@@ -193,16 +208,18 @@ export interface ConversationDetail extends ThreadSummary {
   queueHeld: boolean
   streamingText: string
   commandItems: string[]
+  activity: RunActivity[]
   questions: QuestionRequest[]
   permissions: PermissionRequest[]
   nativeChildren: NativeChild[]
   history: {
-    messages: { message: Message; truncated: boolean }[]
+    messages: { message: Message; truncated: boolean; timestampMs: number | null; turnDurationMs: number | null }[]
     older: HistoryCursor | null
     sequence: EventCursor
   }
 }
 export type Change =
+  | { type: "activityChanged"; runId: RunId }
   | { type: "launched" }
   | { type: "sessionReset" }
   | { type: "run"; run: Run }

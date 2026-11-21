@@ -3,10 +3,12 @@ mod models;
 mod project_actions;
 mod sidebar;
 mod suggestions;
+mod transcript;
 
 use attachments::Attachments;
 use gpui_component::list::ListState;
 use models::{Models, ProviderCatalog};
+use transcript::TurnClock;
 
 use crate::{
     changes::Changes,
@@ -18,20 +20,31 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Selectable, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Enter, Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState},
     v_flex,
 };
 use huggler::{
     Action, Command, CommandId, ConversationDetail, ConversationSummary, HistoryCursor, Huggler,
-    PermissionRequest, ProviderInstanceId, Role, RunId, ThreadId,
+    ProviderInstanceId, RunId, ThreadId,
 };
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
+    sync::Arc,
+};
 use uuid::Uuid;
 
 const NARROW_VIEWPORT_WIDTH: Pixels = px(900.);
+
+pub(crate) const COMPOSER_CONTEXT: &str = "HugglerComposer";
+
+fn history_at_bottom(scroll: &ScrollHandle) -> bool {
+    scroll.max_offset().height + scroll.offset().y <= px(2.)
+}
 
 struct Workspace {
     root: PathBuf,
@@ -58,6 +71,9 @@ pub struct Desktop {
     before: Option<HistoryCursor>,
     subscription: Option<Task<()>>,
     command_log: Option<CommandLog>,
+    expanded_activity: HashSet<(RunId, Option<String>)>,
+    turn_clock: Option<Entity<TurnClock>>,
+    full_messages: HashMap<huggler::MessageId, String>,
     file_preview: Option<((huggler::MessageId, usize), attachments::FilePreview)>,
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
@@ -81,7 +97,7 @@ pub struct Desktop {
 struct CommandLog {
     run: RunId,
     item: String,
-    text: String,
+    content: Option<huggler::Result<huggler::CommandOutput>>,
     _reader: Task<()>,
 }
 
@@ -140,6 +156,9 @@ impl Desktop {
             before: None,
             subscription: None,
             command_log: None,
+            expanded_activity: HashSet::new(),
+            turn_clock: None,
+            full_messages: HashMap::new(),
             file_preview: None,
             thread_updates: None,
             history_scroll: ScrollHandle::new(),
@@ -271,6 +290,8 @@ impl Desktop {
         let mut cursor = snapshot.history.sequence;
         self.file_preview = None;
         self.command_log = None;
+        self.expanded_activity.clear();
+        self.full_messages.clear();
         self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
         self.prompt = self.workspaces[&id].draft.clone();
         self.suggestions = Default::default();
@@ -361,26 +382,36 @@ impl Desktop {
                 }
                 result => result?,
             };
-            let at_bottom =
-                self.history_scroll.max_offset().height + self.history_scroll.offset().y <= px(2.);
             if self.before.is_none()
-                && at_bottom
+                && history_at_bottom(&self.history_scroll)
                 && (thread.history.messages.last().map(|m| &m.message.id)
                     != old.history.messages.last().map(|m| &m.message.id)
                     || thread.streaming_text != old.streaming_text
-                    || thread.command_items != old.command_items)
+                    || thread.activity != old.activity)
             {
                 self.history_scroll.scroll_to_bottom();
             }
             if self.command_log.as_ref().is_some_and(|log| {
-                thread
-                    .foreground_run
-                    .as_ref()
-                    .or(thread.latest_run.as_ref())
-                    .is_none_or(|run| run.id != log.run)
+                !thread
+                    .activity
+                    .iter()
+                    .any(|activity| activity.run_id == log.run)
             }) {
                 self.command_log = None;
             }
+            self.expanded_activity.retain(|(run, group)| {
+                thread.activity.iter().any(|activity| {
+                    &activity.run_id == run
+                        && (group.is_some() || activity.status.producing_output())
+                })
+            });
+            self.full_messages.retain(|id, _| {
+                thread
+                    .history
+                    .messages
+                    .iter()
+                    .any(|item| &item.message.id == id)
+            });
             if thread.latest_run.as_ref().map(|r| (&r.id, r.status))
                 != old.latest_run.as_ref().map(|r| (&r.id, r.status))
             {
@@ -634,7 +665,7 @@ impl Desktop {
             return Ok(());
         }
         if text.trim().is_empty() && attachments.is_empty() {
-            return Err(huggler::Error::Invalid("enter a message".into()));
+            return Ok(());
         }
         if thread.foreground_run.is_none() && thread.queued_count == 0 {
             let root = &self.workspaces[&thread.id].root;
@@ -667,7 +698,12 @@ impl Desktop {
         }
     }
 
-    fn workspace_header(&self, changes_open: bool, cx: &Context<Self>) -> Div {
+    fn workspace_header(
+        &self,
+        navigation_open: bool,
+        changes_open: bool,
+        cx: &Context<Self>,
+    ) -> Div {
         let checkout = self.checkout.read(cx).value();
         let (root, title) = match &self.current {
             Some(thread) => (
@@ -704,7 +740,7 @@ impl Desktop {
             .border_color(cx.theme().border)
             .gap_2()
             .child({
-                let open = self.navigation.is_open(true);
+                let open = navigation_open;
                 let action = if open {
                     "Hide conversations"
                 } else {
@@ -764,8 +800,10 @@ impl Desktop {
     fn send_icon(id: &'static str, tooltip: &'static str) -> Button {
         Button::new(id)
             .large()
+            .w_8()
+            .px_0()
             .rounded(px(999.))
-            .icon(IconName::ArrowUp)
+            .child(Icon::new(IconName::ArrowUp).with_size(px(16.)))
             .tooltip(tooltip)
     }
 
@@ -796,16 +834,6 @@ impl Desktop {
             );
             let composer = v_flex()
                 .on_drop(cx.listener(Self::drop_attachments))
-                .capture_action(cx.listener(|view, action: &Enter, window, cx| {
-                    if action.secondary {
-                        cx.stop_propagation();
-                        if !view.starter.read(cx).value().trim().is_empty()
-                            || !view.starter_attachments.is_empty()
-                        {
-                            view.launch(window, cx);
-                        }
-                    }
-                }))
                 .w_full()
                 .p_3()
                 .gap_2()
@@ -824,7 +852,7 @@ impl Desktop {
                             self.send_controls(
                                 &self.starter_attachments,
                                 "Send first message",
-                                Self::send_icon("send-first", "Send first message (⌘Enter)")
+                                Self::send_icon("send-first", "Send first message (Enter)")
                                     .disabled(empty_message || self.starter_attachments.loading)
                                     .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
                                 cx,
@@ -1009,219 +1037,20 @@ impl Desktop {
             .into_any_element()
     }
 
-    fn permission(
-        thread: &ConversationDetail,
-        request: &PermissionRequest,
-        cx: &Context<Self>,
-    ) -> Div {
-        let mut title = request.tool_call["title"]
-            .as_str()
-            .unwrap_or("Tool permission")
-            .to_owned();
-        if let Some(origin) = &request.native_child {
-            let path = thread
-                .native_children
-                .iter()
-                .find(|child| child.run_id == request.run_id && child.thread_id == origin.thread_id)
-                .map_or(origin.thread_id.0.as_str(), |child| child.path.as_str());
-            title.push_str(&format!(" ({path})"));
-        }
-        let details = request
-            .tool_call
-            .get("rawInput")
-            .unwrap_or(&request.tool_call);
-        v_flex()
-            .gap_2()
-            .p_3()
-            .border_1()
-            .rounded_md()
-            .border_color(cx.theme().border)
-            .child(control!(format!("permission-title/{title}"), title))
-            .child(
-                div()
-                    .id(SharedString::from(format!("details-{}", request.id)))
-                    .max_h(px(96.))
-                    .overflow_y_scroll()
-                    .text_sm()
-                    .child(format!("{details:#}")),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .children(request.options.iter().map(|choice| {
-                        let thread = thread.id.clone();
-                        let run = request.run_id.clone();
-                        let request = request.id.clone();
-                        let option = choice.option_id.clone();
-                        control!(
-                            format!("permission/{}", choice.kind),
-                            Button::new(SharedString::from(format!("{request}/{option}")))
-                                .label(choice.name.clone())
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    let result = view
-                                        .runtime
-                                        .respond_to_permission(
-                                            &thread,
-                                            &run,
-                                            &request,
-                                            option.clone(),
-                                        )
-                                        .and_then(|_| view.refresh());
-                                    view.report(result, cx);
-                                })),
-                        )
-                    })),
-            )
-    }
-
-    fn toggle_command(
-        &mut self,
-        thread: ThreadId,
-        run: RunId,
-        item: String,
-        cx: &mut Context<Self>,
-    ) {
-        let previous = self.command_log.take();
-        if previous
-            .as_ref()
-            .is_some_and(|log| log.run == run && log.item == item)
-        {
-            cx.notify();
-            return;
-        }
-        let runtime = self.runtime.clone();
-        let command = item.clone();
-        let owner = run.clone();
-        let reader = cx.spawn(async move |view, cx| {
-            let mut revision = None;
-            loop {
-                let result = runtime
-                    .command_output(&thread, &owner, &command, revision)
-                    .await;
-                let mut done = true;
-                if view
-                    .update(cx, |view, cx| {
-                        let Some(log) = &mut view.command_log else {
-                            return;
-                        };
-                        if log.run != owner || log.item != command {
-                            return;
-                        }
-                        match result {
-                            Ok(output) => {
-                                revision = Some(output.revision);
-                                done = output.closed;
-                                log.text = if output.truncated {
-                                    format!("… earlier output omitted\n{}", output.text)
-                                } else {
-                                    output.text
-                                };
-                            }
-                            Err(error) => log.text = error.to_string(),
-                        }
-                        cx.notify();
-                    })
-                    .is_err()
-                    || done
-                {
-                    break;
-                }
-            }
-        });
-        self.command_log = Some(CommandLog {
-            run,
-            item,
-            text: String::new(),
-            _reader: reader,
-        });
-        cx.notify();
-    }
-
-    fn turn_activity(&self, thread: &ConversationDetail, cx: &Context<Self>) -> Div {
-        let mut activity = v_flex().gap_1();
-        for child in &thread.native_children {
-            activity = activity.child(
-                div()
-                    .text_sm()
-                    .child(format!("{} · {:?}", child.path, child.status)),
-            );
-        }
-        if !thread.streaming_text.is_empty() {
-            activity = activity
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Writing"),
-                )
-                .child(control!(
-                    format!("writing/{}", thread.streaming_text),
-                    thread.streaming_text.clone()
-                ));
-        }
-        if let Some(run) = thread
-            .foreground_run
-            .as_ref()
-            .or(thread.latest_run.as_ref())
-        {
-            for (i, item) in thread.command_items.iter().enumerate() {
-                let run = run.id.clone();
-                let thread = thread.id.clone();
-                let item = item.clone();
-                let log = self
-                    .command_log
-                    .as_ref()
-                    .filter(|log| log.run == run && log.item == item);
-                let label = format!("Command {} output", i + 1);
-                activity = activity
-                    .child(control!(
-                        label.clone(),
-                        Button::new(SharedString::from(format!("command-{i}")))
-                            .ghost()
-                            .label(label)
-                            .selected(log.is_some())
-                            .on_click(cx.listener(move |view, _, _, cx| view.toggle_command(
-                                thread.clone(),
-                                run.clone(),
-                                item.clone(),
-                                cx
-                            )))
-                    ))
-                    .when_some(log, |panel, log| {
-                        panel.child(
-                            div()
-                                .p_2()
-                                .bg(cx.theme().sidebar)
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_sm()
-                                .child(control!(
-                                    format!("command-output/{}", log.text),
-                                    log.text.clone()
-                                )),
-                        )
-                    });
-            }
-        }
-        activity
-    }
-
     fn conversation(
         &self,
         thread: &ConversationDetail,
-        window: &Window,
-        cx: &Context<Self>,
+        width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Div {
-        let provider = self
-            .runtime
-            .output()
-            .provider_label(thread.provider_instance.as_str())
-            .to_owned();
         let last_run = thread
             .foreground_run
             .as_ref()
             .or(thread.latest_run.as_ref());
         let busy = thread.foreground_run.is_some() || thread.queued_count > 0;
+        let can_stop =
+            thread.foreground_run.is_some() || (thread.queued_count > 0 && !thread.queue_held);
         let attachments = &self.workspaces[&thread.id].attachments;
         let empty_draft = attachments.loading
             || (self.prompt.read(cx).value().trim().is_empty() && attachments.is_empty());
@@ -1231,20 +1060,113 @@ impl Desktop {
             None => Some("Ready".to_owned()),
         };
         let workspace = &self.workspaces[&thread.id];
+        let (action_label, action_button) = if can_stop {
+            let id = thread.id.clone();
+            (
+                "Stop thread",
+                Button::new("stop-turn")
+                    .large()
+                    .w(px(36.))
+                    .rounded(px(999.))
+                    .child(
+                        div()
+                            .size_3()
+                            .rounded_sm()
+                            .bg(cx.theme().primary_foreground),
+                    )
+                    .tooltip("Stop thread")
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        let result = view
+                            .runtime
+                            .stop_thread(CommandId(Uuid::new_v4().to_string()), id.clone())
+                            .map(|_| ());
+                        view.report(result, cx);
+                    })),
+            )
+        } else {
+            let (label, tooltip) = if busy {
+                ("Queue message", "Queue message (Enter)")
+            } else {
+                ("Send", "Send (Enter)")
+            };
+            (
+                label,
+                Self::send_icon("send", tooltip)
+                    .disabled(empty_draft)
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        let result = view.send(window, cx);
+                        view.report(result, cx);
+                    })),
+            )
+        };
         let pending = thread.permissions.len() + thread.questions.len();
-        let page = v_flex().flex_1().min_h_0();
         let fresh = last_run.is_none()
             && thread.history.messages.is_empty()
             && self.before.is_none()
             && pending == 0
             && !busy;
-        let column = v_flex()
-            .w_full()
-            .max_w(px(800.))
-            .mx_auto()
+        // Keep the left rail clear of the centered text in narrow windows.
+        let transcript_width = (width - px(24.)).clamp(px(0.), px(800.));
+        let width = width.min(px(800.));
+        let scroll_to_end_visibility = (!fresh).then(|| {
+            window.use_keyed_state(
+                SharedString::from(format!("show-scroll-to-end-{}", thread.id)),
+                cx,
+                |_, _| false,
+            )
+        });
+        let show_scroll_to_end = self.before.is_some()
+            || scroll_to_end_visibility
+                .as_ref()
+                .is_some_and(|visible| *visible.read(cx));
+        let page = v_flex()
             .flex_1()
             .min_h_0()
-            .when(fresh, |column| column.justify_center())
+            .when(fresh, |page| page.justify_center())
+            .when(!fresh, |page| {
+                page.child(self.transcript(thread, transcript_width, window, cx))
+            })
+            .when_some(scroll_to_end_visibility, |page, visible| {
+                let history = self.history_scroll.clone();
+                page.on_children_prepainted(move |_, _, cx| {
+                    // The scroll handle has clamped the offset against the current layout.
+                    let next = !history_at_bottom(&history);
+                    if *visible.read(cx) != next {
+                        visible.update(cx, |visible, cx| {
+                            *visible = next;
+                            cx.notify();
+                        });
+                    }
+                })
+            })
+            .when(pending != 0, |page| {
+                page.child(
+                    div()
+                        .id("permissions")
+                        .w(width)
+                        .mx_auto()
+                        .px_5()
+                        .max_h(relative(0.30))
+                        .overflow_y_scroll()
+                        .children(
+                            thread
+                                .permissions
+                                .iter()
+                                .map(|r| Self::permission(thread, r, cx)),
+                        )
+                        .children(
+                            thread
+                                .questions
+                                .iter()
+                                .filter_map(|q| workspace.questions.get(&q.id).cloned()),
+                        ),
+                )
+            });
+        let column = v_flex()
+            .w(width)
+            .mx_auto()
+            .relative()
+            .when(show_scroll_to_end, |column| column.child(Self::scroll_to_end_button(cx)))
             .when(fresh, |column| {
                 column.child(
                     div()
@@ -1253,134 +1175,7 @@ impl Desktop {
                         .text_2xl()
                         .child("What should we build?"),
                 )
-            });
-        let column = column.when(!fresh, |column| column
-        .when(thread.history.older.is_some() || self.before.is_some(), |column| column.child(
-            h_flex()
-                .px_5()
-                .gap_2()
-                .when_some(thread.history.older.clone(), |row, older| {
-                    row.child(control!(
-                        "Older",
-                        Button::new("older").label("Older").on_click(cx.listener(
-                            move |view, _, _, cx| {
-                                view.before = Some(older.clone());
-                                let result = view.refresh();
-                                view.report(result, cx);
-                            }
-                        ))
-                    ))
-                })
-                .when(self.before.is_some(), |row| {
-                    row.child(control!(
-                        "Newest",
-                        Button::new("newest").label("Newest").on_click(cx.listener(
-                            |view, _, _, cx| {
-                                view.before = None;
-                                let result = view.refresh();
-                                view.report(result, cx);
-                            }
-                        ))
-                    ))
-                }),
-        ))
-        .child(
-            div()
-                .id("history")
-                .track_scroll(&self.history_scroll)
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .px_5()
-                .when(thread.history.messages.is_empty(), |history| {
-                    history.child(div().py_4().child(hint("Send a message to start this conversation.", cx)))
-                })
-                .children(thread.history.messages.iter().map(|item| {
-                    let message = &item.message;
-                    let role = match (&message.origin, message.role) {
-                        (Some(sender), _) => self
-                            .threads
-                            .iter()
-                            .find(|t| t.id == sender.thread_id)
-                            .map_or(sender.thread_id.0.as_str(), |t| t.name.as_str()),
-                        (None, Role::User) => "You",
-                        (None, Role::Assistant) => provider.as_str(),
-                    };
-                    let caption = item.files.as_ref().map_or(message.text.as_str(), |files| &files.caption);
-                    v_flex()
-                        .py_3()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(role.to_owned()),
-                        )
-                        .when(!caption.is_empty(), |row| row.child(control!(
-                            format!("{role}/{caption}"), caption.to_owned(),
-                        )))
-                        .when_some(item.files.as_ref(), |row, files| row.children(
-                            files.names.iter().enumerate().map(|(index, name)| self.sent_file(&thread.id, &message.id, index, name, cx))
-                        ))
-                        .when(item.files.as_ref().map_or(item.truncated, |files| files.truncated), |row| {
-                            let id = message.id.clone();
-                            row.child(control!(
-                                format!("expand/{id}"),
-                                Button::new(SharedString::from(format!("full-{id}")))
-                                    .label("Show full message")
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        if let Some(detail) = &mut view.current {
-                                            match view.runtime.read_message_body(&detail.id, &id) {
-                                                Ok(message) => {
-                                                    if let Some(item) = detail
-                                                        .history
-                                                        .messages
-                                                        .iter_mut()
-                                                        .find(|item| item.message.id == id)
-                                                    {
-                                                        if let Some(files) = &mut item.files {
-                                                            files.caption = message;
-                                                            files.truncated = false;
-                                                        } else {
-                                                            item.message.text = message;
-                                                            item.truncated = false;
-                                                        }
-                                                    }
-                                                }
-                                                Err(error) => view.error = Some(error.to_string()),
-                                            }
-                                            cx.notify();
-                                        }
-                                    })),
-                            ))
-                        })
-                }))
-                .when(self.before.is_none(), |history| {
-                    history.child(self.turn_activity(thread, cx))
-                }),
-        )
-        )
-        .when(pending != 0, |view| {
-            view.child(
-                div()
-                    .id("permissions")
-                    .px_5()
-                    .max_h(relative(0.30))
-                    .overflow_y_scroll()
-                    .children(
-                        thread
-                            .permissions
-                            .iter()
-                            .map(|r| Self::permission(thread, r, cx)),
-                    )
-                    .children(
-                        thread
-                            .questions
-                            .iter()
-                            .filter_map(|q| workspace.questions.get(&q.id).cloned()),
-                    ),
-            )
-        })
+            })
         .child(
             v_flex()
                 .on_drop(cx.listener(Self::drop_attachments))
@@ -1475,44 +1270,34 @@ impl Desktop {
                         .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
                             format!("status/{status}"), label(status)
                         ))))
-                        .when(
-                            thread.foreground_run.is_some()
-                                || (thread.queued_count > 0 && !thread.queue_held),
-                            |row| {
-                                let id = thread.id.clone();
-                                row.child(control!(
-                                    "Stop thread",
-                                    Button::new("stop-turn")
-                                        .label("Stop thread")
-                                        .tooltip("Stop this thread and its delegated work")
-                                        .on_click(cx.listener(move |v, _, _, cx| {
-                                            let result = v
-                                                .runtime
-                                                .stop_thread(
-                                                    CommandId(Uuid::new_v4().to_string()),
-                                                    id.clone(),
-                                                )
-                                                .map(|_| ());
-                                            v.report(result, cx);
-                                        }))
-                                ))
-                            },
-                        )
-                        .child(self.send_controls(
-                            attachments,
-                            if busy { "Queue message" } else { "Send" },
-                            Self::send_icon("send", if busy { "Queue message" } else { "Send" }).disabled(empty_draft)
-                                .on_click(cx.listener(|view, _, window, cx| {
-                                    let result = view.send(window, cx);
-                                    view.report(result, cx);
-                                })),
-                            cx,
-                        )),
+                        .child(self.send_controls(attachments, action_label, action_button, cx)),
                 ),
         )
         .child(div().mx_5().mb_2().text_xs().truncate().text_color(cx.theme().muted_foreground)
             .child(workspace.root.display().to_string()));
         page.child(column)
+    }
+
+    fn scroll_to_end_button(cx: &Context<Self>) -> Div {
+        h_flex()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(relative(1.))
+            .justify_center()
+            .pb_2()
+            .child(control!(
+                "Scroll to end",
+                Button::new("scroll-to-end")
+                    .size(px(30.))
+                    .p_0()
+                    .rounded(px(999.))
+                    .border_color(cx.theme().border)
+                    .shadow_sm()
+                    .block_mouse_except_scroll()
+                    .child(Icon::new(IconName::ArrowDown).with_size(px(16.)))
+                    .on_click(cx.listener(|view, _, _, cx| view.scroll_to_end(cx)))
+            ))
     }
 }
 
@@ -1520,6 +1305,31 @@ impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(all(feature = "qualification", target_os = "macos"))]
         crate::qualification::begin_frame(cx);
+
+        let clock_start = self
+            .current
+            .as_ref()
+            .filter(|_| !self.show_settings && self.before.is_none())
+            .and_then(|detail| detail.foreground_run.as_ref())
+            .filter(|run| {
+                matches!(
+                    run.status,
+                    huggler::RunStatus::Starting | huggler::RunStatus::Running
+                )
+            })
+            .and_then(|run| run.started_at_ms.map(|start| (run.id.clone(), start)));
+        self.turn_clock = match clock_start {
+            Some((id, _))
+                if self
+                    .turn_clock
+                    .as_ref()
+                    .is_some_and(|clock| clock.read(cx).run == id) =>
+            {
+                self.turn_clock.take()
+            }
+            Some((id, start)) => Some(cx.new(|cx| TurnClock::new(id, start, cx))),
+            None => None,
+        };
 
         if let Some(thread) = &self.current {
             let workspace = self
@@ -1548,7 +1358,9 @@ impl Render for Desktop {
         let viewport = f32::from(window.viewport_size().width);
         let narrow = window.viewport_size().width < NARROW_VIEWPORT_WIDTH;
         let changes_open = self.changes_sidebar.is_open(!narrow);
-        let left = self.navigation.fraction(true, window);
+        let navigation_default = self.current.is_none() || self.show_settings;
+        let navigation_open = self.navigation.is_open(navigation_default);
+        let left = self.navigation.fraction(navigation_default, window);
         let right = if self.current.is_some() && !self.show_settings {
             self.changes_sidebar.fraction(!narrow, window)
         } else {
@@ -1559,6 +1371,8 @@ impl Render for Desktop {
         let right_max = SidebarEdge::Right.max_width(viewport, narrow, self.navigation.width, left);
         let left_width = self.navigation.width.min(left_max);
         let right_width = self.changes_sidebar.width.min(right_max);
+        let conversation_width =
+            px(viewport - left_width * left - if narrow { 0. } else { right_width * right });
         div()
             .flex()
             .track_focus(&self.focus)
@@ -1643,14 +1457,14 @@ impl Render for Desktop {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(self.workspace_header(changes_open, cx))
+                    .child(self.workspace_header(navigation_open, changes_open, cx))
                     .child(if self.show_settings {
                         self.settings.clone().into_any_element()
                     } else {
                         match &self.current {
-                            Some(thread) => {
-                                self.conversation(thread, window, cx).into_any_element()
-                            }
+                            Some(thread) => self
+                                .conversation(thread, conversation_width, window, cx)
+                                .into_any_element(),
                             None => {
                                 self.launch_form(viewport - left_width * left < 800., window, cx)
                             }
