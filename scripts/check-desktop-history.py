@@ -215,8 +215,8 @@ def main():
             {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/Explain the result."},
             {"see": "Suggested reply"}, {"click": "Message"}, {"type": "My own question"},
             {"click": "Suggested reply"}, {"key": "tab"}, {"resize": [640, 440]},
-            {"click": "Show changes"}, {"see": "Resize changes"}, {"key": "cmd-l"},
-            {"absent": "Refresh changes"}, {"key": "cmd-right"},
+            {"click": "Show changes"}, {"see": "Changes tab"}, {"see": "Resize changes"}, {"key": "cmd-l"},
+            {"absent": "Changes tab"}, {"key": "cmd-right"},
             {"type": " about the tests"}, {"click": "Send"}, {"see": "You/My own question about the tests"},
         ], env)
     print("Native turn navigation, history paging, full message and suggested replies passed")

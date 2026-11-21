@@ -352,7 +352,7 @@ impl Desktop {
     ) -> huggler::Result<()> {
         if !self.workspaces.contains_key(id) {
             let root = self.runtime.thread_checkout(id)?;
-            let changes = cx.new(|_| Changes::new(root.clone()));
+            let changes = cx.new(|cx| Changes::new(root.clone(), window, cx));
             let draft = cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(2, 5)
@@ -777,6 +777,11 @@ impl Desktop {
                         .tooltip(action)
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.changes_sidebar.toggle(changes_open);
+                            if !changes_open && let Some(thread) = &view.current {
+                                view.workspaces[&thread.id]
+                                    .changes
+                                    .update(cx, |panel, cx| panel.refresh(cx));
+                            }
                             cx.notify();
                         }))
                 ))
@@ -1405,7 +1410,7 @@ impl Render for Desktop {
                                 .flex_shrink_0()
                                 .bg(cx.theme().sidebar)
                                 .border_r_1()
-                                .border_color(cx.theme().border)
+                                .border_color(cx.theme().sidebar_border)
                                 .p_3()
                                 .gap_3()
                                 .child(
@@ -1448,7 +1453,13 @@ impl Render for Desktop {
                                                 }))
                                         )),
                                 )
-                                .child(div().w_full().h_px().flex_shrink_0().bg(cx.theme().border))
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_px()
+                                        .flex_shrink_0()
+                                        .bg(cx.theme().sidebar_border),
+                                )
                                 .child(self.conversation_sidebar(left_width, cx)),
                         ),
                 )
@@ -1493,22 +1504,44 @@ impl Render for Desktop {
                     .as_ref()
                     .filter(|_| right > 0. && !self.show_settings),
                 |layout, thread| {
+                    let tabs = h_flex()
+                        .flex_shrink_0()
+                        .h_10()
+                        .px_2()
+                        .gap_1()
+                        .child(control!(
+                            "Changes tab",
+                            label("Changes")
+                                .px_2p5()
+                                .py_1()
+                                .rounded_lg()
+                                .bg(cx.theme().sidebar_accent)
+                                .text_color(cx.theme().sidebar_accent_foreground)
+                        ));
                     layout.child(
                         div()
                             .w(px(right_width * right))
                             .overflow_hidden()
                             .flex_shrink_0()
+                            // Keep file clicks inside the panel even when it covers the workspace.
+                            .occlude()
                             .when(narrow, |panel| {
-                                panel.absolute().right_0().top_10().bottom_0().occlude()
+                                panel.absolute().right_0().top_10().bottom_0()
                             })
                             .child(
-                                div()
+                                v_flex()
                                     .w(px(right_width))
                                     .h_full()
                                     .border_l_1()
-                                    .border_color(cx.theme().border)
+                                    .border_color(cx.theme().sidebar_border)
                                     .bg(cx.theme().sidebar)
-                                    .child(self.workspaces[&thread.id].changes.clone()),
+                                    .child(tabs)
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h_0()
+                                            .child(self.workspaces[&thread.id].changes.clone()),
+                                    ),
                             ),
                     )
                 },

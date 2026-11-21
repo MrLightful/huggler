@@ -90,6 +90,7 @@ fn main() -> Result<()> {
     app.run(move |cx| {
         gpui_component::init(cx);
         fonts::init(cx);
+        ui::init_theme(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),

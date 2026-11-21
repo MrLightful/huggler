@@ -15,7 +15,8 @@ def check(binary):
         checkout = root / "checkout"
         state = root / "state"
         name = "answer [v1].txt"
-        subprocess.run(["git", "init", "-q", checkout], check=True)
+        committed_name = "branch-only.txt"
+        subprocess.run(["git", "init", "-q", "-b", "main", checkout], check=True)
 
         def git(*args):
             return subprocess.check_output(["git", "-C", checkout, *args], text=True).strip()
@@ -24,6 +25,8 @@ def check(binary):
         git("config", "user.email", "fixture@example.test")
         git("config", "commit.gpgsign", "false")
         git("config", "core.hooksPath", os.devnull)
+        git("commit", "--allow-empty", "-qm", "Base for review")
+        git("switch", "-qc", "topic")
         env = isolated_env(root)
         # A host launched from another repository must still run the provider
         # against each conversation's selected worktree.
@@ -39,10 +42,11 @@ def check(binary):
             {"center_x": ["Resize conversations", 256]}, {"center_x": ["Resize changes", 820]},
             {"drag_x": ["Resize conversations", 40]}, {"center_x": ["Resize conversations", 296]},
             {"drag_x": ["Resize changes", 40]}, {"center_x": ["Resize changes", 860]},
-            {"click": "Hide changes"}, {"absent": "Refresh changes"},
+            {"see": "Changes tab"}, {"absent": "Refresh changes"},
+            {"click": "Hide changes"}, {"absent": "Changes tab"},
             {"drag_x": ["Resize conversations", 200]}, {"center_x": ["Resize conversations", 496]},
             {"drag_x": ["Resize conversations", -200]}, {"center_x": ["Resize conversations", 296]},
-            {"click": "Show changes"}, {"center_x": ["Resize changes", 860]},
+            {"click": "Show changes"}, {"see": "Changes tab"}, {"center_x": ["Resize changes", 860]},
             {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
             {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open in"]},
@@ -68,7 +72,8 @@ def check(binary):
             *send_message("Use a single line."), {"see": "Codex/Corrected the answer."},
         ], env)
         assert (checkout / name).read_text() == "42\n"
-        git("add", "--", name)
+        (checkout / committed_name).write_text("committed on topic\n")
+        git("add", "--", name, committed_name)
         git("commit", "-qm", "Produce the expected answer")
         (checkout / name).write_text("staged change\n")
         git("add", "--", name)
@@ -80,10 +85,12 @@ def check(binary):
             {"right_of": ["Create PR", "Open in"]},
             {"right_of": ["Show changes", "Create PR"]},
             {"absent": f"Changed/{name}"}, {"click": "Show changes"}, {"see": f"Changed/{name}"},
+            {"click": f"Toggle diff/{name}"}, {"see": f"Diff/{name}"},
+            {"click": f"Toggle diff/{name}"}, {"absent": f"Diff/{name}"},
             {"click": "Hide changes"}, {"resize": [1120, 740]}, {"click": "Show changes"},
             {"click": "Message"}, {"type": "Wait for my next instruction."},
             {"click": "Create"}, *launch_thread(other, "Review"),
-            {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
+            {"see": "No changes"}, {"absent": f"Changed/{name}"},
             {"click": "thread/Implementation"}, {"see": f"Changed/{name}"}, {"click": "Send"},
             {"see": "status/Running"}, {"click": "Message"}, {"type": "Review the staged result."},
             {"see": "Stop thread"}, {"absent": "Queue message"}, {"key": "enter"}, {"see": "1 queued message"},
@@ -96,12 +103,42 @@ def check(binary):
         ], env)
         assert git("show", f":{name}") == "staged change"
         assert (checkout / name).read_text() == "later edit\n"
+        other_name = "draft.txt"
+        (checkout / other_name).write_text("keep this\n")
         run_window(binary, state, [
             {"click": "Show conversations"}, {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
             {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review"),
+            {"see": f"Changed/{committed_name}"},
+            {"click": "All changes"}, {"see": "Change filter/Uncommitted files"},
+            {"key": "down"}, {"key": "enter"},
             {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
-            {"click": "thread/Implementation"}, {"click": "Refresh changes"}, {"see": f"Changed/{name}"},
+            {"click": "thread/Implementation"}, {"see": f"Changed/{name}"},
+            {"resize": [1120, 740]}, {"see": "All changes"}, {"see": f"Changed/{other_name}"},
+            {"see": f"Changed/{committed_name}"}, {"hover": f"Changed/{committed_name}"},
+            {"absent": f"Revert/{committed_name}"},
+            {"click": f"Toggle diff/{name}"}, {"see": f"Diff/{name}"},
+            {"click": f"Toggle diff/{name}"}, {"absent": f"Diff/{name}"},
+            {"click": f"Changed/{name}"}, {"see": f"Diff/{name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"see": "Uncommitted files"}, {"see": f"Diff/{name}"},
+            {"absent": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+            {"click": "Uncommitted files"}, {"click": "Change filter/All changes"},
+            {"see": f"Changed/{committed_name}"}, {"see": f"Diff/{name}"},
+            {"hover": f"Changed/{name}"}, {"click": f"Revert/{name}"},
+            {"see": "Confirm file revert"}, {"key": "escape"},
+            {"absent": "Confirm file revert"},
+            {"file_size": [str(checkout / name), len("later edit\n")]},
+            {"hover": f"Changed/{name}"}, {"click": f"Revert/{name}"},
+            {"click": "Confirm file revert"}, {"see": f"Changed/{name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"absent": f"Changed/{name}"}, {"see": f"Changed/{other_name}"},
+            {"file_size": [str(checkout / other_name), len("keep this\n")]},
+            {"hover": f"Changed/{other_name}"}, {"click": f"Revert/{other_name}"},
+            {"click": "Confirm file revert"}, {"see": "Working tree clean"},
         ], env)
+        assert git("status", "--short") == ""
+        assert (checkout / name).read_text() == "42\n"
+        assert not (checkout / other_name).exists()
     print("Native conversation, queue and sidebar file list passed with a scripted Codex peer")
 
 
