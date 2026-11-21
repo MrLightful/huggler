@@ -10,12 +10,20 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct File {
     pub path: PathBuf,
-    pub staged: bool,
+    pub group: ChangeGroup,
     pub status: char,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeGroup {
+    Conflict,
+    Unstaged,
+    Staged,
 }
 
 pub struct Review {
     pub branch: String,
+    pub merging: bool,
     pub files: Vec<File>,
     pub selected: Option<File>,
     pub patch: String,
@@ -29,7 +37,14 @@ fn git(root: &Path) -> Command {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .args(["--no-pager", "--literal-pathspecs"])
+        // Each conversation already owns a checkout root. Git's normal
+        // discovery could walk into a parent repository if this one disappears.
+        .args([
+            "--git-dir=.git",
+            "--work-tree=.",
+            "--no-pager",
+            "--literal-pathspecs",
+        ])
         .stdin(Stdio::null());
     cmd
 }
@@ -233,12 +248,24 @@ pub fn read(root: &Path, selection: Option<&File>) -> Result<Review> {
             record.len() > 3 && record[2] == b' ',
             "invalid Git status record"
         );
-        for (column, staged) in [(0, true), (1, false)] {
+        let path = file_path(&record[3..])?;
+        if matches!(
+            &record[..2],
+            b"DD" | b"AU" | b"UD" | b"UA" | b"DU" | b"AA" | b"UU"
+        ) {
+            files.push(File {
+                path,
+                group: ChangeGroup::Conflict,
+                status: 'U',
+            });
+            continue;
+        }
+        for (column, group) in [(0, ChangeGroup::Staged), (1, ChangeGroup::Unstaged)] {
             let status = record[column] as char;
-            if status != ' ' && !(staged && status == '?') {
+            if status != ' ' && !(group == ChangeGroup::Staged && status == '?') {
                 files.push(File {
-                    path: file_path(&record[3..])?,
-                    staged,
+                    path: path.clone(),
+                    group,
                     status,
                 });
             }
@@ -248,7 +275,7 @@ pub fn read(root: &Path, selection: Option<&File>) -> Result<Review> {
         .and_then(|old| {
             files
                 .iter()
-                .find(|f| f.path == old.path && f.staged == old.staged)
+                .find(|f| f.path == old.path && f.group == old.group)
                 .or_else(|| files.iter().find(|f| f.path == old.path))
         })
         .or_else(|| files.first())
@@ -256,8 +283,13 @@ pub fn read(root: &Path, selection: Option<&File>) -> Result<Review> {
     let patch = selected.as_ref().map_or_else(String::new, |file| {
         preview(root, file).unwrap_or_else(|error| format!("Preview unavailable: {error}"))
     });
+    // Git keeps this file in the individual worktree's metadata, including
+    // when the merge result has the same tree as its first parent.
+    let merge_head = execute(git(root).args(["rev-parse", "--git-path", "MERGE_HEAD"]))?;
+    let merge_head = file_path(merge_head.strip_suffix(b"\n").unwrap_or(&merge_head))?;
     Ok(Review {
         branch: String::from_utf8_lossy(header).into_owned(),
+        merging: root.join(merge_head).try_exists()?,
         files,
         selected,
         patch,
@@ -274,7 +306,7 @@ fn preview(root: &Path, file: &File) -> Result<String> {
         "--no-color",
         "--no-renames",
     ]);
-    if file.staged {
+    if file.group == ChangeGroup::Staged {
         cmd.arg("--cached");
     }
     let new_file = file.status == '?';

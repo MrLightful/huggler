@@ -25,17 +25,28 @@ def check(binary):
         git("config", "commit.gpgsign", "false")
         git("config", "core.hooksPath", os.devnull)
         env = isolated_env(root)
+        # A host launched from another repository must still run the provider
+        # and shell checks against each conversation's selected worktree.
+        subprocess.run(["git", "init", "-q", root], check=True)
+        env.update(GIT_DIR=str(root / ".git"), GIT_WORK_TREE=str(root),
+                   GIT_COMMON_DIR=str(root / ".git"), GIT_INDEX_FILE=str(root / ".git/index"))
         env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
         command = """value=$(cat 'answer [v1].txt'); if [ "$value" = 42 ]; then echo OK; else echo "expected 42, got $value"; exit 7; fi"""
         run_window(binary, state, [
             *launch_thread(checkout, "Implementation"),
+            {"see": "Ready/Implementation/New conversation"},
             {"click": "Message"}, {"type": "Plan the answer file."}, {"click": "Send plan"},
             {"see": "Codex/Create the answer file and check its value."},
             *send_message("Create the answer file."),
-            {"see": "writing/Checking the requested filename."}, {"click": "Command 1 output"},
+            {"see": "writing/Checking the requested filename. I will confirm the path with you before "
+                    "creating the answer file in this checkout."}, {"click": "Command 1 output"},
             {"see": "command-output/Checkout ready"},
-            {"click": "answer/filename"}, {"type": name}, {"click": "Submit answers"},
+            {"see": "Needs attention/Implementation/Answer requested"},
+            {"click": "answer/filename"}, {"type": name}, {"click": "New conversation"},
+            {"click": "thread/Implementation"}, {"click": "Submit answers"},
+            {"see": "Needs attention/Implementation/Approval requested"},
             {"click": "permission/allow_once"}, {"see": "Codex/Created the answer file."},
+            {"see": "Ready/Implementation/Completed"},
             {"click": "Message"}, {"type": "Use a single line."},
             {"click": "Changes"}, {"see": f"Unstaged/{name}"}, {"contains": "\n+41\n"}, {"click": "Stage file"},
             {"see": f"Staged/{name}"}, {"click": "Unstage file"}, {"see": f"Unstaged/{name}"},
@@ -70,8 +81,12 @@ def check(binary):
             {"click": "Conversation"}, {"click": "Send"}, {"see": "You/Wait for my next instruction."},
             {"see": "status/Running"}, {"click": "Message"}, {"type": "Review the staged result."},
             {"click": "Queue message"}, {"see": "1 queued message"},
+            {"see": "section/Working/1"}, {"see": "Working/Implementation/Running"},
+            {"click": "thread/Review"}, {"absent": "thread/Implementation"}, {"click": "Show working"},
+            {"see": "Working/Implementation/Running"}, {"click": "Hide working"}, {"absent": "thread/Implementation"},
+            {"click": "Show working"}, {"click": "thread/Implementation"},
             {"see": "writing/Waiting for your instruction."}, {"click": "Stop thread"},
-            {"see": "1 queued message · paused"},
+            {"see": "1 queued message · paused"}, {"see": "Needs attention/Implementation/Queue paused"},
         ], env)
         assert git("log", "-1", "--format=%s") == "Commit only the index"
         assert git("show", f"HEAD:{name}") == "staged change"
@@ -85,8 +100,14 @@ def check(binary):
         base = git("rev-parse", "HEAD")
         branch = "feature/isolated-review"
         run_window(binary, state, [
-            {"see": "1 queued message · paused"}, {"click": "Resume queue"},
-            {"see": "Codex/Reviewed the staged result."},
+            {"see": "Needs attention/Implementation/Queue paused"}, {"click": "Resume queue"},
+            {"see": "Codex/Reviewed the staged result."}, {"see": "Ready/Implementation/Completed"},
+            {"click": "thread/Review"}, *send_message("Watch for the review signal."),
+            {"see": "Working/Review/Running"}, {"click": "thread/Implementation"}, {"see": "Show working"},
+            {"click": "Checks"}, {"click": "Check command"},
+            {"type": "touch .git/huggler-review-signal"}, {"click": "Run check"},
+            {"see": "Needs attention/Review/Run failed"}, {"absent": "section/Working/1"},
+            {"see": "check/Passed · exit 0"},
             {"click": "New conversation"}, *launch_thread(checkout, "Isolated review", branch=branch),
             {"click": "Changes"}, {"see": "Working tree clean"},
             {"click": "Checks"}, {"click": "Check command"},
@@ -103,6 +124,34 @@ def check(binary):
         assert (checkout / name).read_text() == "later edit\n"
         assert subprocess.check_output(["git", "-C", origin, "show", f"{branch}:review.txt"], text=True) == "verified\n"
         assert git("rev-parse", f"{branch}@{{upstream}}") == git("rev-parse", branch)
+        # Resolve a real add/add conflict alongside an independently staged file.
+        conflict = checkout / "conflict.txt"
+        git("switch", "-qc", "other")
+        conflict.write_text("other\n")
+        git("add", "--", conflict.name)
+        git("commit", "-qm", "Other version")
+        git("switch", "-q", original.removeprefix("refs/heads/"))
+        conflict.write_text("current\n")
+        git("add", "--", conflict.name)
+        git("commit", "-qm", "Current version")
+        merge = subprocess.run(["git", "-C", checkout, "merge", "other"], capture_output=True)
+        assert merge.returncode == 1 and git("ls-files", "-u", "--", conflict.name)
+        git("add", "--", name)
+        conflict.write_text("current\n")
+        run_window(binary, state, [
+            {"see": "Needs attention/Review/Run failed"},
+            {"click": "thread/Implementation"}, {"click": "Changes"},
+            {"click": "Conflicts/conflict.txt"}, {"see": "Stage resolution"}, {"see": f"Staged/{name}"},
+            {"absent": "Staged/conflict.txt"}, {"absent": "Unstaged/conflict.txt"},
+            {"click": "Commit message"}, {"type": "Keep current version"}, {"click": "Commit merge"},
+            {"click": f"Staged/{name}"}, {"click": "Unstage file"}, {"see": f"Unstaged/{name}"},
+            {"click": "Conflicts/conflict.txt"}, {"click": "Stage resolution"},
+            {"absent": "Conflicts/conflict.txt"}, {"absent": "Staged/conflict.txt"},
+            {"click": "Commit merge"}, {"see": "Commit staged"}, {"see": f"Unstaged/{name}"},
+        ], env)
+        assert git("log", "-1", "--format=%s") == "Keep current version"
+        assert git("rev-parse", "HEAD^{tree}") == git("rev-parse", "HEAD^1^{tree}")
+        assert git("rev-parse", "HEAD^2") == git("rev-parse", "other")
     print("Native coding cycle passed with a scripted Codex peer")
 
 

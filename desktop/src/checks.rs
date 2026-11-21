@@ -1,10 +1,13 @@
-use crate::FollowUp;
+use crate::{
+    FollowUp,
+    ui::{hint, label},
+};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     v_flex,
 };
 use huggler::{
@@ -32,12 +35,17 @@ impl Checks {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let command = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. cargo test"));
+        cx.subscribe(&command, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             runtime,
             thread,
-            command: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("Command to run in this checkout")
-            }),
+            command,
             last_command: String::new(),
             output: String::new(),
             status: String::new(),
@@ -167,7 +175,7 @@ impl Render for Checks {
         let run = Button::new("run-check")
             .primary()
             .label("Run check")
-            .disabled(running)
+            .disabled(running || self.command.read(cx).value().trim().is_empty())
             .on_click(cx.listener(|view, _, _, cx| view.run(cx)));
         let controls = h_flex()
             .gap_2()
@@ -180,7 +188,7 @@ impl Render for Checks {
             .child(control!("Run check", run))
             .when(running, |row| {
                 let stop = Button::new("stop-check")
-                    .label("Stop")
+                    .label("Stop check")
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.finish("Stopped".into());
                         view.poll = None;
@@ -215,9 +223,17 @@ impl Render for Checks {
             .min_h_0()
             .p_4()
             .gap_2()
-            .child(div().text_sm().child("Shell command"))
+            .child(label("Shell command"))
             .child(controls)
-            .child(div().text_sm().child(self.last_command.clone()))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .pt_2()
+                    .child(label("Output"))
+                    .when(!self.last_command.is_empty(), |row| {
+                        row.child(hint(self.last_command.clone(), cx).min_w_0().truncate())
+                    }),
+            )
             .child(
                 div()
                     .id("check-output")
@@ -229,6 +245,9 @@ impl Render for Checks {
                     .bg(cx.theme().sidebar)
                     .font_family(cx.theme().mono_font_family.clone())
                     .text_sm()
+                    .when(self.last_command.is_empty(), |pane| {
+                        pane.child(hint("Run a command to see its output.", cx))
+                    })
                     .child(control!(
                         format!("output/{}", self.output),
                         self.output.clone()

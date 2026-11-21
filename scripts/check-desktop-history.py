@@ -31,6 +31,9 @@ def main():
             {"click": "Newest"}, {"see": "Codex/Answer 999"},
             {"click": "Search messages"}, {"type": "unique ending"}, {"click": "Search"},
             {"see": "expand/5"}, {"click": "expand/5"}, {"see": "Codex/" + long_message},
+            {"click": "Clear search"}, {"see": "Codex/Answer 999"}, {"absent": "Clear search"},
+            {"click": "Search messages"}, {"type": "Answer 732"}, {"key": "enter"},
+            {"see": "Codex/Answer 732"}, {"absent": "Codex/Answer 999"},
         ]
         run_window(executable, state, steps, os.environ)
         env = dict(os.environ, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"),

@@ -16,7 +16,6 @@ use crate::{
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
-    process::Command as Process,
     sync::{Arc, Mutex},
 };
 use tokio::{
@@ -463,9 +462,7 @@ impl Huggler {
 
     /// Resolve the enclosing Git checkout and store its absolute working directory.
     pub fn open_project(&self, path: impl AsRef<Path>) -> Result<Project> {
-        let output = Process::new("git")
-            .arg("-C")
-            .arg(path.as_ref())
+        let output = crate::worktree::command(path.as_ref())
             .args(["rev-parse", "--show-toplevel"])
             .output()?;
         if !output.status.success() {
@@ -473,7 +470,7 @@ impl Huggler {
         }
         let path = std::str::from_utf8(&output.stdout)
             .map_err(|_| Error::Invalid("workspace path requires UTF-8".into()))?;
-        let root = Path::new(path.trim_end_matches(['\r', '\n'])).canonicalize()?;
+        let root = Path::new(path.strip_suffix('\n').unwrap_or(path)).canonicalize()?;
         self.shared.access(|db| db.project(&root))
     }
 
@@ -721,6 +718,27 @@ impl Huggler {
 
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {
         self.shared.access(|db| db.threads_after(0))
+    }
+
+    /// Read current activity across conversations without loading messages or transcripts.
+    pub fn conversation_list(&self) -> Result<ConversationList> {
+        self.shared.access(|db| db.conversation_list())
+    }
+
+    /// Wait until the list may have changed. Pass the revision from the previous snapshot.
+    pub async fn wait_for_conversation_list(&self, revision: i64) -> Result<ConversationList> {
+        let mut changed = self.shared.changed.subscribe();
+        loop {
+            let snapshot = self.shared.access(|db| {
+                (db.conversation_revision()? != revision)
+                    .then(|| db.conversation_list())
+                    .transpose()
+            })?;
+            if let Some(snapshot) = snapshot {
+                return Ok(snapshot);
+            }
+            changed.changed().await.map_err(|_| Error::Closed)?;
+        }
     }
 
     /// Wait for conversations created after the last thread seen in creation order.

@@ -2,10 +2,12 @@
 """Deterministic app-server peer for the desktop edit, test and commit scenario."""
 import json
 from pathlib import Path
+import subprocess
 import sys
+import time
+from uuid import uuid4
 
 file = Path("answer [v1].txt")
-session = "coding-cycle"
 
 
 def emit(**frame):
@@ -38,9 +40,10 @@ for line in sys.stdin:
         complete("Created the answer file.")
     elif method in ("thread/start", "thread/resume"):
         assert Path(params["cwd"]) == Path.cwd()
+        assert Path(subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")) == Path.cwd()
         assert params["approvalPolicy"] == "on-request"
-        if method == "thread/resume":
-            assert params["threadId"] == session
+        session = params["threadId"] if method == "thread/resume" else str(uuid4())
         sandbox = params["sandbox"]
         emit(id=frame["id"], result={"thread": {"id": session}, "model": "fixture-model"})
     elif method == "turn/start":
@@ -57,7 +60,10 @@ for line in sys.stdin:
         turn = "revise" if file.exists() else "implement"
         emit(id=frame["id"], result={"turn": {"id": turn}})
         if prompt == "Create the answer file.":
-            notify("item/agentMessage/delta", delta="Checking the requested filename.")
+            text = ("Checking the requested filename. I will confirm the path with you before "
+                    "creating the answer file in this checkout.")
+            for character in text:
+                notify("item/agentMessage/delta", delta=character)
             notify("item/commandExecution/outputDelta", itemId="inspect", delta="Checkout ready")
             emit(id="confirm", method="item/tool/requestUserInput", params={
                 "threadId": session, "turnId": turn, "questions": [
@@ -66,6 +72,13 @@ for line in sys.stdin:
             notify("item/agentMessage/delta", delta="Waiting for your instruction.")
         elif prompt == "Review the staged result.":
             complete("Reviewed the staged result.")
+        elif prompt == "Watch for the review signal.":
+            deadline = time.monotonic() + 30
+            while not Path(".git/huggler-review-signal").exists():
+                assert time.monotonic() < deadline, "Review signal timed out"
+                time.sleep(.05)
+            emit(method="turn/completed", params={"threadId": session, "turn": {
+                "id": turn, "status": "failed", "error": {"message": "Review check failed"}}})
         else:
             assert prompt.startswith("Use a single line.\n\n")
             assert "Failed · exit 7" in prompt and "expected 42, got 41" in prompt

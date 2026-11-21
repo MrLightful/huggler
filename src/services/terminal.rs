@@ -27,9 +27,10 @@ impl ServiceHost for TerminalHost {
             return Err(Error::Unsupported("expected terminal".into()));
         };
         let (mut reader, writer) = std::io::pipe()?;
-        let child = Command::new(executable)
+        let mut command = Command::new(executable);
+        crate::worktree::set_checkout(&mut command, checkout);
+        let child = command
             .args(args)
-            .current_dir(checkout)
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(writer.try_clone()?)

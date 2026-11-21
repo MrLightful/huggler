@@ -1,13 +1,14 @@
 use crate::{
     FollowUp,
-    git::{self, File, Operation, Review},
+    git::{self, ChangeGroup, File, Operation, Review},
+    ui::{field, hint, label},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Selectable,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{InputEvent, InputState},
     v_flex,
 };
 use std::path::PathBuf;
@@ -25,9 +26,17 @@ impl EventEmitter<FollowUp> for Changes {}
 
 impl Changes {
     pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let message =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Summarize the staged changes"));
+        cx.subscribe(&message, |_, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             root,
-            message: cx.new(|cx| InputState::new(window, cx).placeholder("Commit message")),
+            message,
             busy: false,
             review: None,
             error: None,
@@ -98,9 +107,12 @@ impl Changes {
             .id("change-files")
             .max_h(relative(0.28))
             .overflow_y_scroll();
-        for staged in [false, true] {
-            let section = if staged { "Staged" } else { "Unstaged" };
-            let files: Vec<_> = review.files.iter().filter(|f| f.staged == staged).collect();
+        for (group, section) in [
+            (ChangeGroup::Conflict, "Conflicts"),
+            (ChangeGroup::Unstaged, "Unstaged"),
+            (ChangeGroup::Staged, "Staged"),
+        ] {
+            let files: Vec<_> = review.files.iter().filter(|f| f.group == group).collect();
             if files.is_empty() {
                 continue;
             }
@@ -112,12 +124,26 @@ impl Changes {
             );
             for (i, file) in files.into_iter().enumerate() {
                 let name = file.path.to_string_lossy();
+                let status = match file.status {
+                    '?' => "Untracked".to_owned(),
+                    'M' => "Modified".to_owned(),
+                    'A' => "Added".to_owned(),
+                    'D' => "Deleted".to_owned(),
+                    'T' => "Type changed".to_owned(),
+                    'U' => "Unmerged".to_owned(),
+                    other => other.to_string(),
+                };
                 let selection = file.clone();
                 list = list.child(control!(
                     format!("{section}/{name}"),
                     Button::new(SharedString::from(format!("{section}-{i}")))
                         .ghost()
-                        .label(format!("{}   {name}", file.status))
+                        .compact()
+                        .w_full()
+                        .justify_start()
+                        .child(div().min_w_0().truncate().child(name.to_string()))
+                        .child(hint(status, cx))
+                        .tooltip(name.to_string())
                         .selected(review.selected.as_ref() == Some(file))
                         .disabled(self.busy)
                         .on_click(cx.listener(move |view, _, w, cx| view.run(
@@ -136,7 +162,15 @@ impl Changes {
 impl Render for Changes {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let review = self.review.as_ref();
-        let staged = review.map_or(0, |r| r.files.iter().filter(|f| f.staged).count());
+        let staged = review.map_or(0, |r| {
+            r.files
+                .iter()
+                .filter(|f| f.group == ChangeGroup::Staged)
+                .count()
+        });
+        let conflicts =
+            review.is_some_and(|r| r.files.iter().any(|f| f.group == ChangeGroup::Conflict));
+        let merging = review.is_some_and(|r| r.merging);
         let theme = cx.theme();
         v_flex()
             .size_full()
@@ -148,10 +182,13 @@ impl Render for Changes {
                     .gap_2()
                     .justify_between()
                     .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child(review.map_or("Reading checkout…", |r| &r.branch).to_owned()),
+                        div().flex_1().min_w_0().child(label("Working tree")).child(
+                            hint(
+                                review.map_or("Reading checkout…", |r| &r.branch).to_owned(),
+                                cx,
+                            )
+                            .truncate(),
+                        ),
                     )
                     .child(control!(
                         "Refresh changes",
@@ -164,28 +201,36 @@ impl Render for Changes {
             .when_some(review, |panel, review| {
                 panel
                     .child(self.file_list(review, cx))
-                    .when(review.files.is_empty(), |panel| {
+                    .when(conflicts, |panel| panel.child(hint("Resolve each conflict in the checkout and stage its resolution before committing.", cx)))
+                    .when(merging && !conflicts, |panel| panel.child(hint("Merge in progress. Enter a message to commit the merge.", cx)))
+                    .when(review.files.is_empty() && !merging, |panel| {
                         panel.child(control!("Working tree clean", "Working tree clean"))
                     })
             })
             .when_some(review.and_then(|r| r.selected.as_ref()), |panel, file| {
                 let file = file.clone();
                 let path = file.path.display().to_string();
-                let toggle = if file.staged {
-                    "Unstage file"
-                } else {
-                    "Stage file"
+                let toggle = match file.group {
+                    ChangeGroup::Staged => "Unstage file",
+                    ChangeGroup::Unstaged => "Stage file",
+                    ChangeGroup::Conflict => "Stage resolution",
                 };
                 panel.child(
                     h_flex()
                         .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(label(path.clone()).truncate()),
+                        )
                         .child(control!(
                             toggle,
                             Button::new("toggle-stage")
                                 .label(toggle)
                                 .disabled(self.busy)
                                 .on_click(cx.listener(move |v, _, w, cx| {
-                                    let op = if file.staged {
+                                    let op = if file.group == ChangeGroup::Staged {
                                         Operation::Unstage(file.clone())
                                     } else {
                                         Operation::Stage(file.clone())
@@ -197,6 +242,7 @@ impl Render for Changes {
                             "Request revision",
                             Button::new("revision")
                                 .ghost()
+                                .compact()
                                 .label("Request revision")
                                 .disabled(self.busy)
                                 .on_click(cx.listener(move |_, _, _, cx| {
@@ -211,8 +257,9 @@ impl Render for Changes {
                     .flex_1()
                     .min_h_0()
                     .overflow_scroll()
-                    .bg(theme.sidebar)
-                    .rounded_md()
+                    .when(review.is_some_and(|r| r.selected.is_some()), |patch| {
+                        patch.bg(theme.sidebar).rounded_md()
+                    })
                     .p_2()
                     .font_family(theme.mono_font_family.clone())
                     .text_sm()
@@ -252,19 +299,26 @@ impl Render for Changes {
             })
             .child(
                 h_flex()
+                    .items_end()
+                    .flex_shrink_0()
                     .gap_2()
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(control!("Commit message", Input::new(&self.message))),
+                            .child(field("Commit message", &self.message)),
                     )
                     .child(control!(
-                        "Commit staged",
+                        if merging { "Commit merge" } else { "Commit staged" },
                         Button::new("commit")
                             .primary()
-                            .label(format!("Commit staged ({staged})"))
-                            .disabled(self.busy || staged == 0)
+                            .label(if merging { "Commit merge".to_owned() } else { format!("Commit staged ({staged})") })
+                            .disabled(
+                                self.busy
+                                    || (staged == 0 && !merging)
+                                    || conflicts
+                                    || self.message.read(cx).value().trim().is_empty()
+                            )
                             .on_click(cx.listener(|v, _, w, cx| {
                                 let msg = v.message.read(cx).value().to_string();
                                 v.run(Operation::Commit(msg), None, w, cx);

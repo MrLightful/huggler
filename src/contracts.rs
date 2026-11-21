@@ -468,6 +468,9 @@ pub struct ConversationDetail {
     pub id: ThreadId,
     pub name: String,
     pub provider_instance: ProviderInstanceId,
+    /// Model requested for subsequent turns. None uses the provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub latest_run: Option<Run>,
     /// Run holding the thread's execution slot, even when later messages are queued.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -493,6 +496,27 @@ pub struct ConversationDetail {
 pub struct ThreadSummary {
     pub id: ThreadId,
     pub name: String,
+}
+
+/// Lightweight activity for a conversation, including work outside the foreground turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConversationSummary {
+    pub id: ThreadId,
+    pub name: String,
+    /// Foreground run, otherwise queued work, otherwise the most recent delivered run.
+    pub status: Option<RunStatus>,
+    pub needs_approval: bool,
+    pub needs_answer: bool,
+    pub queue_held: bool,
+    pub active_children: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConversationList {
+    /// Invalidation cursor scoped to this state database.
+    pub revision: i64,
+    /// Most recent conversation activity first. Output fragments do not reorder rows.
+    pub threads: Vec<ConversationSummary>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

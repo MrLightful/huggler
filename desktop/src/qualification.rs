@@ -16,6 +16,7 @@ pub enum Step {
     Click(String),
     Resize([u16; 2]),
     Type(String),
+    Key(String),
     See(String),
     Contains(String),
     Absent(String),
@@ -86,6 +87,10 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             }
             true
         }
+        Step::Key(key) => window.dispatch_keystroke(
+            Keystroke::parse(key).expect("valid qualification keystroke"),
+            cx,
+        ),
         Step::Type(value) => window.dispatch_keystroke(
             Keystroke {
                 key: "text".into(),

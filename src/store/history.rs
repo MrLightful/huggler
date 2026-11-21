@@ -73,6 +73,7 @@ impl Database {
         tx.execute("DELETE FROM run WHERE thread_id=?", [&thread.0])?;
         tx.execute("DELETE FROM remote_delivery WHERE run_id IS NULL AND grant_id NOT IN (SELECT id FROM remote_grant)", [])?;
         tx.execute("DELETE FROM thread WHERE id=?", [&thread.0])?;
+        mark_conversation_changed(&tx, thread)?;
         tx.commit()?;
         Ok(())
     }
@@ -247,14 +248,13 @@ impl Database {
     }
 
     fn streaming_text(&self, thread: &ThreadId, run: &RunId) -> Result<String> {
-        // Limit the index scan as well as the returned text. A paint of an active
-        // turn should cost the same on a new thread and one with years of history.
+        // Walk the run_output_delta index backwards until the preview is full.
         const LIMIT: usize = 4096;
         let mut statement = self.db.prepare(
             "SELECT substr(json_extract(change,'$.text'), -4096)
-             FROM (SELECT sequence, change FROM event WHERE thread_id=?
-                   ORDER BY sequence DESC LIMIT 96)
-             WHERE json_extract(change,'$.type')='output_delta'
+             FROM event WHERE thread_id=?
+               AND json_extract(change,'$.type')='output_delta'
+               AND json_extract(change,'$.text')!=''
                AND json_extract(change,'$.run_id')=?
              ORDER BY sequence DESC",
         )?;
@@ -284,10 +284,10 @@ impl Database {
         limit: usize,
     ) -> Result<ConversationDetail> {
         let history = self.history(thread, before, query, limit)?;
-        let (name, instance) = self.db.query_row(
-            "SELECT name,provider_instance FROM thread WHERE id=?",
+        let (name, instance, model) = self.db.query_row(
+            "SELECT name,provider_instance,model FROM thread WHERE id=?",
             [&thread.0],
-            |r| Ok((r.get(0)?, r.get::<_, String>(1)?)),
+            |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?)),
         )?;
         let latest_run = self
             .db
@@ -341,6 +341,7 @@ impl Database {
             id: thread.clone(),
             name,
             provider_instance: instance.into(),
+            model,
             latest_run,
             foreground_run,
             queued_count,

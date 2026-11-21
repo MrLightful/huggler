@@ -47,7 +47,7 @@ def send_message(prompt):
 def run_window(executable, state, steps, env):
     state.mkdir(parents=True, exist_ok=True)
     script = state / "workflow.json"
-    script.write_text(json.dumps([*steps, {"click": "Quit"}]))
+    script.write_text(json.dumps([*steps, {"key": "cmd-q"}]))
     env = dict(env, HUGGLER_UI_SCRIPT=str(script), HUGGLER_STATE_DIR=str(state))
     result = subprocess.run(
         [executable], cwd="/", env=env,

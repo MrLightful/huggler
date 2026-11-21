@@ -33,13 +33,13 @@ impl Rpc {
     }
 
     pub fn open(
-        command: std::process::Command,
+        mut command: std::process::Command,
         cwd: &Path,
         output: &crate::AgentOutput,
     ) -> Result<Self> {
+        crate::worktree::set_checkout(&mut command, cwd);
         let mut command = Command::from(command);
         command
-            .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

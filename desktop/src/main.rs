@@ -15,6 +15,8 @@ mod checks;
 mod git;
 mod publish;
 mod questions;
+mod settings;
+mod ui;
 
 /// Editable context to bring from a checkout tool into the conversation.
 struct FollowUp(String);
@@ -31,7 +33,7 @@ use huggler::{Huggler, HugglerOptions};
 use std::{path::PathBuf, sync::Arc};
 
 const APP_ID: &str = "dev.huggler.stage2";
-actions!(huggler_desktop, [Quit]);
+actions!(huggler_desktop, [Quit, OpenSettings, NewConversation]);
 
 fn main() -> Result<()> {
     let state = std::env::var_os("HUGGLER_STATE_DIR")
@@ -46,13 +48,23 @@ fn main() -> Result<()> {
     #[cfg(not(all(feature = "qualification", target_os = "macos")))]
     let interactive = true;
 
+    let (prefs, load_error) = match settings::Preferences::load(&state) {
+        Ok(prefs) => (prefs, None),
+        Err(error) => (
+            settings::Preferences::default(),
+            Some(format!("Could not read settings. {error}")),
+        ),
+    };
     let mut options = HugglerOptions::new(&state);
     options.agent_tools = true;
     options.prompt_suggestions = std::env::var("HUGGLER_PROMPT_SUGGESTIONS").as_deref() == Ok("1");
     options.codex.request_approvals = true;
     options.codex.workspace_write = true;
-    if let Some(path) = std::env::var_os("HUGGLER_CODEX") {
-        options.codex.executable = path.into();
+    if let Some(path) = std::env::var_os("HUGGLER_CODEX")
+        .map(PathBuf::from)
+        .or_else(|| prefs.codex_executable.clone())
+    {
+        options.codex.executable = path;
     }
     if let Some(path) = std::env::var_os("HUGGLER_CLAUDE_ACP") {
         options.claude_agent.executable = path.into();
@@ -71,13 +83,23 @@ fn main() -> Result<()> {
         Some(Box::new(huggler::services::terminal::TerminalHost)),
     )?;
 
-    Application::new().run(move |cx| {
+    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    app.run(move |cx| {
         gpui_component::init(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
+        cx.bind_keys([
+            KeyBinding::new("secondary-q", Quit, None),
+            KeyBinding::new("secondary-,", OpenSettings, None),
+            KeyBinding::new("secondary-n", NewConversation, None),
+        ]);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),
-            items: vec![MenuItem::action("Quit Huggler", Quit)],
+            items: vec![
+                MenuItem::action("New conversation", NewConversation),
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Quit Huggler", Quit),
+            ],
         }]);
 
         let owner = runtime.clone();
@@ -109,7 +131,8 @@ fn main() -> Result<()> {
                 },
                 |window, cx| {
                     window.set_window_title("Huggler");
-                    let view = cx.new(|cx| Desktop::new(runtime, state, window, cx));
+                    let view =
+                        cx.new(|cx| Desktop::new(runtime, state, prefs, load_error, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )

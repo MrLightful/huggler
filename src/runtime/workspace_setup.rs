@@ -20,9 +20,9 @@ impl Huggler {
             let workers = gate.as_mut().ok_or(Error::Closed)?;
             let root = shared.access(|db| db.begin_setup(project))?;
             let mut command = tokio::process::Command::new(program);
+            crate::worktree::set_checkout(command.as_std_mut(), &root);
             command
                 .args(args)
-                .current_dir(root)
                 .kill_on_drop(true)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

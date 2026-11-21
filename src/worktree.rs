@@ -2,15 +2,20 @@
 use crate::{Error, Result};
 use std::{path::Path, process::Command};
 
-fn command(cwd: &Path) -> Command {
-    let mut cmd = Command::new("git");
+/// Run in the selected checkout even when the host was started by a Git hook.
+pub(crate) fn set_checkout(cmd: &mut Command, cwd: &Path) {
     cmd.current_dir(cwd)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
-        // Checkout preparation belongs to the host, before the provider starts.
-        .args(["-c", "core.hooksPath=/dev/null"])
+        .env_remove("GIT_INDEX_FILE");
+}
+
+pub(crate) fn command(cwd: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    set_checkout(&mut cmd, cwd);
+    // Checkout preparation belongs to the host, before the provider starts.
+    cmd.args(["-c", "core.hooksPath=/dev/null"])
         .env("GIT_TERMINAL_PROMPT", "0");
     cmd
 }

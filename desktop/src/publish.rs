@@ -1,4 +1,7 @@
-use crate::git::{self, Publication};
+use crate::{
+    git::{self, Publication},
+    ui::{label, section_title},
+};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Selectable,
@@ -94,7 +97,7 @@ impl Publish {
         let Some(head) = &state.head else {
             return panel.child("Create the first commit in Changes to publish this branch.");
         };
-        let panel = panel.child(
+        let panel = panel.child(label("Local branch and commit")).child(
             div()
                 .font_family(cx.theme().mono_font_family.clone())
                 .child(format!("{branch} · {}", &head[..8.min(head.len())])),
@@ -146,7 +149,7 @@ impl Publish {
                 row.child(control!("Open pull request form", compare))
             });
         panel
-            .child(div().text_sm().child("Remote"))
+            .child(label("Destination remote"))
             .child(h_flex().flex_wrap().gap_1().children(remotes))
             .child(destination)
             .child(actions)
@@ -168,7 +171,7 @@ impl Render for Publish {
             .child(
                 h_flex()
                     .justify_between()
-                    .child(div().text_lg().child("Publish branch"))
+                    .child(section_title("Publish branch"))
                     .child(control!("Refresh branch", refresh)),
             )
             .when_some(self.state.as_ref(), |panel, state| {
