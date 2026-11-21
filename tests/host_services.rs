@@ -119,7 +119,38 @@ async fn terminal_reconnect_close_and_host_loss() -> Result<()> {
         Err(Error::Forbidden)
     ));
     assert!(matches!(open(), Err(Error::Unsupported(_))));
-    rt.close().await
+    rt.set_service_host(
+        Kind::Terminal,
+        Some(Box::new(services::terminal::TerminalHost)),
+    )?;
+    let mut pids = Vec::new();
+    for thread in [&a, &b] {
+        let handle = rt.open_service(
+            thread,
+            Open::Terminal {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "echo $$; exec sleep 30".into()],
+            },
+        )?;
+        let (_, bytes) = output(&rt, thread, &handle, None).await;
+        let pid: i32 = std::str::from_utf8(&bytes).unwrap().trim().parse().unwrap();
+        assert!(pid > 0);
+        pids.push(pid);
+    }
+    rt.delete_thread(&a)?;
+    assert_eq!(unsafe { libc::kill(pids[0], 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    assert_eq!(unsafe { libc::kill(pids[1], 0) }, 0);
+    rt.close().await?;
+    assert_eq!(unsafe { libc::kill(pids[1], 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    Ok(())
 }
 
 const HOME: &str = "<h1>Home</h1>";
@@ -371,14 +402,18 @@ async fn app_resources_tools_and_approved_next_turn_context() -> Result<()> {
         rt.open_service(&owner, open()),
         Err(Error::Unsupported(_))
     ));
-    rt.set_service_host(
-        Kind::McpApp,
-        Some(Box::new(services::mcp_app::AppHost {
-            connection: Arc::new(AppServer),
-            resources: [URI.into()].into(),
-            tools: ["show".into()].into(),
-        })),
-    )?;
+    let server = Arc::new(AppServer);
+    let install = |rt: &Huggler| {
+        rt.set_service_host(
+            Kind::McpApp,
+            Some(Box::new(services::mcp_app::AppHost {
+                connection: server.clone(),
+                resources: [URI.into()].into(),
+                tools: ["show".into()].into(),
+            })),
+        )
+    };
+    install(&rt)?;
     let id = rt.open_service(&owner, open())?;
     let Output::Json(doc) =
         rt.service_call(&owner, &id, Action::ReadResource { uri: URI.into() })?
@@ -407,6 +442,7 @@ async fn app_resources_tools_and_approved_next_turn_context() -> Result<()> {
     ));
     rt.approve_app_context(&owner, &id, &response["structuredContent"])?;
     rt.set_service_host(Kind::McpApp, None)?;
+    assert_eq!(Arc::strong_count(&server), 1);
     assert!(matches!(
         rt.service_call(&owner, &id, tool("show")),
         Err(Error::Forbidden)
@@ -455,5 +491,16 @@ async fn app_resources_tools_and_approved_next_turn_context() -> Result<()> {
             "continue"
         ]
     );
-    rt.close().await
+    install(&rt)?;
+    let transient = rt.open_service(&owner, open())?;
+    rt.close_service(&owner, &transient)?;
+    assert_eq!(Arc::strong_count(&server), 2);
+    rt.open_service(&owner, open())?;
+    rt.open_service(&other, open())?;
+    assert_eq!(Arc::strong_count(&server), 4);
+    rt.delete_thread(&other)?;
+    assert_eq!(Arc::strong_count(&server), 3);
+    rt.close().await?;
+    assert_eq!(Arc::strong_count(&server), 1);
+    Ok(())
 }
