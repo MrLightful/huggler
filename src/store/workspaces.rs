@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
-    workspace::SetupStatus,
-    workspace::{OrphanedWorktreeEntry, OrphanedWorktreeOutcome, OrphanedWorktreeReport},
+    workspace::{
+        OrphanedWorktreeEntry, OrphanedWorktreeOutcome, OrphanedWorktreeReport, SetupStatus,
+    },
     worktree::{self, git},
 };
 use std::fs::OpenOptions;
@@ -322,9 +323,9 @@ impl Database {
         Ok(report)
     }
 
-    pub fn allocate_workspace(&mut self, source: &ProjectId) -> Result<Project> {
+    pub fn allocate_workspace(&mut self, source: &ProjectId, revision: &str) -> Result<Project> {
         let root = self.project_root(source)?;
-        let (repository, commit) = worktree::base(&root)?;
+        let (repository, commit) = worktree::base_at(&root, revision)?;
         let path = self.storage.checkout(&self.state_dir, &root, &new_id())?;
         let checkout = Worktree {
             path: path
@@ -361,7 +362,7 @@ impl Database {
         Ok(project)
     }
     pub fn allocated_workspaces(&self, source: &ProjectId) -> Result<Vec<Project>> {
-        let (repository, _) = worktree::base(&self.project_root(source)?)?;
+        let repository = worktree::repository(&self.project_root(source)?)?;
         let mut stmt = self.db.prepare("SELECT p.id,p.root FROM allocated_workspace a JOIN project p ON p.id=a.project WHERE a.common_dir=? ORDER BY p.root")?;
         Ok(stmt
             .query_map([repository], |r| {

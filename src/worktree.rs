@@ -42,24 +42,44 @@ pub(crate) fn common_dir(cwd: &Path) -> Result<String> {
     )
 }
 
+#[cfg(feature = "application")]
+pub(crate) fn repository(cwd: &Path) -> Result<String> {
+    checkout_info(cwd, &[])
+}
+
+fn checkout_info(cwd: &Path, extra_args: &[&str]) -> Result<String> {
+    let mut args = vec![
+        "rev-parse",
+        "--show-prefix",
+        "--path-format=absolute",
+        "--git-common-dir",
+    ];
+    args.extend_from_slice(extra_args);
+    let output = git(cwd, &args)?;
+    output
+        .strip_prefix('\n')
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Invalid("expected a Git checkout root".into()))
+}
+
 /// Resolve only for a fresh receipt, in the caller's effective checkout.
 pub(crate) fn base(cwd: &Path) -> Result<(String, String)> {
+    base_at(cwd, "HEAD")
+}
+
+pub(crate) fn base_at(cwd: &Path, revision: &str) -> Result<(String, String)> {
     // An empty prefix identifies the checkout root. Split off the hash
     // from the end because the repository directory can contain newlines.
-    let revision = git(
+    let revision = checkout_info(
         cwd,
         &[
-            "rev-parse",
-            "--show-prefix",
-            "--path-format=absolute",
-            "--git-common-dir",
             "--verify",
-            "HEAD^{commit}",
+            "--end-of-options",
+            &format!("{revision}^{{commit}}"),
         ],
     )?;
     let (repository, commit) = revision
-        .strip_prefix('\n')
-        .and_then(|s| s.rsplit_once('\n'))
+        .rsplit_once('\n')
         .ok_or_else(|| Error::Invalid("expected a Git checkout root with a commit".into()))?;
     Ok((repository.into(), commit.into()))
 }

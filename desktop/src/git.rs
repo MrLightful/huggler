@@ -38,6 +38,95 @@ pub fn checkout_root(path: &Path) -> Result<PathBuf> {
     file_path(output.strip_suffix(b"\n").unwrap_or(&output))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Branch {
+    pub reference: String,
+    pub name: String,
+    pub remote: bool,
+    pub current: bool,
+}
+
+impl Branch {
+    pub fn base_label(&self) -> String {
+        match self.reference.strip_prefix("refs/remotes/origin/") {
+            Some(name) => format!("From {name} (remote)"),
+            None => format!("From {}", self.name),
+        }
+    }
+}
+
+pub struct Branches {
+    pub branches: Vec<Branch>,
+    pub default: Option<Branch>,
+}
+
+pub fn branches(path: &Path) -> Result<Branches> {
+    let root = checkout_root(path)?;
+    let output = execute(git(&root).args([
+        "for-each-ref",
+        "--format=%(HEAD)%00%(refname)%00%(symref)",
+        "refs/heads/",
+        "refs/remotes/",
+    ]))?;
+    let mut branches = Vec::new();
+    let mut remote_heads = Vec::new();
+    for line in std::str::from_utf8(&output)?.lines() {
+        let mut fields = line.split('\0');
+        let (Some(head), Some(reference), Some(target)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let remote = reference.starts_with("refs/remotes/");
+        if !target.is_empty() {
+            if remote && reference.ends_with("/HEAD") {
+                remote_heads.push((reference, target));
+            }
+            continue;
+        }
+        let name = reference
+            .strip_prefix(if remote {
+                "refs/remotes/"
+            } else {
+                "refs/heads/"
+            })
+            .context("Expected a Git branch ref")?;
+        branches.push(Branch {
+            reference: reference.to_owned(),
+            name: name.to_owned(),
+            remote,
+            current: head == "*",
+        });
+    }
+    let lookup = |reference: &str| branches.iter().find(|branch| branch.reference == reference);
+    let default = remote_heads
+        .iter()
+        .find(|(head, _)| *head == "refs/remotes/origin/HEAD")
+        .and_then(|(_, target)| lookup(target))
+        .or_else(|| remote_heads.iter().find_map(|(_, target)| lookup(target)))
+        .or_else(|| {
+            ["main", "master"].into_iter().find_map(|name| {
+                lookup(&format!("refs/remotes/origin/{name}"))
+                    .or_else(|| lookup(&format!("refs/heads/{name}")))
+            })
+        })
+        .or_else(|| branches.iter().find(|branch| branch.current))
+        .cloned()
+        .or_else(|| {
+            execute(git(&root).args(["rev-parse", "--verify", "HEAD^{commit}"]))
+                .ok()
+                .map(|_| Branch {
+                    reference: "HEAD".into(),
+                    name: "HEAD".into(),
+                    remote: false,
+                    current: true,
+                })
+        })
+        .or_else(|| branches.first().cloned());
+    branches.sort_by_key(|branch| (!branch.current, branch.remote));
+    Ok(Branches { branches, default })
+}
+
 pub fn workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
     let output = execute(git(root).args([
         "ls-files",
@@ -46,6 +135,22 @@ pub fn workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
         "--others",
         "--exclude-standard",
     ]))?;
+    parse_file_paths(&output)
+}
+
+pub fn files_at(root: &Path, reference: &str) -> Result<Vec<PathBuf>> {
+    let output = execute(git(root).args(["ls-tree", "-rz", reference, "--"]))?;
+    output
+        .split(|byte| *byte == 0)
+        .filter(|entry| entry.starts_with(b"100"))
+        .filter_map(|entry| {
+            let separator = entry.iter().position(|byte| *byte == b'\t')?;
+            Some(file_path(&entry[separator + 1..]))
+        })
+        .collect()
+}
+
+fn parse_file_paths(output: &[u8]) -> Result<Vec<PathBuf>> {
     output
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
@@ -87,6 +192,20 @@ pub fn create_branch(root: &Path, branch: &str) -> Result<()> {
         "switch",
         "--no-track",
         "-c",
+        branch,
+    ]))?;
+    Ok(())
+}
+
+pub fn switch_branch(root: &Path, branch: &str) -> Result<()> {
+    execute(git(root).args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "switch",
+        "--no-guess",
+        "--no-overwrite-ignore",
+        "--no-recurse-submodules",
+        "--",
         branch,
     ]))?;
     Ok(())
