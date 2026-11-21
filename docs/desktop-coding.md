@@ -6,6 +6,23 @@ On macOS, install Git, Xcode, Rust/Cargo 1.94.1 or later and a signed-in Codex C
 cargo run --locked --manifest-path desktop/Cargo.toml --target-dir target/desktop
 ```
 
+To install a bundle, use the release build prerequisites and choose an unused destination. Set `HUGGLER_STATE_DIR` before launch to use a custom state directory. [Release build prerequisites](verification.md#package-the-crate-and-desktop-app)
+
+```sh
+python3 scripts/install-desktop.py "$HOME/Applications/Huggler.app"
+"$HOME/Applications/Huggler.app/Contents/MacOS/huggler-desktop"
+```
+
+To add provider instances, set `HUGGLER_PROVIDERS` to the path of a JSON file before launch. For example, this file registers a separate Cursor instance.
+
+```json
+[
+  {"id":"cursor-work","driver":"cursor","executable":"agent","args":["acp"]}
+]
+```
+
+Use unique instance IDs. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` override the executables for the built-in instances. [Provider configuration](../docs-app/content/docs/guides/configure-providers.mdx)
+
 1. **Open a checkout.** Choose **New conversation**, browse to your Git checkout, select a provider and enter a conversation name. **Model** lets you search the models that provider lists for the checkout. Leave **Provider default** selected to use its configuration. **Check provider** reports the adapter's version and login status when available. Leave the branch field empty to work in this checkout, including its uncommitted edits. To work independently, enter a new branch name. Huggler creates a linked worktree at the checkout's current commit and displays its path in the conversation header.
 2. **Plan and implement.** With Codex selected, enter your task and choose **Send as plan** to request a read-only planning turn. When the plan is ready, use **Send** to ask Codex to implement it. The built-in Codex instance can edit the checkout during implementation. You can change **Model** beside **Message** before sending or queuing your next turn. Huggler remembers the selection for this conversation. Read the streaming reply, open command output and respond to questions or permission requests in **Conversation**.
 3. **Manage ongoing work.** Use **Queue message** to schedule a follow-up while the agent works. **Stop thread** interrupts the current work and pauses queued messages. Use **Resume queue** to deliver them. Switch conversations from the sidebar to work on another task. A partially typed answer stays with its question while the app is open. Reopening the app restores the selected conversation and its history.
@@ -40,4 +57,4 @@ python3 scripts/check-desktop-coding.py target/desktop/debug/huggler-desktop
 python3 scripts/check-desktop-settings.py target/desktop/debug/huggler-desktop
 ```
 
-The check drives the GPUI window with a scripted Codex app-server peer over stdio. It exercises a planning turn, a question and approval, a real file edit, a failing shell check, a correction and a passing check. It also checks the staged commit against the Git index, restarts the app, and pushes an isolated branch to a temporary bare repository. For versioned live provider evidence, see the earlier macOS qualification. [Desktop check](../scripts/check-desktop-coding.py) · [Codex fixture](../tests/fixtures/desktop-coding-peer.py) · [Live Codex qualification](stage-2.md)
+The check drives the GPUI window with a scripted Codex app-server peer over stdio. It exercises a planning turn, a question and approval, a real file edit, a failing shell check, a correction and a passing check. It also checks the staged commit against the Git index, restarts the app, and pushes an isolated branch to a temporary bare repository. [Desktop check](../scripts/check-desktop-coding.py) · [Codex fixture](../tests/fixtures/desktop-coding-peer.py) · [Live checks](verification.md#macos-desktop-checks)

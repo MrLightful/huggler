@@ -1,6 +1,6 @@
 # Stage 1 reference · Resume one Codex conversation after restart
 
-T3 Code at `338352dee2f43079482e054e8229a2ba055641d9` accepted two prompts on one application thread. Between prompts the test closed the orchestrator and opened a second runtime on the same SQLite file. Codex resumed the original native thread, completed a new turn and repeated its first answer in the second reply. This is the upstream comparison case for Huggler's first packaged consumer. [Pinned recovery test][recovery] · [Rust milestone](../../first-milestone.md)
+T3 Code at `338352dee2f43079482e054e8229a2ba055641d9` accepted two prompts on one application thread. Between prompts the test closed the orchestrator and opened a second runtime on the same SQLite file. Codex resumed the original native thread, completed a new turn and repeated its first answer in the second reply. The packaged Huggler consumer uses this scenario. [Pinned recovery test][recovery] · [Rust consumer assertions](../../../tests/support/resume.rs)
 
 ## Reproduce the result
 
@@ -41,7 +41,7 @@ On 2026-11-20, **35 tests passed in four unmodified test files**, with zero skip
 | Parent/child coordination and orchestrator MCP tools | A scoped in-process MCP caller delegates, sends, interrupts, waits, reads, requests task status and discovers capabilities | **4 MCP tests**. Distinct, identical, emoji and long child results exercise delivery and result reads. The handler uses a constructed Codex app-server 0.120.0 transcript and test host services. [MCP suite][mcp] |
 | Provider binding and recovery after restart | A second server runtime opens the same SQLite state with startup recovery enabled | **4 recovery tests**. Native Codex resume, Cursor resume via `cursor-agent-sdk.local` format 1 (SDK 1.4.1), and two Claude native-subagent recovery cases via `claude-agent-sdk.query` 0.3.276, including continuation after cancellation. [Recovery suite][recovery] |
 
-At this pin the general `provider_thread_resume` registry entry exercises a 31-minute idle interval with **Pi**. The Codex restart case lives in the recovery suite. Built-in registration lists **11 execution drivers and 8 usage readers**. The four runs exercise selected server and in-process tool paths. HTTP/RPC clients, installed apps, live provider/version compatibility, the other drivers and toolkits, and SQLite import into Huggler remain source-only or planned. Stage 2 will check continuation and retry through Huggler's own API and storage. [Fixture registry][registry] · [Driver registration][drivers] · [Stage 2](../../extraction-plan.md#2-build-the-rust-core-and-run-one-durable-thread)
+At this pin the general `provider_thread_resume` registry entry exercises a 31-minute idle interval with **Pi**. The Codex restart case lives in the recovery suite. Built-in registration lists **11 execution drivers and 8 usage readers**. The four runs cover the server and in-process tool paths listed above. [Fixture registry][registry] · [Driver registration][drivers]
 
 [clock]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/testkit/DeterministicRuntime.ts
 [codex]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/testkit/CodexReplayFixtures.integration.test.ts

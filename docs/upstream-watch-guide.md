@@ -1,10 +1,10 @@
 # Tracking T3 Code behavior
 
-Use this guide to decide which upstream changes affect Huggler and how to reproduce their observable behavior in the Rust crate. The source map is pinned to **338352dee2f43079482e054e8229a2ba055641d9** on T3 Code’s `main` branch. The [watch list](upstream-watch.paths) contains Git pathspecs for comparing that revision with a later one. For the expected behavior of each operation, use the [capability inventory](parity-inventory.md). For the proposed application interface, see the [crate proposal](sdk-proposal.md).
+Use this guide to decide which upstream changes affect Huggler and how to reproduce their observable behavior. The source map is pinned to **338352dee2f43079482e054e8229a2ba055641d9** on T3 Code’s `main` branch. The [watch list](upstream-watch.paths) contains Git pathspecs for the review. For expected workflow behavior, see the [capability inventory](parity-inventory.md).
 
 ## Run a review
 
-From the Huggler checkout, run these two commands with Git and Python 3. Fetching refreshes the clone’s remote-tracking ref. The review reads committed trees, prints the exact range and leaves both checkouts and the review record untouched.
+From the Huggler checkout, run the review with Git and Python 3. Fetching refreshes the clone’s remote-tracking ref. The review reads committed trees and prints the exact range.
 
 ```sh
 upstream_repo="/Users/mrlightful/Projects/Personal/t3code"
@@ -12,13 +12,7 @@ git -C "$upstream_repo" fetch origin
 python3 scripts/review-upstream.py "$upstream_repo"
 ```
 
-The default range starts at `reviewedThrough` and ends at the local `origin/main`. The initial marker is the source revision analyzed for the proposal. For an offline trial, the following nine-commit range is already part of that revision’s history. [Review command](../scripts/review-upstream.py) · [Review record](upstream-review.json)
-
-```sh
-python3 scripts/review-upstream.py "$upstream_repo" --base ccc1feb15572 --to 338352dee2
-```
-
-In that range, four commits affect the runtime or host integrations. The settlement fix changes both `ThreadSettlementService` and the terminal manager. Treat them as one behavior to port. A CLI-only change that explains failed runs appears under supporting commits. The web spreadsheet scrollbar change is outside the default report. [Settlement patch](https://github.com/pingdotgg/t3code/commit/6cbda0cd0aa982b7cbf22d9790bd74e68b2d3dbe)
+The default range starts at `reviewedThrough` and ends at the local `origin/main`. Use `--base` and `--to` to select a different range from the local checkout. [Review command](../scripts/review-upstream.py) · [Review record](upstream-review.json)
 
 | Report section | How to use it |
 | --- | --- |
@@ -59,11 +53,11 @@ Start at [builtInDrivers.ts][apps/server/src/provider/builtInDrivers.ts]. Its tw
 | `cursor`, `muse` | [Cursor][packages/provider-cursor] and [Muse][packages/provider-muse]. Inspect the upstream [SDK patches][patches] alongside the adapter versions. | Verify equivalent live requests, event translation and cancellation through Huggler’s selected transport. Inspect upstream patches when behavior differs. |
 | `opencode`, `pi` | [OpenCode][packages/provider-opencode] contains both `src/server/adapter.ts` and [the 2.x adapter][packages/provider-opencode/src/server/v2/adapter.ts]. [Pi][packages/provider-pi] ships a [generated MCP extension][packages/provider-pi/src/server/mcpExtensionSource.ts]. | Test the selected OpenCode runtime generation and server lifetime. For Pi, verify any chosen extension from an installed host and call a scoped tool in a resumed session. |
 
-A new driver registration calls for a new inventory row, install/status check and replay scenario. A change in a shared transport can affect several existing rows without changing the registry. The [provider matrix](upstream-orchestration.md#provider-support-at-the-pinned-revision) identifies which capabilities to exercise per driver.
+A new driver registration calls for an inventory entry, install/status check and replay scenario. A change in a shared transport can affect several drivers. Check which operations each affected driver advertises. [Huggler provider reference](../docs-app/content/docs/reference/providers.mdx)
 
 ## Follow a change beyond the engine
 
-| Area | Upstream locations | Evidence to carry into the extraction |
+| Area | Upstream locations | Evidence to carry into Huggler |
 | --- | --- | --- |
 | Workspaces, worktrees and imported conversations | [Project][apps/server/src/project], [workspace][apps/server/src/workspace], [VCS][apps/server/src/vcs], [Git][apps/server/src/git], [checkpoints][apps/server/src/checkpointing], and [ACP registry sessions][apps/server/src/provider/AcpRegistrySessions.ts]. | Setup/cleanup, selected checkout, transcript provenance and first continuation after import. |
 | Remote agents, guests and grants | [Peer forwarding and delegation][apps/server/src/peer], [auth][apps/server/src/auth], [guest access][apps/server/src/guest], [server relay][apps/server/src/relay] and [hosted relay][infra/relay]. | Test two runtimes with separate databases. Check the remote address, reconnect, cancellation and revoked grants. |
@@ -74,10 +68,10 @@ A new driver registration calls for a new inventory row, install/status check an
 
 ## Adapt and merge a relevant change
 
-1. **Identify the observable change.** Open the full upstream patch. Find the assertion that distinguishes the old and new behavior and the identity that observes it (host, calling agent, parent or child). Look up the matching command, event, tool or integration. [Parity inventory](parity-inventory.md)
+1. **Identify the observable change.** Open the full upstream patch. Find the assertion that distinguishes the old and new behavior and the identity that observes it (host, calling agent, parent or child). Use `git -C "$upstream_repo" show <sha>:<path>` to read the implementation and regression at the candidate revision. Look up the matching command, event, tool or integration. [Parity inventory](parity-inventory.md)
 2. **Follow the behavior across boundaries.** Check the contract and handler, adapter and replay fixture, or writer, projection and migration as applicable. If upstream only changes presentation, check whether the crate already returns the underlying data. A tool description can change how an agent behaves even when the schema stays identical.
-3. **Translate the behavior.** Record the upstream commit and the corresponding Rust API, adapter or host integration. Preserve an accepted workflow even when a protocol or internal representation differs. Carry across reusable fixtures and preserve license notices. Apply Huggler naming to new code and tools. Bundle dependent upstream changes when one fix relies on another. Add the assertion to the implementation plan if the workflow is pending. [Huggler naming conventions](sdk-proposal.md#naming)
-4. **Verify at the consumer boundary.** Run or inspect the upstream regression at the candidate. Drive the same scenario through the crate or GPUI host and compare its observable result. Use a prior Huggler database for migrations, another adapter for shared protocol changes, or a clean install for runtime asset changes. Capture a fresh replay when the transport differs. [Acceptance scenarios](extraction-plan.md)
+3. **Translate the behavior.** Record the upstream commit and the corresponding Rust API, adapter or host integration. Preserve the accepted workflow across API and transport differences. Carry across reusable fixtures and preserve license notices. Bundle dependent upstream changes when one fix relies on another. [Huggler naming conventions](README.md#naming)
+4. **Verify at the consumer boundary.** Run or inspect the upstream regression at the candidate. Drive the same scenario through the crate or GPUI host and compare its observable result. Use a prior Huggler database for migrations, another adapter for shared protocol changes, or a clean install for runtime asset changes. Capture a fresh replay when the transport differs. [Verification guide](verification.md)
 5. **Close the review interval.** In the crate change or review notes, record the range, capability, and disposition (*ported*, *already covered*, *host-only* or *deferred*) with the commit, test or reason. Set `reviewedThrough` to the full candidate SHA after accounting for the interval. For outstanding work, append an object to `deferred` with `upstream` (full commit SHA) and `followUp` (capability plus issue, task link or concrete pending check). The command prints those entries on subsequent runs, including empty ranges. Remove an entry once its disposition is recorded. Base release coverage on passing crate or host evidence. [Review record](upstream-review.json)
 
 ### Worked example — a background child delegates after its parent finishes

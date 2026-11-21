@@ -1,24 +1,8 @@
 # T3 Code capability inventory for Huggler
 
-Use this inventory to plan and verify the workflows Huggler should cover. The counts describe the pinned T3 Code implementation. Huggler maps those workflows to Rust APIs, native desktop controls, agent tools or optional host integrations. For each selected workflow, record the observable outcome, provider and host prerequisites, a passing scenario, and any fallback or limitation. The names, counts and wire shapes below identify upstream evidence. [Crate proposal](sdk-proposal.md) · [Qualification plan](extraction-plan.md)
+Use this inventory to identify the observable outcome and upstream regression for a workflow. The names, counts and wire shapes describe T3 Code at `338352dee2f43079482e054e8229a2ba055641d9`. The review cursor tracks later changes independently. [Upstream review record](upstream-review.json)
 
-Stage 1 exercised selected command, projection, provider and agent-tool paths in four upstream suites. The run record maps the tested scenarios to the rows below. Other entries currently have source evidence. [Stage 1 coverage](reference/codex-resume/README.md#what-the-four-suites-exercised)
-
-Stage 2 verified root-checkout launch, idle send, receipt retry and conflicts, model selection and thread-scoped reads, waits and events through the Huggler crate. The installed macOS app also verified provider-native Codex continuation across quit and reopen. [Stage 2 coverage and versions](stage-2.md)
-
-Stage 3 verified cross-provider peer replies, delegated completions, live permission responses and native child control for Codex and Claude Agent. [Stage 3 coverage](stage-3.md)
-
-Stage 4 added named instances for all eleven driver kinds. A host can probe an instance, select it at launch, observe run output and read usage for runs that reported tokens. Agent-created peers and delegates can inherit or select an instance. Installed Cursor and Antigravity CLIs returned login challenges in fresh homes. Both advertised session loading, and only Cursor advertised HTTP MCP in these runs. The upstream Antigravity v2 recording advertises both. Successful turns for these two providers use scripted peers. [Driver matrix and limits](stage-4.md#driver-results)
-
-Stage 5 verified durable queue controls, delegation-tree stop, Codex steering and restart, human input with text attachments, context forks and checkpoint restore, bounded history and replay, process-loss recovery and four provider import paths. The qualification record identifies the scripted and recorded operations, portable fallbacks and unavailable workflows for each acceptance row. [Stage 5 coverage](stage-5.md)
-
-Stage 6 verified authenticated peer sends and remote completion, moderated guest messages, worktree preparation, scheduled and signed triggers, repository links and watches, managed secret requests and thread-owned host services. Its tool map accounts for all 92 declarations, identifying the agent tool, trusted host API or current limit for each workflow. [Stage 6 acceptance results](stage-6.md#acceptance-results) · [Upstream tool coverage](stage-6.md#upstream-tool-coverage)
-
-Stage 7 links each inventory group to a passing Rust or host scenario and its limits. The upstream review advances independently of the counts at the original source pin. [Release coverage](stage-7.md#capability-coverage-at-release) · [Upstream comparison](stage-7.md#upstream-comparison)
-
-The macOS desktop coding workflow covers planning, editing, queueing follow-ups, running checks, reviewing staged and unstaged changes, committing and pushing a branch. The native-window check uses a scripted Codex peer and a local Git remote. [Desktop workflow and reproduction](desktop-coding.md)
-
-The packed TypeScript SDK exercises root-checkout launch, receipt recovery across a Node-to-Rust database handoff, native continuation in a second Node process, scoped replay, history paging and structured questions using recorded Codex 0.156.1 app-server exchanges. A scripted ACP v1 peer exercises probe, approval, observer cancellation and explicit stop over stdio. The preview reads persisted collaboration events and starts threads in the project root. [Workflow prerequisites, results and limits](typescript-sdk.md#verified-workflows)
+Check Huggler’s public interface and tests for current support. Record provider and host prerequisites, a passing scenario, and any fallback or limitation. [Verification guide](verification.md) · [0.0.1 coverage](https://github.com/MrLightful/huggler/blob/ef2ffe78541842fe3b13d7468e8fd330b0e674d4/docs/stage-7.md#capability-coverage-at-release)
 
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
@@ -27,7 +11,7 @@ The packed TypeScript SDK exercises root-checkout launch, receipt recovery acros
 | Thread orchestration events | 48 domain event names | [Wire and storage shapes][src-1] · [Event sink][src-5] |
 | Durable effects | 17 kinds with two recovery policies | [Outbox][src-6] |
 | T3 MCP declarations | 92 tools across 15 toolkit directories | [Toolkits and access-checked handlers][src-7] |
-| Harnesses | 11 built-in driver kinds, 8 aggregate usage readers | [Per-driver behavior](upstream-orchestration.md#provider-support-at-the-pinned-revision) · [Registration][src-8] |
+| Harnesses | 11 built-in driver kinds, 8 aggregate usage readers | [Driver source map](upstream-watch-guide.md#locate-a-harness-change) · [Registration][src-8] |
 
 ## Commands
 
@@ -122,7 +106,7 @@ Make the distinction visible in failure tests. A durable command receipt proves 
 
 ## Agent-facing tools
 
-The table records exact **upstream** names for source lookup and regression comparison. For workflows exposed through the proposed `huggler` MCP server, use the name mapping below. Remove a leading `t3_` from each mapped baseline tool name and keep other mapped names as written. For example, upstream `t3_thread_send` maps to Huggler’s `thread_send`, and `delegate_task` maps to `delegate_task`. Compare the observable result, authorization and side effects. Record workflows implemented through a host interface and those that are unavailable. Apply this mapping only to this catalog of built-in tools. [Huggler naming conventions](sdk-proposal.md#naming)
+The table records exact upstream names for source lookup and regression comparison. Huggler’s corresponding built-in tools omit the `t3_` prefix, as in `thread_send`. Compare the observable result, authorization and side effects. The historical mapping records which workflows had agent tools, host APIs or coverage gaps at initial qualification. [Built-in Huggler tools](../docs-app/content/docs/reference/agent-tools.mdx) · [Historical mapping](https://github.com/MrLightful/huggler/blob/ef2ffe78541842fe3b13d7468e8fd330b0e674d4/docs/stage-6.md#upstream-tool-coverage)
 
 MCP is the agent’s interface to orchestration. For deferred discovery, the direct set is `orchestrator_capabilities`, `delegate_task`, `task_status` and `tool_search`, subject to caller eligibility. Searching can expose additional matching tools within the session. Tool visibility, write access, link permissions, target mode limits, handler capabilities and available host services all participate in the effective surface. An outside read-only client, a live author thread and a linked agent can receive different results. [Exposure][src-23] · [Invocation context][src-24] · [Access declarations][src-25]
 
@@ -145,8 +129,6 @@ MCP is the agent’s interface to orchestration. For deferred discovery, the dir
 | [toolSearch][src-40] (1) | `tool_search` | Discover deferred tools for this provider session. Listing a tool preserves its existing invocation checks. |
 
 **Three acceptance checks for Huggler callers.** A dashboard can inspect thread/child projections without acknowledging delivery. A live parent that calls `task_status` on its completed task can acknowledge its result. An agent can answer an eligible user question through `pending_request`. A human decision on provider permissions goes through an authorized responder. Exercise positive and denied cases through the real handlers. [Orchestrator handlers][src-41] · [Thread handlers][src-42] · [Access race tests][src-43]
-
-The [implementation plan](extraction-plan.md) pairs these names with upstream tests, raw frames and Cargo consumer and installed GPUI acceptance scenarios.
 
 [src-1]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/contracts/src/orchestrationV2.ts
 [src-2]: https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/CommandPolicy.ts
