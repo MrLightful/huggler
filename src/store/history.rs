@@ -49,6 +49,11 @@ impl Database {
             || tx.prepare("SELECT 1 FROM native_child JOIN run ON run.id=run_id WHERE thread_id=? AND active")?.exists([&thread.0])? {
             return Err(Error::Busy);
         }
+        let attachment_messages = tx.prepare(
+            "SELECT DISTINCT a.message_id FROM message_attachment a JOIN message m ON m.id=a.message_id
+             JOIN run r ON r.id=m.run_id WHERE r.thread_id=? AND a.inline_text=0",
+        )?.query_map([&thread.0], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         tx.execute("DELETE FROM automation WHERE owner=?", [&thread.0])?;
         tx.execute("DELETE FROM guest_share WHERE thread=?", [&thread.0])?;
         tx.execute(
@@ -90,6 +95,10 @@ impl Database {
         tx.execute("DELETE FROM thread WHERE id=?", [&thread.0])?;
         mark_conversation_changed(&tx, thread)?;
         tx.commit()?;
+        for id in attachment_messages {
+            // The database owns the originals. Cache cleanup can be retried at reopen.
+            let _ = std::fs::remove_dir_all(self.attachment_dir.join(id));
+        }
         Ok(())
     }
 
@@ -178,18 +187,19 @@ impl Database {
             .optional()?.ok_or_else(|| Error::NotFound(id.to_string()))
     }
 
-    pub fn read_attachment(
+    pub fn read_attachment_file(
         &self,
         thread: &ThreadId,
         message: &MessageId,
         position: usize,
-    ) -> Result<String> {
+    ) -> Result<Attachment> {
         self.db
             .query_row(
-                "SELECT a.content FROM message_attachment a JOIN message m ON m.id=a.message_id
+                "SELECT a.name,a.mime,coalesce(a.data,CAST(a.content AS BLOB))
+                 FROM message_attachment a JOIN message m ON m.id=a.message_id
              JOIN run r ON r.id=m.run_id WHERE r.thread_id=? AND m.id=? AND a.position=?",
                 params![thread.0, message.0, position as i64],
-                |row| row.get(0),
+                super::uploads::file_row,
             )
             .optional()?
             .ok_or_else(|| Error::NotFound(message.to_string()))

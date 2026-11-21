@@ -95,8 +95,13 @@ def main():
         run_window(executable, starter_state, [
             {"resize": [640, 440]}, {"key": "cmd-shift-n"},
             {"click": "Git checkout"}, {"type": str(checkout)}, {"click": "Back to message"},
-            {"click": "Start without a project"}, {"click": "First message"}, {"type": first},
-            {"click": "Send first message"}, {"click": "Show conversations"}, {"see": "thread/" + first},
+            {"click": "Start without a project"}, {"click": "model/Provider default"},
+            {"see": "provider/Codex"}, {"see": "⌘L to focus"}, {"key": "cmd-l"},
+            {"absent": "provider/Codex"}, {"absent": "⌘L to focus"},
+            {"click": "model/Provider default"}, {"see": "provider/Codex"},
+            {"click": "Hide conversations"}, {"absent": "provider/Codex"}, {"see": "⌘L to focus"},
+            {"key": "cmd-l"}, {"absent": "⌘L to focus"}, {"type": first}, {"click": "Show conversations"},
+            {"click": "Send first message"}, {"see": "thread/" + first},
             {"see": "Codex/reply " + first},
         ], env)
         with sqlite3.connect(starter_state / "huggler.sqlite3") as db:
@@ -105,7 +110,7 @@ def main():
             assert Path(root).parent == (starter_state / "scratch").resolve()
         run_window(executable, starter_state, [
             {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Git checkout"},
-            {"type": str(checkout / "missing")}, {"click": "Back to message"},
+            {"key": "cmd-l"}, {"type": str(checkout / "missing")}, {"click": "Back to message"},
             {"click": "First message"}, {"type": "Review my changes"}, {"key": "shift-enter"},
             {"type": "Include the tests."}, {"key": "enter"}, {"contains": "Could not open"},
             {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"},
@@ -168,11 +173,51 @@ def main():
             {"absent": "file preview/second file"}, *send_message(plain), {"see": "You/" + plain},
         ], env)
 
+        mixed_state = checkout / "mixed-attachment-state"
+        fixtures = ROOT / "tests/fixtures/attachments"
+        image = checkout / "diagram.png"
+        pdf = checkout / "report.pdf"
+        image.write_bytes((fixtures / image.name).read_bytes())
+        pdf.write_bytes((fixtures / pdf.name).read_bytes())
+        binary = checkout / "payload.bin"
+        binary.write_bytes(b"\x00\xff")
+        run_window(executable, mixed_state, [
+            {"next_file_selection": [str(image), str(pdf), str(binary)]},
+            {"click": "Attach files"}, {"see": "Remove diagram.png"}, {"see": "Remove report.pdf"},
+            {"see": "Remove payload.bin"}, {"click": "Send first message"},
+            {"click": "Show conversations"},
+            {"see": "Ready/diagram.png/Completed"},
+        ], env)
+        image.unlink()
+        pdf.unlink()
+        binary.unlink()
+        with sqlite3.connect(mixed_state / "huggler.sqlite3") as db:
+            message, = db.execute("SELECT id FROM message WHERE role='user'").fetchone()
+        prefix = f"attachment/{message}"
+        saved_pdf = checkout / "saved.pdf"
+        saved_pdf.write_bytes(b"replace me")
+        pdf_bytes = (fixtures / "report.pdf").read_bytes()
+        saved_binary = checkout / "saved.bin"
+        run_window(executable, mixed_state, [
+            {"click": prefix + "/0/diagram.png"}, {"see": "image preview/diagram.png"},
+            {"see": "Save diagram.png"}, {"click": prefix + "/0/diagram.png"},
+            {"click": prefix + "/1/report.pdf"}, {"see": "pdf preview/report.pdf"},
+            {"next_save_path": str(saved_pdf)}, {"click": "Save report.pdf"},
+            {"file_size": [str(saved_pdf), len(pdf_bytes)]}, {"click": prefix + "/1/report.pdf"},
+            {"click": prefix + "/2/payload.bin"}, {"next_save_path": str(saved_binary)},
+            {"click": "Save payload.bin"}, {"file_size": [str(saved_binary), 2]},
+        ], env)
+        assert saved_pdf.read_bytes() == pdf_bytes
+        assert saved_binary.read_bytes() == b"\x00\xff"
+
         run_window(executable, checkout / "suggestion-state", [
             *launch_thread(checkout, "Follow-up"), *send_message("First question"),
             {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/Explain the result."},
             {"see": "Suggested reply"}, {"click": "Message"}, {"type": "My own question"},
-            {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/My own question"},
+            {"click": "Suggested reply"}, {"key": "tab"}, {"resize": [640, 440]},
+            {"click": "Show changes"}, {"see": "Resize changes"}, {"key": "cmd-l"},
+            {"absent": "Refresh changes"}, {"key": "cmd-right"},
+            {"type": " about the tests"}, {"click": "Send"}, {"see": "You/My own question about the tests"},
         ], env)
     print("Native turn navigation, history paging, full message and suggested replies passed")
 

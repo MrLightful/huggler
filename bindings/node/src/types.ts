@@ -41,17 +41,27 @@ export interface ProviderInstance {
   workspaceWrite?: boolean
 }
 
+/** Provide at least one of name, slug, or stateDir when opening Huggler. */
 export interface OpenOptions {
-  stateDir: string
+  /** Display name. Defaults to slug when supplied, or Huggler for path-only configurations. */
+  name?: string
+  /** Provider and MCP identifier and the suffix in ~/.<slug>. Defaults to a normalized name. */
+  slug?: string
+  /** Base directory for state. When supplied, the database defaults to huggler.sqlite3 at its root. */
+  stateDir?: string
   instances?: ProviderInstance[]
   storage?: {
     databasePath?: string
     worktreeRoot?: { kind: "shared" | "projectRelative"; path: string }
     worktreeName?: string
   }
+  /** Controls how Huggler and its tools appear to providers and agents. */
   output?: {
+    /** Provider and MCP identifier override. The slug still determines the default directory. */
     name?: string
+    /** Display name override for provider metadata and generated text. */
     title?: string
+    /** Version advertised to providers and MCP clients. Defaults to the Huggler runtime version. */
     version?: string
     instructions?: string
     providerLabels?: Record<string, string>

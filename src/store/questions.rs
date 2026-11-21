@@ -162,11 +162,12 @@ impl Database {
                 UserAnswer::Text(text) => vec![text],
                 UserAnswer::Choices(values) => values,
             };
-            values.extend(
-                uploads::claim(&tx, thread, ids)?
-                    .into_iter()
-                    .map(|file| self.output.text.attachment(&file.name, &file.content)),
-            );
+            for file in uploads::claim(&tx, thread, ids, true)? {
+                let content = std::str::from_utf8(&file.bytes).map_err(|_| {
+                    Error::Invalid("question attachments require UTF-8 text".into())
+                })?;
+                values.push(self.output.text.attachment(&file.name, content));
+            }
             *answer = UserAnswer::Choices(values);
         }
         if tx.execute(

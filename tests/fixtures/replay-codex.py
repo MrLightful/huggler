@@ -49,7 +49,7 @@ while True:
             frame["id"] = actual["id"]
         if method == "initialize":
             # Huggler identifies its own client and doesn't register an MCP Apps renderer.
-            frame["params"]["clientInfo"] = {
+            frame["params"]["clientInfo"] = case["clientInfo"] if "clientInfo" in case else {
                 "name": "huggler", "title": "Huggler", "version": case["version"]
             }
             del frame["params"]["capabilities"]["extensions"]

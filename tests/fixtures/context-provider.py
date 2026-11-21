@@ -47,8 +47,31 @@ for line in sys.stdin:
     if method == "model/list" and not acp:
         models = [] if Path("empty-model-list").exists() else ["fixture-fast", "fixture-deep"]
         result = {"data": [{"id": model} for model in models]}
+    elif method == "skills/list" and not acp:
+        assert params["cwds"] == [str(Path.cwd())]
+        if Path("skill-list-unavailable").exists():
+            emit(id=frame["id"], error={"code": -32601, "message": "unsupported"})
+            continue
+        result = {"data": [
+            {"cwd": str(Path.cwd().parent), "skills": [
+                {"name": "other-checkout", "enabled": True, "path": "/other/SKILL.md"},
+            ]},
+            {"cwd": str(Path.cwd()), "skills": [
+                {"name": "build-guide", "enabled": True, "path": str(Path.cwd() / "build" / "SKILL.md"),
+                 "shortDescription": "Build the workspace"},
+                {"name": "lint-guide", "enabled": True, "path": str(Path.cwd() / "lint" / "SKILL.md"),
+                 "interface": {"shortDescription": "Run the linter"}},
+                {"name": "disabled-guide", "enabled": False, "path": "/disabled/SKILL.md"},
+                {"name": "shared-skill", "enabled": True, "path": str(Path.cwd() / "repo" / "SKILL.md"),
+                 "scope": "repo"},
+                {"name": "shared-skill", "enabled": True, "path": str(Path.cwd() / "user" / "SKILL.md"),
+                 "scope": "user"},
+            ]},
+        ]}
     elif method == "initialize" and acp:
         result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
+        if Path("acp-vision").exists():
+            result["agentCapabilities"]["promptCapabilities"] = {"image": True}
     elif method in ("thread/start", "session/new", "thread/resume", "session/load", "thread/fork"):
         session = str(uuid4()) if method in ("thread/fork", "thread/start", "session/new") else params.get("threadId", params.get("sessionId"))
         result = {"sessionId": session} if acp else {"thread": {"id": session}}

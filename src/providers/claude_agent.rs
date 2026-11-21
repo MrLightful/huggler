@@ -116,7 +116,7 @@ impl Session<'_> {
         }
     }
 
-    async fn configure(&mut self, turn: &Turn) -> Result<String> {
+    async fn configure(&mut self, turn: &Turn) -> Result<(String, bool)> {
         let init = initialize(self.rpc, turn.provider, &turn.output).await?;
         self.sequence = 1;
         let mut servers = vec![];
@@ -180,7 +180,10 @@ impl Session<'_> {
                 .await?;
             }
         }
-        Ok(session)
+        Ok((
+            session,
+            init["agentCapabilities"]["promptCapabilities"]["image"] == true,
+        ))
     }
 }
 pub(super) async fn initialize(
@@ -272,13 +275,19 @@ pub(crate) async fn execute(
             sequence: 0,
             children: Children::new(&permissions.run),
         };
-        let session = client.configure(&turn).await?;
+        let (session, supports_images) = client.configure(&turn).await?;
+        let mut content = vec![json!({"type":"text","text":turn.text})];
+        if supports_images {
+            content.extend(turn.files.files.iter().filter(|file| file.is_image()).map(
+                |file| json!({"type":"image","data":file.base64(),"mimeType":file.file.mime}),
+            ));
+        }
         update(Update::Bound(NativeThreadId(session.clone())))?;
         turn.submitting_prompt(&update)?;
         let prompt = client
             .send(
                 "session/prompt",
-                json!({"sessionId":session,"prompt":[{"type":"text","text":turn.text}]}),
+                json!({"sessionId":session,"prompt":content}),
             )
             .await?;
         update(Update::Started(None))?;

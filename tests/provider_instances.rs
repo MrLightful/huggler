@@ -62,6 +62,38 @@ async fn turn(rt: &Huggler, thread: &ThreadId, prompt: &str) -> Run {
     .unwrap()
 }
 
+async fn send_attachment_fixture(rt: &Huggler, thread: &ThreadId) {
+    let receipt = rt
+        .dispatch(Command {
+            id: CommandId(uuid::Uuid::new_v4().to_string()),
+            thread_id: thread.clone(),
+            action: Action::EnqueueFiles {
+                text: "Attachment fixture".into(),
+                files: vec![
+                    Attachment::from_bytes(
+                        "diagram.png".into(),
+                        include_bytes!("fixtures/attachments/diagram.png").to_vec(),
+                    )
+                    .unwrap(),
+                    Attachment::from_bytes(
+                        "report.pdf".into(),
+                        include_bytes!("fixtures/attachments/report.pdf").to_vec(),
+                    )
+                    .unwrap(),
+                ],
+            },
+        })
+        .unwrap();
+    let run = timeout(
+        Duration::from_secs(10),
+        rt.wait(thread, receipt.run_id.as_ref().unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+}
+
 async fn answer(rt: &Huggler, thread: &ThreadId, prompt: &str) -> String {
     let run = turn(rt, thread, prompt).await;
     assert_eq!(run.status, RunStatus::Completed, "{run:?}");
@@ -96,6 +128,47 @@ async fn missing_checkout_is_distinct_from_a_missing_codex_executable() {
         run.error,
         Some(Error::CheckoutUnavailable(root).to_string())
     );
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn codex_discovery_lists_enabled_skills_for_the_requested_checkout() {
+    let (temp, root) = checkout();
+    let mut options = HugglerOptions::new(temp.path().join("state"));
+    options.codex.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-provider.py");
+    let rt = Huggler::open(options).await.unwrap();
+    let skills = rt
+        .list_provider_skills("codex", &root)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        ["build-guide", "lint-guide", "shared-skill", "shared-skill"]
+    );
+    assert_eq!(skills[1].description.as_deref(), Some("Run the linter"));
+    assert_eq!(skills[2].path, root.join("repo/SKILL.md"));
+    assert_eq!(skills[3].path, root.join("user/SKILL.md"));
+    let calls = fs::read_to_string(root.join("frames.ndjson")).unwrap();
+    assert!(!calls.contains("model/list"));
+    assert!(!calls.contains("turn/start"));
+
+    fs::write(root.join("skill-list-unavailable"), "").unwrap();
+    assert!(
+        rt.list_provider_skills("codex", &root)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    fs::remove_file(root.join("frames.ndjson")).unwrap();
+    let report = rt.probe_provider("codex", &root).await.unwrap();
+    assert_eq!(report.models, ["fixture-deep", "fixture-fast"]);
+    let calls = fs::read_to_string(root.join("frames.ndjson")).unwrap();
+    assert!(!calls.contains("skills/list"));
     rt.close().await.unwrap();
 }
 
@@ -524,6 +597,25 @@ async fn pi_extension_calls_scoped_tool() {
 }
 
 #[tokio::test]
+async fn pi_and_muse_receive_native_image_parts() {
+    let (dir, root) = checkout();
+    let mut opts = HugglerOptions::new(dir.path().join("state"));
+    opts.agent_tools = true;
+    opts.instances
+        .push(peer(dir.path(), "muse", Provider::Muse));
+    let mut pi = peer(dir.path(), "pi", Provider::Pi);
+    pi.home = Some(dir.path().join("pi-home"));
+    opts.instances.push(pi);
+    let rt = Huggler::open(opts).await.unwrap();
+    for provider in ["pi", "muse"] {
+        let report = rt.probe_provider(provider, &root).await.unwrap();
+        let thread = launch(&rt, &root, provider, report.models.first().cloned());
+        send_attachment_fixture(&rt, &thread).await;
+    }
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn muse_observes_early_events_and_rejects_unhandled_dialogs() {
     let (dir, root) = checkout();
     let mut opts = HugglerOptions::new(dir.path().join("state"));
@@ -719,6 +811,7 @@ async fn opencode_both_generations_in_managed_and_external_modes() {
                     (2, 1142, 18)
                 );
             }
+            send_attachment_fixture(&rt, &thread).await;
             if !v2 {
                 assert!(
                     turn(&rt, &thread, "refused")

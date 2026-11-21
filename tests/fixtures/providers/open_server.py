@@ -5,11 +5,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+from socketserver import TCPServer
 import sys
 import threading
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from replay import check_tools, frames
+from replay import attachment, check_tools, frames
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind does a reverse lookup that can stall on macOS CI.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
 
 
 class Peer(BaseHTTPRequestHandler):
@@ -118,6 +126,16 @@ class Peer(BaseHTTPRequestHandler):
             assert self.server.registered == managed
             prompt = body["text"] if v2 else body["parts"][0]["text"]
             self.server.stopped.clear()
+            if prompt.startswith("Attachment fixture"):
+                assert "Attachment PDF fixture" in prompt and "diagram.png" in prompt
+                files = body.get("files", []) if v2 else body["parts"][1:]
+                names = ["diagram.png"] if v2 else ["diagram.png", "report.pdf"]
+                assert [part["name" if v2 else "filename"] for part in files] == (
+                    names if managed else []
+                )
+                for part, name in zip(files, names):
+                    uri = urlsplit(part["uri" if v2 else "url"])
+                    assert uri.scheme == "file" and Path(unquote(uri.path)).read_bytes() == attachment(name)
             if prompt == "refused":
                 return self.reply({}, 409)
             if v2:
@@ -160,7 +178,7 @@ if __name__ == "__main__":
     if managed:
         assert password and sys.argv[-5:] == ["serve", "--hostname", "127.0.0.1", "--port", "0"]
     auth = "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
-    with ThreadingHTTPServer(("127.0.0.1", 0), Peer) as server:
+    with LoopbackServer(("127.0.0.1", 0), Peer) as server:
         server.seen = set()
         server.registered = False
         server.stopped = threading.Event()

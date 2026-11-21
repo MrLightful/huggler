@@ -13,6 +13,21 @@ Check Huggler’s public interface and tests for current support. Record provide
 | T3 MCP declarations | 92 tools across 15 toolkit directories | [Toolkits and access-checked handlers][src-7] |
 | Harnesses | 11 built-in driver kinds, 8 aggregate usage readers | [Driver source map](upstream-watch-guide.md#locate-a-harness-change) · [Registration][src-8] |
 
+## Composer suggestions
+
+The desktop owns trigger detection, file search, selection, and draft edits. For `@`, it searches tracked and non-ignored untracked files in the selected checkout, or files in a scratch conversation. The selected relative path is sent as a Markdown link in the existing message. This follows T3 Code's file reference format. [T3 Code menu and selection](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/ChatComposer.tsx) · [T3 Code workspace search regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/workspace/WorkspaceEntries.test.ts)
+
+| Harness | Version and transport | Skill discovery and delivery |
+| --- | --- | --- |
+| Codex | 0.170.0, app-server over stdio | Native `skills/list` through `list_provider_skills` for the selected checkout and instance. Selection inserts the native `$name` syntax. When enabled skills share a name, the desktop uses a native path-qualified mention for each path representable by Codex's linked-mention syntax. Older app servers may report the skill catalog unavailable. [Codex skill selection](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/skills/src/selection.rs) |
+| Other adapters | See [driver source map](upstream-watch-guide.md#locate-a-harness-change) | Skill discovery is unavailable in the desktop. |
+
+The [provider fixture test](../tests/provider_instances.rs) verifies checkout scope, disabled skills, same-named skills, and independent model discovery. The [macOS qualification check](../scripts/check-provider-desktop.py) drives the composer with keyboard and mouse and inspects the resulting Codex `turn/start` input. The live protocol check used `skills/list` only.
+
+## Desktop storage layout
+
+Desktop chooses a base directory with sibling `userdata`, `worktrees` and `scratch` directories, following T3 Code at the pinned revision. A name in the Rust or TypeScript SDK supplies the provider and MCP identifier and defaults storage to `userdata` and `worktrees` under `~/.<identifier>`. Embedders can set a base directory, database path, or provider identity explicitly. Desktop reopens legacy state in place because saved checkout paths are absolute. [Upstream desktop path resolution](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/desktop/src/app/DesktopStatePaths.ts) · [Upstream server paths](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/config.ts) · [Huggler desktop paths and tests](../desktop/src/paths.rs)
+
 ## Commands
 
 A host should normally use launch, send, stop and the other management operations. Low-level dispatch accepts a broader schema, including messages normally produced by server workers. Use the authenticated intake, scope checks, provenance normalization and existing command policy for any remote dispatch API. A thread agent gets the narrower MCP interface below. [Management service][src-9] · [Message intake][src-10] · [RPC authorization][src-11]
@@ -82,6 +97,20 @@ The four control operations in the first row require orchestration-operate autho
 All five reads require orchestration-read scope. The live shell, detailed thread stream and history pages must agree on what a client can safely resume or prepend. [HTTP routing][src-4] · [Handlers][src-17] · [Bounded transport tests][src-18]
 
 **Adjacent routes needed by a T3-like application.** Projects, filesystem, assets/attachments, external agent sessions, VCS/worktree setup, Git/review, source control/PRs/issues, settings, provider authentication/install, ACP Registry management, provider catalogs/usage, peer links, guest sharing, secrets, schedules/webhook history, MCP Apps, terminal, preview and devices live outside this 23-method map. For example, `agentSessions.scan` and `agentSessions.import` ingest local transcripts, `server.importAcpRegistrySession` handles a registry session and `secrets.answerRequest` completes a secret request. Use the main RPC map and its per-call permissions when implementing the full host profile. [Main RPC map][src-3] · [Per-call scopes][src-11]
+
+### File attachments in Huggler
+
+The desktop owns file selection, drag and drop, draft removal, previews, and saving a copy. The crate validates and stores the original bytes with the message, scopes upload claims to their thread, and keeps bytes out of history pages and replay events. Adapters choose how to deliver the files. Huggler uses bounded UTF-8 and PDF excerpts and local file paths for other formats. A configured external OpenCode server needs a shared filesystem for those paths to work. Portable fork summaries carry bounded message text.
+
+| Harness and transport | Turn input |
+| --- | --- |
+| Codex app-server 0.170.0 over stdio | Native `localImage` for PNG, JPEG, GIF and WebP. PDFs use an extracted text excerpt and a local file path. |
+| ACP v1/v2 over stdio, including Claude Agent | Native image content blocks when the harness advertises `promptCapabilities.image`. Local file paths provide a fallback. |
+| Pi RPC 1.0.0 fixture over stdio | Native `images` on `prompt`. Other files use the text and path fallback. |
+| Muse 1.4.3 JSON-RPC fixture over stdio | Native image parts on `turn/start` following the upstream Muse adapter. Other files use the text and path fallback. |
+| OpenCode HTTP 1.14.39 and 2.0.18 fixtures | Managed v1 uses native image and PDF file parts. Managed v2 uses native image files and the text and path fallback for PDFs. External servers receive the text and path fallback. |
+
+The upstream reference is the attachment handling at `338352dee2f43079482e054e8229a2ba055641d9`, including the fix that keeps attachment references visible in the provider prompt. Huggler reads PDFs in Rust. Other binary documents use the original file path. [Upstream prompt regression](https://github.com/pingdotgg/t3code/commit/550f119c3ac12b2df070c4fd545ab8b41222debb) · [Crate attachment tests](../tests/context.rs) · [Desktop history check](../scripts/check-desktop-history.py)
 
 ## Durable facts and effects
 

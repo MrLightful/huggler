@@ -5,7 +5,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Options {
-    state_dir: PathBuf,
+    state_dir: Option<PathBuf>,
+    name: Option<String>,
+    slug: Option<String>,
     #[serde(default)]
     storage: Storage,
     #[serde(default)]
@@ -57,10 +59,23 @@ struct Presentation {
 
 impl Options {
     pub fn into_core(self) -> huggler::Result<HugglerOptions> {
-        if self.state_dir.as_os_str().is_empty() {
+        if self
+            .state_dir
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
             return Err(huggler::Error::Invalid("stateDir must be a path".into()));
         }
-        let mut core = HugglerOptions::new(self.state_dir);
+        let mut core = self.state_dir.map(HugglerOptions::new).unwrap_or_default();
+        if let Some(slug) = self.slug {
+            core = core.with_name_and_slug(self.name.as_deref().unwrap_or(&slug), &slug)?;
+        } else if let Some(name) = self.name {
+            core = core.with_name(&name)?;
+        } else if core.state_dir.as_os_str().is_empty() {
+            return Err(huggler::Error::Invalid(
+                "provide name, slug or stateDir".into(),
+            ));
+        }
         core.instances = self.instances;
         if let Some(path) = self.storage.database_path {
             core.storage.database_path = path;

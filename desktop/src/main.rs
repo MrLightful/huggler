@@ -13,6 +13,7 @@ macro_rules! control {
 mod changes;
 mod fonts;
 mod git;
+mod paths;
 mod questions;
 mod settings;
 mod ui;
@@ -25,7 +26,7 @@ use anyhow::{Context as _, Result};
 use conversation::Desktop;
 use gpui::{prelude::*, *};
 use gpui_component::Root;
-use huggler::{Huggler, HugglerOptions};
+use huggler::Huggler;
 use std::{path::PathBuf, sync::Arc};
 
 const APP_ID: &str = "dev.huggler.stage2";
@@ -35,15 +36,13 @@ actions!(
         Quit,
         OpenSettings,
         NewConversation,
-        NewConversationWithSetup
+        NewConversationWithSetup,
+        FocusMessage
     ]
 );
 
 fn main() -> Result<()> {
-    let state = std::env::var_os("HUGGLER_STATE_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::data_dir().map(|path| path.join(APP_ID)))
-        .context("cannot locate Huggler app data")?;
+    let paths = paths::StoragePaths::discover()?;
     #[cfg(all(feature = "qualification", target_os = "macos"))]
     let driver = qualification::load()?;
 
@@ -52,14 +51,14 @@ fn main() -> Result<()> {
     #[cfg(not(all(feature = "qualification", target_os = "macos")))]
     let interactive = true;
 
-    let (prefs, load_error) = match settings::Preferences::load(&state) {
+    let (prefs, load_error) = match settings::Preferences::load(&paths.state_dir()) {
         Ok(prefs) => (prefs, None),
         Err(error) => (
             settings::Preferences::default(),
             Some(format!("Could not read settings. {error}")),
         ),
     };
-    let mut options = HugglerOptions::new(&state);
+    let mut options = paths.runtime_options();
     options.agent_tools = true;
     options.prompt_suggestions = std::env::var("HUGGLER_PROMPT_SUGGESTIONS").as_deref() == Ok("1");
     options.codex.request_approvals = true;
@@ -102,6 +101,7 @@ fn main() -> Result<()> {
                 gpui_component::input::Enter { secondary: true },
                 Some(conversation::COMPOSER_CONTEXT),
             ),
+            KeyBinding::new("secondary-l", FocusMessage, None),
         ]);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
         .detach();
 
         let bounds = Bounds::centered(None, size(px(1120.), px(740.)), cx);
-        let _window = cx
+        let window_handle = cx
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -144,17 +144,27 @@ fn main() -> Result<()> {
                 |window, cx| {
                     window.set_window_title("Huggler");
                     let view =
-                        cx.new(|cx| Desktop::new(runtime, state, prefs, load_error, window, cx));
+                        cx.new(|cx| Desktop::new(runtime, paths, prefs, load_error, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )
             .expect("open Huggler window");
+        cx.on_action(move |_: &FocusMessage, cx| {
+            // A dismissed popover can leave GPUI without a focused element to route through.
+            cx.defer(move |cx| {
+                let _ = window_handle.update(cx, |root, window, cx| {
+                    if let Ok(desktop) = root.view().clone().downcast::<Desktop>() {
+                        desktop.update(cx, |view, cx| view.focus_message(window, cx));
+                    }
+                });
+            });
+        });
         if interactive {
             cx.activate(true);
         }
         #[cfg(all(feature = "qualification", target_os = "macos"))]
         if let Some(driver) = driver {
-            qualification::run(driver, _window.into(), cx);
+            qualification::run(driver, window_handle.into(), cx);
         }
     });
     Ok(())

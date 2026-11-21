@@ -6,7 +6,7 @@ On macOS, install Git, Xcode, Rust/Cargo 1.94.1 or later and a signed-in Codex C
 cargo run --locked --manifest-path desktop/Cargo.toml --target-dir target/desktop
 ```
 
-To install a bundle, use the release build prerequisites and choose an unused destination. Set `HUGGLER_STATE_DIR` before launch to use a custom state directory. [Release build prerequisites](verification.md#package-the-crate-and-desktop-app)
+To install a bundle, use the release build prerequisites and choose an unused destination. [Release build prerequisites](verification.md#package-the-crate-and-desktop-app)
 
 ```sh
 python3 scripts/install-desktop.py "$HOME/Applications/Huggler.app"
@@ -24,7 +24,7 @@ To add provider instances, set `HUGGLER_PROVIDERS` to the path of a JSON file be
 Use unique instance IDs. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` override the executables for the built-in instances. [Provider configuration](../docs-app/content/docs/guides/configure-providers.mdx)
 
 1. **Start a conversation.** Choose **Create**, select your checkout with the folder button, type your task and press **Enter** or click the up arrow. Huggler uses the first line as the conversation name. To work in a fresh scratch directory, choose **or start without a project**. With no checkout selected, you can send a message directly. Open the provider and model picker beside the send button to choose a provider. With a checkout selected, you can also search its models. Use **Huggler → Create with Setup…** (⌘⇧N) to set a name, check the selected provider, or create a linked worktree on a new branch. Leave the branch empty to use your checkout and its uncommitted edits. In an existing conversation, use the same picker to change the model for your next turn.
-2. **Send a message.** Type your task and press **Enter** to send. Use **Shift+Enter** to add a line. In either composer, click **+** to include up to eight UTF-8 text files (64 KiB each). Click a filename to remove it before sending. In history, filenames appear below your message. Click one to read the saved text, then click it again to collapse it. You can send files on their own or queue them with a follow-up. The provider receives the filenames and the contents captured when you selected them. The built-in Codex instance can edit the checkout during implementation. You can change **Model** beside **Message** before sending or queuing your next turn. Huggler remembers the selection for this conversation. Read the streaming reply, open command output and respond to questions or permission requests in **Conversation**.
+2. **Send a message.** Type your task and press **Enter** to send. Use **Shift+Enter** to add a line and **⌘L** to focus the message field. In either composer, click **+** or drop files into the composer to attach up to eight files totaling 50 MiB, including up to 20 MiB of images. Click a draft filename to remove it before sending. In history, expand a filename to preview text, images, or extracted PDF text when available. Use **Save as…** to save the original file. You can send files on their own or queue them with a follow-up. The provider receives the filenames and the contents or local file paths supported by that provider. The built-in Codex instance can edit the checkout during implementation. You can change **Model** beside **Message** before sending or queuing your next turn. Huggler remembers the selection for this conversation. Read the streaming reply, open command output and respond to questions or permission requests in **Conversation**.
 3. **Manage ongoing work.** While the agent works, **Enter** queues your follow-up and the round stop button replaces the send arrow. **Stop thread** interrupts the current work and pauses queued messages. Use **Resume queue** to deliver them. Choose **Show conversations** in the header to switch to another task. A partially typed answer stays with its question while the app is open. Reopening the app restores the selected conversation and its history.
 4. **Review changed files.** The right sidebar lists paths relative to the selected conversation’s checkout alongside their Git status. Toggle the sidebar from the conversation header. It starts collapsed in narrow windows. Hover over a truncated path to see it in full. The list refreshes when you select a conversation or a turn finishes. Choose the refresh icon beside **Changes** to pick up external edits.
 5. **Open the checkout or a pull request.** Use the folder menu beside **Create PR** to open this conversation’s checkout in Finder, Terminal or VS Code. To open GitHub’s pull request form, push your commits to a tracked GitHub.com branch, then click **Create PR**. Review the base branch and submit on GitHub.
@@ -35,13 +35,19 @@ If a conversation's checkout was moved or deleted, Huggler shows its saved path.
 
 Your prompts appear on the right. Assistant replies support Markdown. Hover over a message to see its local time, elapsed turn time, and copy button. Hover over the time for the full date. Older and imported messages may have missing timing information. Use **Show full message** to expand a long reply. Hover over a mark to the left of the transcript to preview a prompt and the start of its reply. Click the mark to jump to that turn. Use **Older** and **Newest** to browse history, or click the down arrow above **Message** to return to the end.
 
-While a response is running, the summary shows counts, the latest intermediate message, and the latest tool call. The elapsed time updates below them. Expand the summary to inspect the activity. Intermediate messages appear inside it without hover footers. When the reply arrives, the activity collapses above the final message. Command rows open the latest available output, including after you reopen a conversation. Completed turns show the activity counts even when earlier records have been omitted from the expanded list. Provider-reported context compaction is marked in the activity. Expand a filename to read the saved attachment inline.
+While a response is running, the summary shows counts, the latest intermediate message, and the latest tool call. The elapsed time updates below them. Expand the summary to inspect the activity. Intermediate messages appear inside it without hover footers. When the reply arrives, the activity collapses above the final message. Command rows open the latest available output, including after you reopen a conversation. Completed turns show the activity counts even when earlier records have been omitted from the expanded list. Provider-reported context compaction is marked in the activity.
 
 | Harness and transport | Transcript coverage |
 | --- | --- |
 | Codex app-server over stdio, scripted protocol fixture | Native command, file change, MCP and dynamic tool, search, agent, commentary and compaction records when reported. Older command logs use generic labels where only output was saved. |
 | ACP v1 or v2 over stdio | Native tool names and statuses when the adapter reports `tool_call` and `tool_call_update`. |
 | Other transports and imported history | Displays the messages, saved attachments, and command output already available in history. |
+
+## Mention a file or skill
+
+In **First message** or **Message**, type `@` and part of a filename or path to find a file in the conversation's checkout. Choose a result to insert a relative file reference. With a Codex provider selected, type `/` and part of a skill name to find enabled skills. Choosing a skill inserts its `$skill-name` mention. When skills share a name, the suggestions show their paths and the selected mention includes its path.
+
+Use **↑** and **↓** to move through the suggestions, **Enter** or **Tab** to insert the highlighted result, and **Esc** to close the menu. You can also click a result. Continue editing your draft or send it with the up arrow.
 
 ## Find a conversation by status
 
@@ -51,6 +57,14 @@ Use the left sidebar button in the workspace header to hide or show conversation
 - **Ready** shows new conversations and conversations whose work completed or was stopped.
 - **Working** shows conversations with queued or active work, including running subagents. By default, only your open conversation appears in this group. A request for your input moves the conversation into **Needs attention** automatically.
 - **Settled** holds conversations you have marked as finished. Click the checkmark beside an idle conversation to settle it. Expand **Settled** to browse its history. Click the undo arrow to unsettle it, or send a message to reopen it automatically. Settlement persists across restarts.
+
+## Desktop data directory
+
+Desktop uses `~/.huggler` by default. `userdata/` holds `huggler.sqlite3`, preferences, and the saved conversation selection. Managed Git checkouts go in `worktrees/`, and conversations started without a project go in `scratch/`.
+
+Set `HUGGLER_HOME` before launch to use the same layout under a different directory. The existing `HUGGLER_STATE_DIR` override takes precedence and uses its original flat layout, with `huggler.sqlite3`, `worktrees/`, and `scratch/` directly under the specified path.
+
+If `~/.huggler/userdata/huggler.sqlite3` is absent and an existing database is found at `~/Library/Application Support/dev.huggler.stage2/huggler.sqlite3`, Desktop continues to use the old directory in place. Saved conversations can still open their original checkout paths. If the home directory cannot be resolved, Desktop uses the previous platform data directory when available.
 
 ## Desktop settings
 

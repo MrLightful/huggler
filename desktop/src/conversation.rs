@@ -2,6 +2,7 @@ mod attachments;
 mod models;
 mod project_actions;
 mod sidebar;
+mod suggestions;
 mod transcript;
 
 use attachments::Attachments;
@@ -12,6 +13,7 @@ use transcript::TurnClock;
 use crate::{
     changes::Changes,
     git,
+    paths::StoragePaths,
     questions::Questions,
     settings::{Preferences, Settings, SettingsEvent},
     ui::{field, hint, label},
@@ -21,7 +23,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Enter, Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState},
     v_flex,
 };
 use huggler::{
@@ -35,6 +37,8 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+
+const NARROW_VIEWPORT_WIDTH: Pixels = px(900.);
 
 pub(crate) const COMPOSER_CONTEXT: &str = "HugglerComposer";
 
@@ -70,7 +74,7 @@ pub struct Desktop {
     expanded_activity: HashSet<(RunId, Option<String>)>,
     turn_clock: Option<Entity<TurnClock>>,
     full_messages: HashMap<huggler::MessageId, String>,
-    file_preview: Option<((huggler::MessageId, usize), String)>,
+    file_preview: Option<((huggler::MessageId, usize), attachments::FilePreview)>,
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
     checkout: Entity<InputState>,
@@ -81,6 +85,7 @@ pub struct Desktop {
     starter_attachments: Attachments,
     launch_setup: bool,
     prompt: Entity<InputState>,
+    suggestions: suggestions::Suggestions,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
     model_picker: Option<Entity<ListState<Models>>>,
@@ -99,12 +104,13 @@ struct CommandLog {
 impl Desktop {
     pub fn new(
         runtime: Arc<Huggler>,
-        state: PathBuf,
+        paths: StoragePaths,
         prefs: Preferences,
         load_error: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let state = paths.state_dir();
         let settings = cx.new(|cx| {
             Settings::new(
                 prefs,
@@ -141,7 +147,7 @@ impl Desktop {
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
-            scratch_root: state.join("scratch"),
+            scratch_root: paths.scratch_dir(),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
             expanded_sections: HashMap::new(),
@@ -180,6 +186,7 @@ impl Desktop {
                     .placeholder("Describe a task or ask a question…")
             }),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
+            suggestions: suggestions::Suggestions::default(),
             instance,
             launch_model: None,
             model_picker: None,
@@ -189,6 +196,9 @@ impl Desktop {
         };
         cx.subscribe(&view.checkout, |view, _, event, cx| {
             if matches!(event, InputEvent::Change) {
+                if view.current.is_none() {
+                    view.suggestions = Default::default();
+                }
                 view.launch_model = None;
                 view.model_picker = None;
                 let delay = cx
@@ -208,12 +218,7 @@ impl Desktop {
             }
         })
         .detach();
-        cx.subscribe(&view.starter, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })
-        .detach();
+        Self::observe_composer(&view.starter, window, cx);
         let restored = view.restore(window, cx);
         if let Ok(mut revision) = restored {
             let runtime = view.runtime.clone();
@@ -289,6 +294,7 @@ impl Desktop {
         self.full_messages.clear();
         self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
         self.prompt = self.workspaces[&id].draft.clone();
+        self.suggestions = Default::default();
         self.model_picker = None;
         self.current = Some(snapshot);
         self.preload_models(cx);
@@ -352,12 +358,7 @@ impl Desktop {
                     .auto_grow(2, 5)
                     .placeholder("Describe a task or ask a question")
             });
-            cx.subscribe(&draft, |_, _, event, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            })
-            .detach();
+            Self::observe_composer(&draft, window, cx);
             self.workspaces.insert(
                 id.clone(),
                 Workspace {
@@ -450,6 +451,7 @@ impl Desktop {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggestions = Default::default();
         self.model_picker = None;
         self.show_settings = true;
         self.settings.read(cx).focus.focus(window);
@@ -471,7 +473,29 @@ impl Desktop {
         }
     }
 
+    pub(super) fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_settings || self.launching.is_some() {
+            return;
+        }
+        let input = match &self.current {
+            Some(_) => {
+                if window.viewport_size().width < NARROW_VIEWPORT_WIDTH
+                    && self.changes_sidebar.is_open(false)
+                {
+                    self.changes_sidebar.toggle(true);
+                }
+                &self.prompt
+            }
+            None if !self.launch_setup => &self.starter,
+            None => return,
+        };
+        self.model_picker = None;
+        input.focus_handle(cx).focus(window);
+        cx.notify();
+    }
+
     fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggestions = Default::default();
         self.model_picker = None;
         self.show_settings = false;
         self.launch_setup = setup;
@@ -529,6 +553,7 @@ impl Desktop {
         let runtime = self.runtime.clone();
         let id = ThreadId(Uuid::new_v4().to_string());
         self.launching = Some(id.clone());
+        self.suggestions = Default::default();
         self.focus.focus(window);
         self.error = None;
         cx.notify();
@@ -666,6 +691,9 @@ impl Desktop {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
+            if self.current.is_none() {
+                self.suggestions = Default::default();
+            }
             self.preload_models(cx);
         }
     }
@@ -779,7 +807,7 @@ impl Desktop {
             .tooltip(tooltip)
     }
 
-    fn launch_form(&self, compact: bool, cx: &Context<Self>) -> AnyElement {
+    fn launch_form(&self, compact: bool, window: &Window, cx: &Context<Self>) -> AnyElement {
         if self.launching.is_some() {
             return v_flex()
                 .size_full()
@@ -805,17 +833,7 @@ impl Desktop {
                 |name| format!("What should we build in {name}?"),
             );
             let composer = v_flex()
-                .key_context(COMPOSER_CONTEXT)
-                .capture_action(cx.listener(|view, action: &Enter, window, cx| {
-                    if !action.secondary && view.starter.focus_handle(cx).is_focused(window) {
-                        cx.stop_propagation();
-                        if !view.starter.read(cx).value().trim().is_empty()
-                            || !view.starter_attachments.is_empty()
-                        {
-                            view.launch(window, cx);
-                        }
-                    }
-                }))
+                .on_drop(cx.listener(Self::drop_attachments))
                 .w_full()
                 .p_3()
                 .gap_2()
@@ -824,10 +842,7 @@ impl Desktop {
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted.opacity(0.55))
                 .children(self.attachment_list(&self.starter_attachments, cx))
-                .child(control!(
-                    "First message",
-                    Input::new(&self.starter).appearance(false)
-                ))
+                .child(self.message_input("First message", &self.starter, window, cx))
                 .child(
                     h_flex()
                         .justify_end()
@@ -892,6 +907,7 @@ impl Desktop {
                 .into_any_element();
         }
         let launcher = v_flex()
+            .on_drop(cx.listener(Self::drop_attachments))
             .w_full()
             .p_3()
             .gap_3()
@@ -1162,14 +1178,7 @@ impl Desktop {
             })
         .child(
             v_flex()
-                .key_context(COMPOSER_CONTEXT)
-                .capture_action(cx.listener(|view, action: &Enter, window, cx| {
-                    if !action.secondary && view.prompt.focus_handle(cx).is_focused(window) {
-                        cx.stop_propagation();
-                        let result = view.send(window, cx);
-                        view.report(result, cx);
-                    }
-                }))
+                .on_drop(cx.listener(Self::drop_attachments))
                 .mx_4().mb_3().p_3().rounded_xl().bg(cx.theme().muted.opacity(0.55))
                 .gap_2()
                 .border_1()
@@ -1221,7 +1230,7 @@ impl Desktop {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
                 .children(self.attachment_list(attachments, cx))
-                .child(control!("Message", Input::new(&self.prompt).appearance(false)))
+                .child(self.message_input("Message", &self.prompt, window, cx))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
                     let noun = if count == 1 { "message" } else { "messages" };
@@ -1347,7 +1356,7 @@ impl Render for Desktop {
 
         use sidebar::SidebarEdge;
         let viewport = f32::from(window.viewport_size().width);
-        let narrow = viewport < 900.;
+        let narrow = window.viewport_size().width < NARROW_VIEWPORT_WIDTH;
         let changes_open = self.changes_sidebar.is_open(!narrow);
         let navigation_default = self.current.is_none() || self.show_settings;
         let navigation_open = self.navigation.is_open(navigation_default);
@@ -1456,7 +1465,9 @@ impl Render for Desktop {
                             Some(thread) => self
                                 .conversation(thread, conversation_width, window, cx)
                                 .into_any_element(),
-                            None => self.launch_form(viewport - left_width * left < 800., cx),
+                            None => {
+                                self.launch_form(viewport - left_width * left < 800., window, cx)
+                            }
                         }
                     })
                     .when_some(

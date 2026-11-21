@@ -26,9 +26,10 @@ use tokio::{
 
 #[derive(Clone, Debug)]
 pub struct HugglerOptions {
-    /// Base directory for relative storage paths.
+    /// Base directory for relative storage paths. The naming methods fill an empty path.
     pub state_dir: PathBuf,
     pub storage: crate::StorageLayout,
+    /// Controls how Huggler and its tools appear to providers and agents.
     pub output: crate::AgentOutput,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
@@ -41,7 +42,16 @@ pub struct HugglerOptions {
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,
 }
+impl Default for HugglerOptions {
+    fn default() -> Self {
+        let mut options = Self::new(PathBuf::new());
+        options.storage.database_path = Path::new("userdata").join(&options.storage.database_path);
+        options
+    }
+}
+
 impl HugglerOptions {
+    /// Configure a caller-selected state directory with `huggler.sqlite3` at its root.
     pub fn new(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
@@ -55,6 +65,48 @@ impl HugglerOptions {
             codex: CodexOptions::default(),
             claude_agent: ClaudeAgentOptions::default(),
         }
+    }
+    /// Set the display name and derive the provider and MCP identifier.
+    ///
+    /// Huggler lowercases ASCII letters and replaces whitespace with hyphens to
+    /// get the identifier. This also fills an empty state directory. For example,
+    /// `Studio Workbench` defaults to `~/.studio-workbench`. Set individual
+    /// `output` overrides after calling this method.
+    pub fn with_name(self, name: &str) -> Result<Self> {
+        let slug = name
+            .trim()
+            .split_ascii_whitespace()
+            .collect::<Vec<_>>()
+            .join("-")
+            .to_ascii_lowercase();
+        self.with_name_and_slug(name, &slug)
+    }
+
+    /// Set the display name and use the supplied slug for the provider and MCP
+    /// identifier and the default `~/.<slug>` directory.
+    pub fn with_name_and_slug(mut self, name: &str, slug: &str) -> Result<Self> {
+        let title = name.trim();
+        if title.is_empty() {
+            return Err(Error::Invalid("expected a nonempty name".into()));
+        }
+        if !crate::mcp::valid_name(slug) {
+            return Err(Error::Invalid(
+                "slug must contain 1–128 ASCII letters, digits, underscores or hyphens".into(),
+            ));
+        }
+        if self.state_dir.as_os_str().is_empty() {
+            self.state_dir = std::env::home_dir()
+                .filter(|path| path.is_absolute())
+                .ok_or_else(|| {
+                    Error::Invalid(
+                        "cannot locate the home directory. Specify a state directory".into(),
+                    )
+                })?
+                .join(format!(".{slug}"));
+        }
+        self.output.name = slug.into();
+        self.output.title = title.into();
+        Ok(self)
     }
 }
 
@@ -310,7 +362,7 @@ impl Shared {
                 self.access(|db| db.worktree_ready(&worktree.path))?;
             }
         }
-        let turn = self.access(|db| {
+        let mut turn = self.access(|db| {
             let mut turn = db.claim(run)?;
             turn.sample_suggestion = self.prompt_suggestions
                 && turn.provider == Provider::Codex
@@ -325,6 +377,13 @@ impl Shared {
             }
             Ok(turn)
         })?;
+        if !turn.files.pending.is_empty() {
+            let files = std::mem::take(&mut turn.files);
+            let text = std::mem::take(&mut turn.text);
+            (turn.files, turn.text) = tokio::task::spawn_blocking(move || files.prepare(text))
+                .await
+                .map_err(|e| Error::Worker(e.to_string()))??;
+        }
         let update = |change| {
             if matches!(change, crate::providers::Update::ForegroundComplete) {
                 return self.advance(|db| db.update(thread, run, change));
@@ -382,6 +441,9 @@ impl Huggler {
     /// Requires a Tokio runtime with I/O and time enabled.
     pub async fn open(options: HugglerOptions) -> Result<Self> {
         let dir = options.state_dir;
+        if dir.as_os_str().is_empty() {
+            return Err(Error::Invalid("expected a state directory path".into()));
+        }
         let storage = options.storage;
         let registry = crate::providers::registry::registry(
             &options.codex,
@@ -668,13 +730,39 @@ impl Huggler {
         id: &str,
         cwd: impl AsRef<Path>,
     ) -> Result<crate::ProviderReport> {
+        self.discover_provider(id, cwd.as_ref(), async |instance, output, cwd| {
+            crate::providers::probe::inspect(&instance, &output, &cwd).await
+        })
+        .await
+    }
+
+    /// List enabled skills in a working directory, ordered by name and path. None
+    /// indicates an unsupported adapter or provider version. Discovery does not submit a prompt.
+    pub async fn list_provider_skills(
+        &self,
+        id: &str,
+        cwd: impl AsRef<Path>,
+    ) -> Result<Option<Vec<crate::ProviderSkill>>> {
+        self.discover_provider(id, cwd.as_ref(), async |instance, output, cwd| {
+            crate::providers::probe::list_skills(&instance, &output, &cwd).await
+        })
+        .await
+    }
+
+    async fn discover_provider<T: Send + 'static, F: Future<Output = Result<T>> + Send>(
+        &self,
+        id: &str,
+        cwd: &Path,
+        discover: impl FnOnce(crate::ProviderInstance, Arc<crate::AgentOutput>, PathBuf) -> F
+        + Send
+        + 'static,
+    ) -> Result<T> {
         let instance = self
             .shared
             .registry
             .get(id)
             .ok_or_else(|| Error::NotFound(format!("provider instance {id}")))?
             .clone();
-        let cwd = cwd.as_ref();
         let cwd = cwd.canonicalize().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
                 Error::CheckoutUnavailable(cwd.to_owned())
@@ -692,14 +780,15 @@ impl Huggler {
             let mut stop = self.shared.stop.subscribe();
             workers.spawn_on(
                 async move {
-                    let probe = crate::providers::probe::inspect(&instance, &output, &cwd);
+                    let provider_id = instance.id.clone();
+                    let probe = discover(instance, output, cwd);
                     let deadline = std::time::Duration::from_secs(15);
                     let result = tokio::select! {
                         _ = stop.wait_for(|stopped| *stopped) => Err(Error::Closed),
                         result = tokio::time::timeout(deadline, probe) => result.unwrap_or_else(|_| {
                             Err(Error::Provider(format!(
                                 "{} timed out during discovery. Check its executable, server and login",
-                                instance.id
+                                provider_id
                             )))
                         }),
                     };
@@ -807,7 +896,7 @@ impl Huggler {
         }
     }
 
-    /// Stage up to 64 KiB of UTF-8 plain text for one thread.
+    /// Stage a captured file for one thread. See the limits on [`Attachment`].
     pub fn prepare_upload(
         &self,
         thread: &ThreadId,
@@ -848,8 +937,25 @@ impl Huggler {
         message: &MessageId,
         position: usize,
     ) -> Result<String> {
+        let file = self.read_attachment_file(thread, message, position)?;
+        if matches!(file.mime.as_str(), "text/plain") {
+            return String::from_utf8(file.bytes)
+                .map_err(|_| Error::Invalid("text attachment requires UTF-8".into()));
+        }
+        file.text()
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Unsupported("use read_attachment_file for binary files".into()))
+    }
+
+    /// Read the original bytes, name and media type at a zero-based attachment position.
+    pub fn read_attachment_file(
+        &self,
+        thread: &ThreadId,
+        message: &MessageId,
+        position: usize,
+    ) -> Result<Attachment> {
         self.shared
-            .access(|db| db.read_attachment(thread, message, position))
+            .access(|db| db.read_attachment_file(thread, message, position))
     }
 
     /// Expand a message preview to its complete stored text.

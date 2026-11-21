@@ -38,6 +38,7 @@ pub(crate) struct AgentTools {
 
 pub(crate) struct Turn {
     pub output: std::sync::Arc<crate::AgentOutput>,
+    pub files: crate::attachments::TurnAttachments,
     pub has_app_context: bool,
     pub sample_suggestion: bool,
     pub fork: Option<(NativeThreadId, NativeTurnId)>,

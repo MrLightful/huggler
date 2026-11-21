@@ -7,12 +7,36 @@ Import `Huggler` and the ID helpers from `@huggler/sdk`. The package includes Ty
 
 ## Open and configure
 
+```typescript
+const host = await Huggler.open({ name: "Studio Workbench" })
+```
+
+Huggler derives a slug from the display name by lowercasing ASCII letters and joining words with hyphens. Pass `slug` to set it explicitly. The slug is the provider and MCP identifier and supplies the default directory `~/.<slug>`. It accepts 1–128 ASCII letters, digits, underscores, or hyphens. In the default directory, the database lives in `userdata/huggler.sqlite3` and managed checkouts in `worktrees/{id}`.
+
 | `Huggler.open(options)` field | Purpose |
 | --- | --- |
-| `stateDir` | Required. Huggler creates its SQLite database here by default. |
+| `name` | Display name. Defaults to the supplied slug, or `Huggler` for path-only configurations. |
+| `slug` | Optional explicit identifier used for provider connections, MCP registration, and the default state directory. Supply at least one of `name`, `slug`, or `stateDir`. |
+| `stateDir` | Choose the base directory. When supplied, the database defaults to `huggler.sqlite3` directly inside it. |
 | `instances` | Additional named provider installations. Each needs an `id`, `driver`, and `executable`. Launch accepts the built-in IDs `"codex"` and `"claudeAgent"` or a registered ID made with `providerInstanceId()`. |
 | `storage` | Override `databasePath` or configure the worktree layout. Threads launched through the preview run in the registered project's root checkout. |
-| `output` | Set the host's `name`, `title`, `version`, `instructions`, provider labels, and tool presentation overrides. |
+| `output` | Advanced overrides for how Huggler and its tools appear to providers and agents. |
+
+```typescript
+const host = await Huggler.open({
+  name: "Studio / Lab",
+  slug: "studio_lab",
+  stateDir: dataDirectory,
+  storage: { databasePath: "sessions/history.db" },
+})
+```
+
+### Provider and agent presentation
+
+- `output.name` overrides the provider client identifier and MCP registration key. Keep this key stable for providers that store permissions under it.
+- `output.title` overrides the display name seen in supported provider metadata and generated conversation text.
+- `output.version` overrides the version advertised in provider and MCP handshakes. It defaults to the Huggler runtime version.
+- `output.instructions`, `providerLabels`, and `tools` customize MCP instructions, provider labels, and advertised tool names, titles, or descriptions.
 
 ## Run a conversation
 
