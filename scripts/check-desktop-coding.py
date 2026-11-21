@@ -49,7 +49,8 @@ def check(binary):
             {"right_of": ["Hide changes", "Create PR"]},
             *send_message("Create the answer file."),
             {"see": "writing/Checking the requested filename. I will confirm the path with you before "
-                    "creating the answer file in this checkout."}, {"click": "Command 1 output"},
+                    "creating the answer file in this checkout."},
+            {"click": "Command 1 output"},
             {"see": "command-output/Checkout ready"},
             {"see": "Needs attention/Implementation/Answer requested"},
             {"click": "answer/filename"}, {"type": name}, {"click": "Create"},
@@ -85,7 +86,7 @@ def check(binary):
             {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
             {"click": "thread/Implementation"}, {"see": f"Changed/{name}"}, {"click": "Send"},
             {"see": "status/Running"}, {"click": "Message"}, {"type": "Review the staged result."},
-            {"click": "Queue message"}, {"see": "1 queued message"},
+            {"see": "Stop thread"}, {"absent": "Queue message"}, {"key": "enter"}, {"see": "1 queued message"},
             {"in_lower_half": "section/Working/1"}, {"see": "Working/Implementation/Running"},
             {"click": "thread/Review"}, {"absent": "thread/Implementation"}, {"click": "section/Working/1"},
             {"see": "Working/Implementation/Running"}, {"click": "section/Working/1"}, {"absent": "thread/Implementation"},
@@ -104,5 +105,44 @@ def check(binary):
     print("Native conversation, queue and sidebar file list passed with a scripted Codex peer")
 
 
+def check_transcript(binary):
+    with tempfile.TemporaryDirectory(prefix="huggler desktop transcript ") as tmp:
+        root = Path(tmp)
+        checkout = root / "checkout"
+        state = root / "state"
+        subprocess.run(["git", "init", "-q", checkout], check=True)
+        env = isolated_env(root)
+        env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-transcript-peer.py")
+        run_window(binary, state, [
+            *launch_thread(checkout, "Transcript review"),
+            {"resize": [640, 550]},
+            {"click": "Message"}, {"type": "Review the latest changes."}, {"key": "shift-enter"},
+            {"type": "Summarize the checks."}, {"key": "enter"},
+            {"see": "You/Review the latest changes.\nSummarize the checks."},
+            {"see": "activity/2 tool calls · 2 messages"},
+            {"contains": "commentary/I’ll check the transcript"}, {"see": "activity-item/docs / lookup"},
+            {"resize": [1120, 740]},
+            {"absent": "commentary/I’ll start with the conversation layout."},
+            {"absent": "Command 1 output"},
+            {"max_height": ["elapsed-time", 24]},
+            {"click": "activity/2 tool calls · 2 messages"},
+            {"see": "commentary/I’ll start with the conversation layout."}, {"see": "Command 1 output"},
+            {"see": "Context compacted"}, {"contains": "Codex/## Review summary"},
+            {"see": "activity/2 tool calls · 2 messages"}, {"see": "activity/1 tool call"},
+            {"absent": "elapsed-time"},
+            {"absent": "activity-item/docs / lookup"},
+            {"click": "activity/2 tool calls · 2 messages"}, {"see": "activity-item/docs / lookup"},
+            {"click": "activity/1 tool call"}, {"see": "activity-item/desktop/src/conversation.rs"},
+        ], env)
+        run_window(binary, state, [
+            {"see": "Context compacted"}, {"contains": "Codex/## Review summary"},
+            {"click": "activity/2 tool calls · 2 messages"}, {"click": "Command 1 output"},
+            {"see": "command-output/All 12 checks passed."},
+        ], env)
+    print("Native transcript activity grouping and saved command output passed")
+
+
 if __name__ == "__main__":
-    check(Path(sys.argv[1]).resolve())
+    binary = Path(sys.argv[1]).resolve()
+    check(binary)
+    check_transcript(binary)

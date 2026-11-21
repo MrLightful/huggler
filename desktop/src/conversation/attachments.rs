@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::{Context as _, ensure};
+use gpui_component::Icon;
 use huggler::TextAttachment;
 use std::{io::Read, path::Path};
 
@@ -70,21 +71,27 @@ impl Desktop {
             .filter(|(id, _)| id == &key)
             .map(|(_, text)| text);
         let expanded = preview.is_some();
+        let filename = name.to_owned();
         let button_id = SharedString::from(format!("attachment-{message}-{position}"));
         v_flex()
-            .items_start()
             .gap_1()
-            .child(control!(
+            .min_w_0()
+            .child(h_flex().min_w_0().child(control!(
                 format!("attachment/{message}/{position}/{name}"),
                 Button::new(button_id.clone())
                     .small()
                     .compact()
+                    .ghost()
+                    .max_w_full()
+                    .min_w_0()
+                    .justify_start()
                     .icon(if expanded {
                         IconName::ChevronDown
                     } else {
                         IconName::ChevronRight
                     })
-                    .child(div().max_w(px(240.)).truncate().child(name.to_owned()))
+                    .child(Icon::new(IconName::File).xsmall().flex_shrink_0())
+                    .child(div().min_w_0().max_w(px(270.)).truncate().child(filename))
                     .tooltip(format!(
                         "{} {}",
                         if expanded { "Hide" } else { "Preview" },
@@ -101,26 +108,19 @@ impl Desktop {
                         }
                         cx.notify();
                     }))
-            ))
+            )))
             .when_some(preview, |row, text| {
                 let body = if text.is_empty() {
                     "Empty file"
                 } else {
                     text.as_str()
                 };
-                row.child(
-                    div()
-                        .id(SharedString::from(format!("preview-{button_id}")))
-                        .w_full()
-                        .max_h(px(176.))
-                        .overflow_y_scroll()
-                        .rounded_md()
-                        .p_2()
-                        .bg(cx.theme().muted)
-                        .text_sm()
-                        .font_family("monospace")
-                        .child(control!(format!("file preview/{body}"), body.to_owned())),
-                )
+                row.child(super::transcript::text_preview(
+                    SharedString::from(format!("preview-{button_id}")),
+                    control!(format!("file preview/{body}"), body.to_owned()),
+                    px(176.),
+                    cx,
+                ))
             })
     }
 

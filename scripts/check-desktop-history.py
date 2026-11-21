@@ -50,8 +50,8 @@ def main():
         run_window(executable, starter_state, [
             {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Git checkout"},
             {"type": str(checkout / "missing")}, {"click": "Back to message"},
-            {"click": "First message"}, {"type": "Review my changes"}, {"key": "enter"},
-            {"type": "Include the tests."}, {"key": "cmd-enter"}, {"contains": "Could not open"},
+            {"click": "First message"}, {"type": "Review my changes"}, {"key": "shift-enter"},
+            {"type": "Include the tests."}, {"key": "enter"}, {"contains": "Could not open"},
             {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"},
             {"type": str(checkout)}, {"click": "Back to message"}, {"click": "Send first message"},
             {"see": "thread/Review my changes"}, {"see": "Ready/Review my changes/Completed"},

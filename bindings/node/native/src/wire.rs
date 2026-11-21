@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 pub fn run(r: Run) -> Value {
     json!({
-        "id": r.id, "ordinal": r.ordinal.to_string(), "status": r.status,
+        "id": r.id, "ordinal": r.ordinal.to_string(), "status": r.status, "startedAtMs": r.started_at_ms,
         "queueHeld": r.queue_held, "deliverySlot": r.delivery_slot.map(|n| n.to_string()),
         "nativeTurn": r.native_turn, "usageLimitResetAt": r.usage_limit_reset_at.map(|n| n.to_string()),
         "promptSuggestion": r.prompt_suggestion,
@@ -82,13 +82,22 @@ pub fn detail(d: ConversationDetail) -> Result<Value> {
         .history
         .messages
         .into_iter()
-        .map(|i| json!({"message": message(i.message), "truncated": i.truncated}))
+        .map(|i| json!({"message": message(i.message), "truncated": i.truncated,
+            "timestampMs": i.timestamp_ms, "turnDurationMs": i.turn_duration_ms}))
         .collect();
     Ok(json!({
         "id": d.id, "name": d.name, "settled": d.settled, "providerInstanceId": d.provider_instance, "model": d.model,
         "latestRun": d.latest_run.map(run), "foregroundRun": d.foreground_run.map(run),
         "queuedCount": d.queued_count.to_string(), "queueHeld": d.queue_held,
         "streamingText": d.streaming_text, "commandItems": d.command_items,
+        "activity": d.activity.into_iter().map(|a| json!({
+            "runId": a.run_id, "status": a.status, "truncated": a.truncated,
+            "items": a.items.into_iter().map(|item| json!({
+                "id": item.id, "kind": item.kind, "title": item.title, "status": item.status,
+                "timestampMs": item.timestamp_ms
+            })).collect::<Vec<_>>(),
+            "turnDurationMs": a.turn_duration_ms, "liveCounts": a.live_counts
+        })).collect::<Vec<_>>(),
         "questions": d.questions.into_iter().map(question).collect::<Vec<_>>(),
         "permissions": d.permissions.into_iter().map(permission).collect::<Vec<_>>(),
         "nativeChildren": d.native_children.into_iter().map(child).collect::<Vec<_>>(),
@@ -99,6 +108,7 @@ pub fn detail(d: ConversationDetail) -> Result<Value> {
 pub fn event(e: Event) -> Value {
     use Change::*;
     let change = match e.change {
+        ActivityChanged { run_id } => json!({"type": "activityChanged", "runId": run_id}),
         Launched => json!({"type": "launched"}),
         SessionReset => json!({"type": "sessionReset"}),
         Run { run: r } => json!({"type": "run", "run": run(r)}),

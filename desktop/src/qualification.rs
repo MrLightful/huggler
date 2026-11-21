@@ -14,6 +14,7 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum Step {
     Click(String),
+    Hover(String),
     DragX(String, i16),
     CenterX(String, i16),
     NextFileSelection(Vec<std::path::PathBuf>),
@@ -23,6 +24,7 @@ pub enum Step {
     See(String),
     RightOf([String; 2]),
     InLowerHalf(String),
+    MaxHeight(String, u16),
     Contains(String),
     Absent(String),
     SeeAny(Vec<String>),
@@ -82,7 +84,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
         Step::CenterX(key, x) => controls
             .get(key.as_str())
             .is_some_and(|bounds| (f32::from(bounds.center().x) - f32::from(*x)).abs() < 2.),
-        Step::Click(key) | Step::DragX(key, _) => {
+        Step::Click(key) | Step::DragX(key, _) | Step::Hover(key) => {
             let Some(bounds) = controls.get(key.as_str()) else {
                 return false;
             };
@@ -96,16 +98,22 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             else {
                 return false;
             };
-            let mut events = vec![(NSEventType::LeftMouseDown, 0.)];
-            let mut dx = 0.;
-            if let Step::DragX(_, delta) = step {
-                dx = f64::from(*delta);
-                events.extend([
-                    (NSEventType::LeftMouseDragged, dx / 2.),
-                    (NSEventType::LeftMouseDragged, dx),
-                ]);
-            }
-            events.push((NSEventType::LeftMouseUp, dx));
+            let events = match step {
+                Step::Hover(_) => vec![(NSEventType::MouseMoved, 0.)],
+                Step::DragX(_, delta) => {
+                    let dx = f64::from(*delta);
+                    vec![
+                        (NSEventType::LeftMouseDown, 0.),
+                        (NSEventType::LeftMouseDragged, dx / 2.),
+                        (NSEventType::LeftMouseDragged, dx),
+                        (NSEventType::LeftMouseUp, dx),
+                    ]
+                }
+                _ => vec![
+                    (NSEventType::LeftMouseDown, 0.),
+                    (NSEventType::LeftMouseUp, 0.),
+                ],
+            };
             for (kind, offset) in events {
                 let location = NSPoint::new(
                     f64::from(position.x) + offset,
@@ -135,6 +143,9 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
         Step::InLowerHalf(key) => controls.get(key.as_str()).is_some_and(|bounds| {
             let height = window.viewport_size().height;
             bounds.center().y >= height / 2. && bounds.bottom() <= height
+        }),
+        Step::MaxHeight(key, height) => controls.get(key.as_str()).is_some_and(|bounds| {
+            bounds.size.height > px(0.) && bounds.size.height <= px(f32::from(*height))
         }),
         Step::RightOf([item, reference]) => controls
             .get(item.as_str())

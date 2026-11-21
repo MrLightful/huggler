@@ -95,6 +95,11 @@ fn main() -> Result<()> {
             KeyBinding::new("secondary-,", OpenSettings, None),
             KeyBinding::new("secondary-n", NewConversation, None),
             KeyBinding::new("secondary-shift-n", NewConversationWithSetup, None),
+            KeyBinding::new(
+                "shift-enter",
+                gpui_component::input::Enter { secondary: true },
+                Some(conversation::COMPOSER_CONTEXT),
+            ),
         ]);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),

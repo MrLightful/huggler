@@ -2834,11 +2834,13 @@ name = "huggler-desktop"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "dirs 6.0.0",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "huggler",
+ "markdown",
  "objc2-app-kit",
  "objc2-foundation",
  "serde",

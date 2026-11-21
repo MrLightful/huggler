@@ -33,6 +33,13 @@ pub(super) fn record(
         .optional()?;
     let discovered = previous.is_none();
     let (mut text, mut truncated, finished) = previous.unwrap_or_default();
+    if let CommandFrame::Snapshot {
+        activity: Some(item),
+        ..
+    } = &frame
+    {
+        crate::store::activity::record(tx, thread, run, item.clone())?;
+    }
     if finished {
         return Ok(());
     }
@@ -46,7 +53,9 @@ pub(super) fn record(
             truncated |= cut;
             false
         }
-        CommandFrame::Snapshot { output, finished } => {
+        CommandFrame::Snapshot {
+            output, finished, ..
+        } => {
             if let Some(output) = output {
                 text = output;
                 truncated = false;

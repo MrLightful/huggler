@@ -64,6 +64,8 @@ for line in sys.stdin:
                     "creating the answer file in this checkout.")
             for character in text:
                 notify("item/agentMessage/delta", delta=character)
+            notify("item/started", item={"id": "inspect", "type": "commandExecution",
+                                         "command": "git status --short", "status": "inProgress"})
             notify("item/commandExecution/outputDelta", itemId="inspect", delta="Checkout ready")
             emit(id="confirm", method="item/tool/requestUserInput", params={
                 "threadId": session, "turnId": turn, "questions": [
