@@ -221,7 +221,11 @@ impl Client {
         }
         if let Some((parent, through)) = &turn.fork {
             let fork = &response["thread"];
-            let last = fork["turns"].as_array().and_then(|turns| turns.last());
+            // Paginated servers omit turn history when excludeTurns is set.
+            let page = self
+                .request("thread/turns/list", json!({"threadId":thread,"limit":1}))
+                .await?;
+            let last = page["data"].as_array().and_then(|turns| turns.first());
             if thread == parent.0
                 || fork["forkedFromId"].as_str() != Some(&parent.0)
                 || last.and_then(|t| t["id"].as_str()) != Some(&through.0)

@@ -49,7 +49,10 @@ for line in sys.stdin:
                     "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": " changed"}}})
         if method == "thread/fork":
             boundary = "wrong" if Path("bad-boundary").exists() else params["lastTurnId"]
-            result["thread"].update(forkedFromId=params["threadId"], turns=[{"id": boundary}])
+            result["thread"].update(forkedFromId=params["threadId"], turns=[])
+    elif method == "thread/turns/list":
+        assert params["threadId"] == session and params["limit"] == 1
+        result = {"data": [{"id": boundary}], "nextCursor": None}
     elif method == "session/prompt":
         prompt = params["prompt"][0]["text"]
         emit(method="session/update", params={"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk",
