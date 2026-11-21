@@ -230,8 +230,8 @@ impl Huggler {
         }
         let Reply::Result { status, text } = peer
             .request(Request::Result {
-                target: child.clone(),
-                run: child_run.clone(),
+                target: child,
+                run: child_run,
             })
             .await?
         else {
@@ -240,8 +240,7 @@ impl Huggler {
         if !status.terminal() {
             return Ok(None);
         }
-        self.shared.schedule(|db| {
-            db.finish_remote_task(parent, run, key, &child, &child_run, status, text)
-        })
+        self.shared
+            .schedule(|db| db.finish_remote_task(parent, run, key, status, text))
     }
 }

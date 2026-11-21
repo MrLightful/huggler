@@ -232,12 +232,10 @@ impl Database {
         parent: &ThreadId,
         run: &RunId,
         key: &str,
-        child: &Address,
-        child_run: &RunId,
         status: RunStatus,
         text: Option<String>,
     ) -> Result<(Option<RunId>, Option<RunJob>)> {
-        let (_, _, wake) = self.remote_child(parent, run, key)?;
+        let (child, child_run, wake) = self.remote_child(parent, run, key)?;
         if wake.is_some() {
             return Ok((wake, None));
         }
