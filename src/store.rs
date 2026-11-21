@@ -78,6 +78,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/028.sql"),
     include_str!("../migrations/029.sql"),
     include_str!("../migrations/030.sql"),
+    include_str!("../migrations/031.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -769,6 +770,12 @@ impl Database {
         {
             imports::prepare(&tx, id, &mut turn)?;
             context::prepare(&tx, id, &scope, &mut turn)?;
+        }
+        #[cfg(feature = "application")]
+        if let Some(context) = tx.query_row(
+            "DELETE FROM app_context WHERE thread=(SELECT thread_id FROM run WHERE id=?) RETURNING content",
+            [&id.0], |r|r.get::<_,String>(0)).optional()? {
+            turn.text = format!("MCP App context (host-approved data):\n{context}\n\n{}", turn.text);
         }
         tx.execute("UPDATE run SET session_generation=(SELECT session_reset FROM thread WHERE id=run.thread_id) WHERE id=?", [&id.0])?;
         if tx.execute(

@@ -144,3 +144,15 @@ impl Database {
         Ok(self.secrets.remove(&id).unwrap().value)
     }
 }
+
+#[cfg(feature = "application")]
+impl Database {
+    pub fn service_checkout(&self, thread: &ThreadId) -> Result<PathBuf> {
+        self.db.query_row("SELECT coalesce(t.worktree_path,p.root) FROM thread t JOIN project p ON p.id=t.project WHERE t.id=?",
+            [&thread.0],|r|Ok(PathBuf::from(r.get::<_,String>(0)?))).optional()?.ok_or(Error::Forbidden)
+    }
+    pub fn set_app_context(&self, thread: &ThreadId, context: &str) -> Result<()> {
+        self.db.execute("INSERT INTO app_context VALUES(?,?) ON CONFLICT(thread) DO UPDATE SET content=excluded.content",params![thread.0,context])?;
+        Ok(())
+    }
+}

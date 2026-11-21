@@ -177,6 +177,7 @@ impl crate::Huggler {
     /// Remove an idle thread and its local history. Foreign keys protect cross-thread
     /// references (including delegated tasks and fork sources). Git files stay on disk.
     pub fn delete_thread(&self, thread: &ThreadId) -> Result<()> {
+        let mut services = self.shared.services.lock().unwrap();
         self.shared.schedule(|db| {
             db.thread_position(thread)?;
             let tx = db.db.transaction()?;
@@ -196,6 +197,8 @@ impl crate::Huggler {
             tx.execute("DELETE FROM thread WHERE id=?", [&thread.0])?;
             tx.commit()?;
             Ok(((), []))
-        })
+        })?;
+        services.close_thread(thread);
+        Ok(())
     }
 }

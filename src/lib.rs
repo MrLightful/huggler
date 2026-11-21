@@ -22,3 +22,6 @@ pub mod workspace;
 
 #[cfg(feature = "application")]
 pub mod repository;
+
+#[cfg(feature = "application")]
+pub mod services;

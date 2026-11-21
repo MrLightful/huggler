@@ -53,6 +53,8 @@ impl HugglerOptions {
 }
 
 pub(crate) struct Shared {
+    #[cfg(feature = "application")]
+    pub(crate) services: Mutex<crate::services::Registry>,
     pub(crate) agent_policy: crate::application::AgentPolicy,
     prompt_suggestions: bool,
     registry: crate::providers::registry::Registry,
@@ -393,6 +395,8 @@ impl Huggler {
             .transpose()?;
         let jobs = db.ready_jobs()?;
         let shared = Arc::new(Shared {
+            #[cfg(feature = "application")]
+            services: Mutex::default(),
             agent_policy: options.agent_policy,
             prompt_suggestions: options.prompt_suggestions,
             db: Mutex::new(Some(db)),
@@ -868,6 +872,8 @@ impl Huggler {
                     *shared.fault.lock().unwrap() = Some(e.to_string());
                 }
             }
+            #[cfg(feature = "application")]
+            shared.services.lock().unwrap().clear();
             shared.db.lock().unwrap().take();
             closed.send_replace(true);
         });
