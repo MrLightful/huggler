@@ -12,7 +12,7 @@ pub struct File {
     pub status: String,
 }
 
-fn git(root: &Path) -> Command {
+fn checkout_command(root: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(root)
         .env_remove("GIT_DIR")
@@ -20,16 +20,37 @@ fn git(root: &Path) -> Command {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .env("GIT_TERMINAL_PROMPT", "0")
-        // Each conversation already owns a checkout root. Git's normal
-        // discovery could walk into a parent repository if this one disappears.
-        .args([
-            "--git-dir=.git",
-            "--work-tree=.",
-            "--no-pager",
-            "--literal-pathspecs",
-        ])
+        .args(["--no-pager", "--literal-pathspecs"])
         .stdin(Stdio::null());
     cmd
+}
+
+fn git(root: &Path) -> Command {
+    let mut cmd = checkout_command(root);
+    // Each conversation already owns a checkout root. Git's normal
+    // discovery could walk into a parent repository if this one disappears.
+    cmd.args(["--git-dir=.git", "--work-tree=."]);
+    cmd
+}
+
+pub fn checkout_root(path: &Path) -> Result<PathBuf> {
+    let output = execute(checkout_command(path).args(["rev-parse", "--show-toplevel"]))?;
+    file_path(output.strip_suffix(b"\n").unwrap_or(&output))
+}
+
+pub fn workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let output = execute(git(root).args([
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+    ]))?;
+    output
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(file_path)
+        .collect()
 }
 
 fn execute(cmd: &mut Command) -> Result<Vec<u8>> {

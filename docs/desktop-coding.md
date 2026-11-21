@@ -31,6 +31,12 @@ Use unique instance IDs. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` override the e
 
 If a conversation's checkout was moved or deleted, Huggler shows its saved path. Restore the directory at that path to continue the same conversation. To start a conversation in the moved checkout or a different one, select **Choose another checkout**. The original conversation stays in the sidebar with its history.
 
+## Mention a file or skill
+
+In **First message** or **Message**, type `@` and part of a filename or path to find a file in the conversation's checkout. Choose a result to insert a relative file reference. With a Codex provider selected, type `/` and part of a skill name to find enabled skills. Choosing a skill inserts its `$skill-name` mention. When skills share a name, the suggestions show their paths and the selected mention includes its path.
+
+Use **↑** and **↓** to move through the suggestions, **Enter** or **Tab** to insert the highlighted result, and **Esc** to close the menu. You can also click a result. Continue editing your draft or send it with the up arrow.
+
 ## Find a conversation by status
 
 Use the left sidebar button in the workspace header to hide or show conversations independently of Changes. The sidebar updates even while you work in another conversation. Needs attention and Ready sit at the top. Working and Settled sit together at the bottom. Click a section heading to collapse or expand it. Each section shows its count and lists the most recently active conversations first.

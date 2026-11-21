@@ -17,7 +17,7 @@ mod worktree;
 
 pub use contracts::*;
 pub use layout::{StorageLayout, WorktreeRoot};
-pub use providers::probe::ProviderReport;
+pub use providers::probe::{ProviderReport, ProviderSkill};
 pub use providers::registry::ProviderInstance;
 pub use runtime::{Huggler, HugglerOptions, Subscription};
 

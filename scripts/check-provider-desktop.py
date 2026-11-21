@@ -55,6 +55,48 @@ def check_models(executable, tmp, env):
     ], env)
 
 
+def check_suggestions(executable, tmp, env):
+    checkout = tmp.resolve() / "suggestion-checkout"
+    state = tmp / "suggestion-state"
+    subprocess.run(["git", "init", "--quiet", checkout], check=True)
+    (checkout / "docs").mkdir()
+    (checkout / "docs" / "Setup (local).md").touch()
+    (checkout / "docs" / "Setup.md").touch()
+    (checkout / ".gitignore").write_text("private.md\n")
+    (checkout / "private.md").touch()
+    env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
+    first = "$build-guide Read [Setup (local).md](docs/Setup%20%28local%29.md) first"
+    followup = (
+        "🛠 Use $lint-guide please with [Setup.md](docs/Setup.md) and "
+        f"[$shared-skill]({checkout / 'user' / 'SKILL.md'}) again"
+    )
+    ready = f"Ready/{first}/Completed"
+    run_window(executable, state, [
+        {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"},
+        {"type": str(checkout / "docs")}, {"click": "Back to message"},
+        {"click": "First message"}, {"type": "/build"}, {"see": "suggestion//build-guide"},
+        {"key": "enter"}, {"type": "Read @setup"},
+        {"see": "suggestion/Setup.md"}, {"see": "suggestion/Setup (local).md"},
+        {"key": "down"}, {"key": "tab"}, {"type": "first"},
+        {"click": "Send first message"}, {"see": ready},
+        {"click": "Message"}, {"type": "Use /guide"},
+        {"see": "suggestion//build-guide"}, {"see": "suggestion//lint-guide"},
+        {"absent": "suggestion//disabled-guide"}, {"absent": "suggestion//other-checkout"},
+        {"key": "escape"}, {"absent": "suggestion//lint-guide"},
+        {"key": "cmd-a"}, {"type": "🛠 Use /lint please"},
+        {"key": "alt-left"}, {"key": "left"}, {"see": "suggestion//lint-guide"},
+        {"click": "suggestion//lint-guide"},
+        {"key": "cmd-right"}, {"type": " with @private"}, {"see": "No matching files"},
+        *[{"key": "backspace"}] * len("private"), {"type": "setup"},
+        {"see": "suggestion/Setup.md"}, {"key": "enter"}, {"type": "and /shared"},
+        {"see": "suggestion//shared-skill"}, {"key": "down"}, {"key": "enter"},
+        {"type": "again"},
+        {"click": "Send"}, {"see": f"You/{followup}"}, {"see": ready},
+    ], env)
+    frames = [json.loads(line) for line in (checkout / "frames.ndjson").read_text().splitlines()]
+    assert [frame["params"]["input"][0]["text"] for frame in frames if frame.get("method") == "turn/start"] == [first, followup]
+
+
 def main():
     executable = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="huggler discovery ") as directory:
@@ -78,6 +120,7 @@ def main():
         ]
         env = dict(isolated_env(tmp), HUGGLER_PROVIDERS=str(config), HUGGLER_CODEX=str(missing))
         check_models(executable, tmp, env)
+        check_suggestions(executable, tmp, env)
         state = tmp / "state"
         run_window(executable, state, steps, env)
         checkout = tmp / "original"

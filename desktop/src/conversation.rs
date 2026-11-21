@@ -2,6 +2,7 @@ mod attachments;
 mod models;
 mod project_actions;
 mod sidebar;
+mod suggestions;
 
 use attachments::Attachments;
 use gpui_component::list::ListState;
@@ -20,7 +21,6 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     input::{Enter, Input, InputEvent, InputState},
-    kbd::Kbd,
     v_flex,
 };
 use huggler::{
@@ -68,6 +68,7 @@ pub struct Desktop {
     starter_attachments: Attachments,
     launch_setup: bool,
     prompt: Entity<InputState>,
+    suggestions: suggestions::Suggestions,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
     model_picker: Option<Entity<ListState<Models>>>,
@@ -164,6 +165,7 @@ impl Desktop {
                     .placeholder("Describe a task or ask a question…")
             }),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
+            suggestions: suggestions::Suggestions::default(),
             instance,
             launch_model: None,
             model_picker: None,
@@ -173,6 +175,9 @@ impl Desktop {
         };
         cx.subscribe(&view.checkout, |view, _, event, cx| {
             if matches!(event, InputEvent::Change) {
+                if view.current.is_none() {
+                    view.suggestions = Default::default();
+                }
                 view.launch_model = None;
                 view.model_picker = None;
                 let delay = cx
@@ -192,12 +197,7 @@ impl Desktop {
             }
         })
         .detach();
-        cx.subscribe(&view.starter, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })
-        .detach();
+        Self::observe_composer(&view.starter, window, cx);
         let restored = view.restore(window, cx);
         if let Ok(mut revision) = restored {
             let runtime = view.runtime.clone();
@@ -271,6 +271,7 @@ impl Desktop {
         self.command_log = None;
         self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
         self.prompt = self.workspaces[&id].draft.clone();
+        self.suggestions = Default::default();
         self.model_picker = None;
         self.current = Some(snapshot);
         self.preload_models(cx);
@@ -334,12 +335,7 @@ impl Desktop {
                     .auto_grow(2, 5)
                     .placeholder("Describe a task or ask a question")
             });
-            cx.subscribe(&draft, |_, _, event, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            })
-            .detach();
+            Self::observe_composer(&draft, window, cx);
             self.workspaces.insert(
                 id.clone(),
                 Workspace {
@@ -422,6 +418,7 @@ impl Desktop {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggestions = Default::default();
         self.model_picker = None;
         self.show_settings = true;
         self.settings.read(cx).focus.focus(window);
@@ -465,6 +462,7 @@ impl Desktop {
     }
 
     fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggestions = Default::default();
         self.model_picker = None;
         self.show_settings = false;
         self.launch_setup = setup;
@@ -522,6 +520,7 @@ impl Desktop {
         let runtime = self.runtime.clone();
         let id = ThreadId(Uuid::new_v4().to_string());
         self.launching = Some(id.clone());
+        self.suggestions = Default::default();
         self.focus.focus(window);
         self.error = None;
         cx.notify();
@@ -659,6 +658,9 @@ impl Desktop {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
+            if self.current.is_none() {
+                self.suggestions = Default::default();
+            }
             self.preload_models(cx);
         }
     }
@@ -765,37 +767,6 @@ impl Desktop {
             .tooltip(tooltip)
     }
 
-    fn message_input(
-        _name: &'static str,
-        input: &Entity<InputState>,
-        window: &Window,
-        cx: &App,
-    ) -> Div {
-        let field = div()
-            .relative()
-            .child(control!(_name, Input::new(input).appearance(false)));
-        if input.focus_handle(cx).is_focused(window) || input.read(cx).text().len() > 0 {
-            return field;
-        }
-        let shortcut = window
-            .highest_precedence_binding_for_action(&crate::FocusMessage)
-            .and_then(|binding| {
-                binding
-                    .keystrokes()
-                    .first()
-                    .map(|key| Kbd::format(key.as_keystroke()))
-            });
-        field.when_some(shortcut, |field, shortcut| {
-            let text = SharedString::from(format!("{shortcut} to focus"));
-            field.child(
-                control!(text.clone(), hint(text, cx).text_xs())
-                    .absolute()
-                    .top_1()
-                    .right_2(),
-            )
-        })
-    }
-
     fn launch_form(&self, compact: bool, window: &Window, cx: &Context<Self>) -> AnyElement {
         if self.launching.is_some() {
             return v_flex()
@@ -840,12 +811,7 @@ impl Desktop {
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted.opacity(0.55))
                 .children(self.attachment_list(&self.starter_attachments, cx))
-                .child(Self::message_input(
-                    "First message",
-                    &self.starter,
-                    window,
-                    cx,
-                ))
+                .child(self.message_input("First message", &self.starter, window, cx))
                 .child(
                     h_flex()
                         .justify_end()
@@ -1464,7 +1430,7 @@ impl Desktop {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
                 .children(self.attachment_list(attachments, cx))
-                .child(Self::message_input("Message", &self.prompt, window, cx))
+                .child(self.message_input("Message", &self.prompt, window, cx))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
                     let noun = if count == 1 { "message" } else { "messages" };
