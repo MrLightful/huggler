@@ -205,9 +205,25 @@ pub enum Action {
     SendPlan {
         text: String,
     },
+    /// Start immediately when idle, or append to the thread's queue.
+    Enqueue {
+        text: String,
+    },
+    EditQueued {
+        run: RunId,
+        text: String,
+    },
+    /// Move a queued run before another, or to the end.
+    MoveQueued {
+        run: RunId,
+        before: Option<RunId>,
+    },
+    CancelQueued {
+        run: RunId,
+    },
     /// Hold queued runs and stop current work throughout the owned delegation tree.
     StopThread,
-    /// Release queued runs on this thread in their original order.
+    /// Release queued runs on this thread in delivery order.
     ResumeQueue,
     SetModel {
         model: Option<String>,
@@ -254,6 +270,9 @@ pub struct Run {
     /// Explicit queue resume is required before this run can start.
     #[serde(default)]
     pub queue_held: bool,
+    /// Delivery order when the host has moved this run from its creation ordinal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_slot: Option<i64>,
     pub native_turn: Option<NativeTurnId>,
     pub error: Option<String>,
 }

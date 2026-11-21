@@ -1296,3 +1296,95 @@ async fn worktree_delegation_keeps_the_callers_checkout_and_retries_after_reopen
         .await
         .expect("worktree delegation");
 }
+
+#[tokio::test]
+async fn host_queue_edits_survive_reopen_in_delivery_order() {
+    timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        checkout(&repo);
+        let config = options(&dir.path().join("state"));
+        let rt = Huggler::open(config.clone()).await.unwrap();
+        let project = rt.open_project(&repo).unwrap();
+        let thread = launch(&rt, &project, "queue", Provider::ClaudeAgent);
+        let cmd = |id: &str, action| Command {
+            id: CommandId(id.into()),
+            thread_id: thread.clone(),
+            action,
+        };
+        let enqueue = |text: &str| cmd(text, Action::Enqueue { text: text.into() });
+        let active = rt.dispatch(enqueue("hold")).unwrap().run_id.unwrap();
+        permission(&rt, &thread).await;
+        assert!(matches!(
+            rt.dispatch(cmd(
+                "busy",
+                Action::Send {
+                    text: "busy".into()
+                }
+            )),
+            Err(Error::Busy)
+        ));
+        let a = rt.dispatch(enqueue("echo first")).unwrap().run_id.unwrap();
+        let b = rt.dispatch(enqueue("echo second")).unwrap().run_id.unwrap();
+        rt.dispatch(cmd("stop", Action::StopThread)).unwrap();
+        assert_eq!(
+            rt.wait(&thread, &active).await.unwrap().status,
+            RunStatus::Interrupted
+        );
+        let c = rt
+            .dispatch(enqueue("echo cancelled"))
+            .unwrap()
+            .run_id
+            .unwrap();
+        rt.dispatch(cmd("cancel", Action::CancelQueued { run: c.clone() }))
+            .unwrap();
+        assert_eq!(
+            rt.wait(&thread, &c).await.unwrap().status,
+            RunStatus::Interrupted
+        );
+        let edit = cmd(
+            "edit",
+            Action::EditQueued {
+                run: b.clone(),
+                text: "echo changed".into(),
+            },
+        );
+        let moved = cmd(
+            "move",
+            Action::MoveQueued {
+                run: b.clone(),
+                before: Some(a.clone()),
+            },
+        );
+        let edited = rt.dispatch(edit.clone()).unwrap();
+        rt.dispatch(moved.clone()).unwrap();
+        rt.close().await.unwrap();
+        let rt = Huggler::open(config).await.unwrap();
+        assert_eq!(rt.dispatch(edit).unwrap(), edited);
+        assert_eq!(
+            rt.dispatch(cmd("resume", Action::ResumeQueue))
+                .unwrap()
+                .run_id,
+            Some(b.clone())
+        );
+        completed(&rt, &thread, &a).await;
+        assert_eq!(
+            std::fs::read_to_string(repo.join("delivery-log")).unwrap(),
+            "echo changed\necho first\n"
+        );
+        assert!(matches!(
+            rt.dispatch(cmd(
+                "late",
+                Action::MoveQueued {
+                    run: b,
+                    before: None
+                }
+            )),
+            Err(Error::Invalid(_))
+        ));
+        rt.dispatch(moved).unwrap();
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

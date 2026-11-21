@@ -153,7 +153,7 @@ impl Database {
                     request_key: key.clone(),
                 };
                 let (run, _, _, delivery) =
-                    start_message(&tx, &peer.thread_id, prompt, model, Some(origin))?;
+                    start_message(&tx, &peer.thread_id, prompt, model, Some(origin), false)?;
                 if delivery == PeerDelivery::Queued {
                     return Err(Error::Busy);
                 }

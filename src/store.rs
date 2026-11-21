@@ -2,6 +2,7 @@ mod creation;
 mod interrupts;
 mod native_children;
 mod questions;
+mod queue;
 mod tasks;
 use crate::{
     contracts::*,
@@ -41,9 +42,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/012.sql"),
     include_str!("../migrations/013.sql"),
     include_str!("../migrations/014.sql"),
+    include_str!("../migrations/015.sql"),
 ];
 
-const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held";
+const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
     let status: String = row.get(2)?;
@@ -64,6 +66,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         native_turn: row.get::<_, Option<String>>(3)?.map(NativeTurnId),
         error: row.get(4)?,
         queue_held: row.get(5)?,
+        delivery_slot: row.get(6)?,
     })
 }
 
@@ -130,6 +133,7 @@ fn start_message(
     text: &str,
     model: Option<String>,
     origin: Option<MessageOrigin>,
+    enqueue: bool,
 ) -> Result<(RunId, MessageId, Vec<i64>, PeerDelivery)> {
     if text.trim().is_empty() {
         return Err(Error::Invalid("empty message".into()));
@@ -140,10 +144,10 @@ fn start_message(
         [&thread.0],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    if (busy || held) && origin.is_none() {
+    if (busy || held) && origin.is_none() && !enqueue {
         return Err(Error::Busy);
     }
-    let (status, delivery) = if busy {
+    let (status, delivery) = if busy || (held && enqueue) {
         ("queued", PeerDelivery::Queued)
     } else {
         ("starting", PeerDelivery::Started)
@@ -155,7 +159,7 @@ fn start_message(
             (SELECT id FROM delegated_task WHERE NOT ?4 AND child_thread=?2 AND request_key IS NOT NULL
              AND result_run IS NULL AND delivery='pending')
          FROM run WHERE thread_id=?2",
-        params![id.0, thread.0, status, busy && held],
+        params![id.0, thread.0, status, delivery == PeerDelivery::Queued && held],
     )?;
     let started = run_event(tx, thread, &id)?;
     let (msg, seq) = message(tx, thread, &id, Role::User, origin, text.to_owned())?;
@@ -398,9 +402,15 @@ impl Database {
                     )?);
                 }
             }
-            Action::Send { text } | Action::SendPlan { text } => {
-                let (id, msg, events, _) =
-                    start_message(&tx, thread, text, selection.flatten(), None)?;
+            Action::Send { text } | Action::SendPlan { text } | Action::Enqueue { text } => {
+                let (id, msg, events, delivery) = start_message(
+                    &tx,
+                    thread,
+                    text,
+                    selection.flatten(),
+                    None,
+                    matches!(cmd.action, Action::Enqueue { .. }),
+                )?;
                 if matches!(cmd.action, Action::SendPlan { .. })
                     && tx.execute(
                         "UPDATE turn_effect SET plan_mode=1 WHERE run_id=? AND
@@ -410,10 +420,29 @@ impl Database {
                 {
                     return Err(Error::Invalid("plan mode requires Codex".into()));
                 }
-                work.start.push((thread.clone(), id.clone()));
+                if delivery == PeerDelivery::Started {
+                    work.start.push((thread.clone(), id.clone()));
+                }
                 receipt.run_id = Some(id);
                 receipt.message_id = Some(msg);
                 receipt.event_sequences = events;
+            }
+            Action::EditQueued { run, text } => {
+                let (msg, seq) = queue::edit(&tx, thread, run, text)?;
+                receipt.run_id = Some(run.clone());
+                receipt.message_id = Some(msg);
+                receipt.event_sequences.push(seq);
+            }
+            Action::MoveQueued { run, before } => {
+                receipt.event_sequences = queue::move_before(&tx, thread, run, before.as_ref())?;
+                receipt.run_id = Some(run.clone());
+            }
+            Action::CancelQueued { run } => {
+                queue::require_queued(&tx, thread, run)?;
+                Self::finish_tx(&tx, thread, run, Err(Error::Interrupted))?;
+                receipt.event_sequences.push(tx.last_insert_rowid());
+                receipt.run_id = Some(run.clone());
+                tasks::reconcile(&tx, &mut work.start)?;
             }
             Action::StopThread | Action::ResumeQueue => {
                 let cursor: i64 = tx.query_row(
@@ -752,7 +781,7 @@ impl Database {
     /// Promote the oldest queued message when the previous run has settled.
     fn next_queued(tx: &Transaction, thread: &ThreadId) -> Result<Option<RunId>> {
         let id = tx.query_row(
-            "UPDATE run SET status='starting' WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' AND queue_held=0 ORDER BY ordinal LIMIT 1)
+            "UPDATE run SET status='starting' WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' AND queue_held=0 ORDER BY coalesce(delivery_slot,ordinal) LIMIT 1)
              AND NOT EXISTS(SELECT 1 FROM run WHERE thread_id=?1 AND status IN ('starting','running','waiting')) RETURNING id",
             [&thread.0], |r| Ok(RunId(r.get(0)?)),
         ).optional()?;
@@ -865,7 +894,7 @@ impl Database {
             .ok_or(Error::Forbidden)?;
         if let Some(receipt) = self.peer_receipt(&sender, key)? {
             let original: String = self.db.query_row(
-                "SELECT text FROM message WHERE id=?",
+                "SELECT original_text FROM peer_receipt WHERE message_id=?",
                 [&receipt.message_id.0],
                 |r| r.get(0),
             )?;
@@ -885,7 +914,7 @@ impl Database {
             request_key: key.into(),
         };
         let (run_id, message_id, _, delivery) =
-            start_message(&tx, target, text, model, Some(origin))?;
+            start_message(&tx, target, text, model, Some(origin), false)?;
         let task_id = tasks::record_followup(&tx, &sender, &sender_run, target, &run_id)?;
         let receipt = PeerReceipt {
             task_id,
@@ -895,12 +924,12 @@ impl Database {
             delivery,
         };
         tx.execute(
-            "INSERT INTO peer_receipt(sender_thread,request_key,message_id,result) VALUES(?,?,?,?)",
+            "INSERT INTO peer_receipt(sender_thread,request_key,message_id,result,original_text) VALUES(?,?,?,?,?)",
             params![
                 sender.0,
                 key,
                 receipt.message_id.0,
-                serde_json::to_string(&receipt)?
+                serde_json::to_string(&receipt)?,text
             ],
         )?;
         tx.commit()?;
@@ -961,7 +990,7 @@ impl Database {
         thread.runs = self
             .db
             .prepare(&format!(
-                "SELECT {RUN_FIELDS} FROM run WHERE thread_id=? ORDER BY ordinal"
+                "SELECT {RUN_FIELDS} FROM run WHERE thread_id=? ORDER BY coalesce(delivery_slot,ordinal)"
             ))?
             .query_map([&id.0], run_row)?
             .collect::<rusqlite::Result<_>>()?;
@@ -969,7 +998,7 @@ impl Database {
             .db
             .prepare(
                 "SELECT m.id,m.run_id,m.role,m.text,m.origin FROM message m JOIN run r ON m.run_id=r.id
-            WHERE r.thread_id=? ORDER BY r.ordinal,m.rowid",
+            WHERE r.thread_id=? ORDER BY coalesce(r.delivery_slot,r.ordinal),m.rowid",
             )?
             .query_map([&id.0], |r| {
                 Ok(Message {

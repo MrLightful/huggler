@@ -240,6 +240,10 @@ for line in sys.stdin:
         elif text.startswith("Huggler delegated task results\n"):
             results = json.loads(text.split("\n", 1)[1])
             finish("Received: " + ", ".join(r["result"] for r in results))
+        elif text.startswith("echo "):
+            with Path("delivery-log").open("a") as log:
+                print(text, file=log)
+            finish(text)
         elif text == "hold":
             hold()
         elif text == "queue-two":

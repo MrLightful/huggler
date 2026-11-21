@@ -10,9 +10,11 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 Run `cargo test --locked stop_thread` to reproduce the stop checks. A scripted peer for standalone Claude Agent ACP 0.109.0 over ACP v1 stdio verified that stopping after foreground completion disconnects native children, closes their permissions and preserves the foreground answer. Store tests cover stale worker callbacks, a stop after an answer commits, and delivery to an idle parent when a stop clears the last pending task. Run `cargo test --locked --lib upgrades_v2_messages_and_events_without_attribution` to verify that historical run events and migrated rows agree on the queue hold. [Native-child fixture test](../tests/acp_native_children.rs) · [Worker race tests](../src/store/interrupts.rs) · [Migration test](../src/store.rs)
 
-**Next action for Stage 5.** Host `send` currently returns `Busy` when work is queued. Add host queue delivery, editing and reordering through the Rust API. Queue two messages behind an active run, stop the thread, edit a held message and reverse their order. After resume, verify the provider receives the edited text and executes both messages in the requested order. [Queue controls inventory](parity-inventory.md) · [Stage 5 acceptance](#5-complete-control-history-and-recovery)
+**Host queue controls.** A host can enqueue, edit, move and cancel queued messages with command receipts. The ACP fixture logs both outbound prompts after the host stops the thread, edits and reverses the held queue, closes, reopens and resumes. Run `cargo test --locked host_queue_edits`. [Public API scenario](../tests/delegation.rs)
 
-**Branch recommendation.** Commit and continue on this branch. Thread stop and explicit resume pass their checks. Host queue controls and the remaining Stage 5 workflows are still open.
+**Next action for Stage 5.** Verify bounded history, search and stream replay against an authoritative snapshot. Exercise an expired cursor and the desktop detail view on a long conversation.
+
+**Branch recommendation.** Commit and continue on this branch while Stage 5 acceptance checks remain open.
 
 ### Maintaining the handoff
 

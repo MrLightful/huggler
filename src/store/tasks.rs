@@ -195,7 +195,7 @@ impl Database {
             Some(role) => format!("Role: {role}\n\n{}", input.task),
             None => input.task,
         };
-        let (run, _, _, _) = start_message(&tx, &child, &prompt, model, None)?;
+        let (run, _, _, _) = start_message(&tx, &child, &prompt, model, None, false)?;
         tx.execute("INSERT INTO delegated_task(id,parent_thread,parent_run,request_key,intent,child_thread,child_run)
             VALUES(?,?,?,?,?,?,?)", params![id.0,parent.0,parent_run.0,input.client_request_id,intent,child.0,run.0])?;
         let task = publish(&tx, &parent, &id)?;
@@ -277,7 +277,7 @@ impl Database {
 pub(super) fn reconcile(tx: &Transaction, jobs: &mut Vec<(ThreadId, RunId)>) -> Result<()> {
     loop {
         let settled = tx.prepare("UPDATE delegated_task AS t SET result_run=(
-            SELECT id FROM run WHERE task_id=t.id ORDER BY ordinal DESC LIMIT 1)
+            SELECT id FROM run WHERE task_id=t.id ORDER BY coalesce(delivery_slot,ordinal) DESC LIMIT 1)
             WHERE result_run IS NULL AND NOT EXISTS (
                 SELECT 1 FROM run WHERE task_id=t.id AND status IN ('starting','running','waiting','queued'))
             AND NOT EXISTS (SELECT 1 FROM native_child c JOIN run r ON r.id=c.run_id
@@ -322,7 +322,7 @@ pub(super) fn reconcile(tx: &Transaction, jobs: &mut Vec<(ThreadId, RunId)>) -> 
             let model = tx.query_row("SELECT model FROM thread WHERE id=?", [&parent.0], |r| {
                 r.get(0)
             })?;
-            let (wake, _, _, _) = start_message(tx, &parent, &prompt, model, None)?;
+            let (wake, _, _, _) = start_message(tx, &parent, &prompt, model, None, false)?;
             tx.execute(
                 "UPDATE run SET task_id=? WHERE id=?",
                 params![outer_task, wake.0],
