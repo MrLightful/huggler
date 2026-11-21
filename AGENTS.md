@@ -6,6 +6,8 @@ Use T3 Code as the reference for what Huggler should enable. Aim to cover all of
 
 The local T3 Code reference checkout is `/Users/mrlightful/Projects/Personal/t3code`. Make changes in the current Huggler worktree. Keep the upstream checkout path out of crate code and runtime defaults.
 
+Prefer recorded fixtures or the existing Codex subscription for testing. Before starting a local language-model server or running inference on the user’s computer, ask for explicit permission for that specific run and wait for approval. This includes tests and adapters that call an already-running local model.
+
 ## Continuing extraction
 
 When the entire prompt is `continue`, resume extraction from the [stage handoff](docs/extraction-plan.md#stage-handoff). Follow its next action through the stage acceptance checks. At each handoff, update the plan and tell the user whether to merge or commit and continue. Publish the next-stage artifact when a stage is complete.
