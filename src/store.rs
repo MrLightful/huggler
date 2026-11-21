@@ -1,3 +1,4 @@
+mod checkpoints;
 mod context;
 #[cfg(test)]
 mod crash_tests;
@@ -53,6 +54,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/017.sql"),
     include_str!("../migrations/018.sql"),
     include_str!("../migrations/019.sql"),
+    include_str!("../migrations/020.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
@@ -404,6 +406,10 @@ impl Database {
                     .event_sequences
                     .push(event(&tx, thread, Change::Launched)?);
             }
+            Action::CaptureCheckpoint { through } => {
+                checkpoints::capture(&tx, thread, through)?;
+                receipt.run_id = Some(through.clone());
+            }
             Action::Fork {
                 source,
                 through,
@@ -423,6 +429,11 @@ impl Database {
                 tx.execute("INSERT INTO thread(id,project,name,provider_instance,provider,model,worktree_path)
                     SELECT ?1,project,?2,?3,?4,?5,worktree_path FROM thread WHERE id=?6",
                     params![thread.0,name,instance.as_str(),driver,model,source.0])?;
+                if *mode == ForkMode::Checkpoint {
+                    let (common_dir, commit) = checkpoints::revision(&tx, source, through)?;
+                    let path = self.worktree_dir.join(new_id());
+                    checkpoints::reserve(&tx, thread, &path, &common_dir, &commit)?;
+                }
                 context::save_fork(&tx, thread, &history, instance)?;
                 receipt
                     .event_sequences

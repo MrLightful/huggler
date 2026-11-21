@@ -438,3 +438,122 @@ async fn imports_copy_visible_history_and_continue_after_reopen() -> Result<()> 
     }
     rt.close().await
 }
+
+#[tokio::test]
+async fn checkpoint_forks_restore_only_the_destination_checkout() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    fs::write(repo.join(".git/info/exclude"), "frames.ndjson\n")?;
+    let commit = |content: &str| {
+        fs::write(repo.join("tracked"), content).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(&repo)
+                    .args([
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.test",
+                        "-c",
+                        "commit.gpgsign=false"
+                    ])
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        git(&["add", "tracked"]);
+        git(&["commit", "-qm", content]);
+    };
+    let opts = options(&dir.path().join("state"));
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&repo)?;
+    let root = launch(&rt, &project, "root", Provider::Codex);
+    let peer = launch(&rt, &project, "peer", Provider::Codex);
+    let mut captures = Vec::new();
+    for content in ["alpha", "beta"] {
+        commit(content);
+        let run = rt
+            .send(CommandId(content.into()), root.clone(), content.into())?
+            .run_id
+            .unwrap();
+        completed(&rt, &root, &run).await;
+        let cmd = command(
+            &format!("capture-{content}"),
+            &root,
+            Action::CaptureCheckpoint {
+                through: run.clone(),
+            },
+        );
+        let receipt = rt.dispatch(cmd.clone())?;
+        captures.push((run, cmd, receipt));
+    }
+    let (a, original, receipt) = &captures[0];
+    let b = &captures[1].0;
+    let diff = rt.checkpoint_diff(&root, a, b)?;
+    assert!(diff.contains("-alpha") && diff.contains("+beta"));
+    assert!(matches!(
+        rt.checkpoint_diff(&peer, a, b),
+        Err(Error::NotFound(_))
+    ));
+    fs::write(repo.join("tracked"), "dirty shared file")?;
+    assert!(matches!(
+        rt.dispatch(command(
+            "dirty",
+            &root,
+            Action::CaptureCheckpoint { through: b.clone() }
+        )),
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(rt.dispatch(original.clone())?, *receipt);
+    let mut forks = Vec::new();
+    for (mode, name, expected) in [
+        (ForkMode::Portable, "history", "dirty shared file"),
+        (ForkMode::Checkpoint, "restored", "alpha"),
+    ] {
+        let cmd = command(
+            name,
+            &ThreadId(name.into()),
+            Action::Fork {
+                source: root.clone(),
+                through: a.clone(),
+                name: name.into(),
+                instance: "codex".into(),
+                model: None,
+                mode,
+                text: "continue here".into(),
+            },
+        );
+        let receipt = rt.dispatch(cmd.clone())?;
+        completed(&rt, &cmd.thread_id, receipt.run_id.as_ref().unwrap()).await;
+        let cwd = rt
+            .read(&cmd.thread_id)?
+            .worktree_path
+            .unwrap_or_else(|| repo.clone());
+        assert_eq!(fs::read_to_string(cwd.join("tracked"))?, expected);
+        let start = frames(&cwd, "turn/start").pop().unwrap();
+        let prompt = start["input"][0]["text"].as_str().unwrap();
+        assert!(
+            prompt.contains("alpha")
+                && !prompt.contains("beta")
+                && prompt.ends_with("continue here")
+        );
+        forks.push((cmd, receipt));
+    }
+    assert_eq!(rt.read(&root)?.runs.len(), 2);
+    assert!(rt.read(&peer)?.worktree_path.is_none());
+    assert_eq!(
+        fs::read_to_string(repo.join("tracked"))?,
+        "dirty shared file"
+    );
+    rt.close().await?;
+    let rt = Huggler::open(opts).await?;
+    assert_eq!(rt.checkpoint_diff(&root, a, b)?, diff);
+    for (cmd, receipt) in forks {
+        assert_eq!(rt.dispatch(cmd)?, receipt);
+    }
+    rt.close().await
+}

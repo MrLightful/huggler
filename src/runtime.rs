@@ -662,6 +662,14 @@ impl Huggler {
         self.shared.access(|db| db.discard_upload(thread, id))
     }
 
+    /// Unified Git diff between two explicit checkpoints on the same thread, up to 1 MiB.
+    pub fn checkpoint_diff(&self, thread: &ThreadId, from: &RunId, to: &RunId) -> Result<String> {
+        let (repository, base, head) = self
+            .shared
+            .access(|db| db.checkpoint_pair(thread, from, to))?;
+        crate::worktree::diff(Path::new(&repository), &base, &head)
+    }
+
     /// Read the immutable bounded prefix captured at fork creation.
     pub fn fork_history(&self, thread: &ThreadId) -> Result<Option<ForkHistory>> {
         self.shared.access(|db| db.fork_history(thread))

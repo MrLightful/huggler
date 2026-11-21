@@ -176,17 +176,7 @@ impl Database {
             )?;
             let (common_dir, base) = worktree::base(Path::new(&cwd))?;
             let path = self.worktree_dir.join(&child.0);
-            let path = path
-                .to_str()
-                .ok_or_else(|| Error::Invalid("worktree path requires UTF-8".into()))?;
-            tx.execute(
-                "INSERT INTO worktree(path,common_dir,base_commit) VALUES(?,?,?)",
-                params![path, common_dir, base],
-            )?;
-            tx.execute(
-                "UPDATE thread SET worktree_path=? WHERE id=?",
-                params![path, child.0],
-            )?;
+            super::checkpoints::reserve(&tx, &child, &path, &common_dir, &base)?;
         }
         let model = tx.query_row("SELECT model FROM thread WHERE id=?", [&child.0], |r| {
             r.get(0)

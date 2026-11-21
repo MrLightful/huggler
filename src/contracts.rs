@@ -186,6 +186,8 @@ pub struct Project {
 pub enum ForkMode {
     Native,
     Portable,
+    /// Portable conversation prefix and a new detached checkout of the captured commit.
+    Checkpoint,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -236,6 +238,10 @@ pub enum Action {
         name: String,
         model: Option<String>,
         instance: ProviderInstanceId,
+    },
+    /// Record the current clean Git HEAD at the thread's latest completed turn.
+    CaptureCheckpoint {
+        through: RunId,
     },
     /// Create a new thread at a completed source run and send its first prompt.
     Fork {

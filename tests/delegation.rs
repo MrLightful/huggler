@@ -1286,6 +1286,21 @@ async fn exercise_worktree_delegation() {
         RunStatus::Failed
     );
     assert!(!nested_path.exists());
+    std::fs::rename(dir.path().join("moved"), &nested_path).unwrap();
+    assert_eq!(
+        acp_prompt(
+            &rt,
+            &nested.child_thread_id,
+            "repair",
+            "edit tracked repaired"
+        )
+        .await,
+        "isolated"
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested_path.join("tracked.txt")).unwrap(),
+        "repaired"
+    );
     assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "shared");
     rt.close().await.unwrap();
 }
