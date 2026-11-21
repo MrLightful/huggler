@@ -26,6 +26,8 @@ for line in sys.stdin:
     params = frame.get("params", {})
     with Path("frames.ndjson").open("a") as out:
         print(json.dumps(frame), file=out)
+    if method == "initialize" and Path("fail-before-prompt").exists():
+        sys.exit(1)
     if not method:
         assert frame["id"] == "ask"
         if prompt == "command output":

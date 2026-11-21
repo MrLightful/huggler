@@ -152,7 +152,7 @@ impl Database {
             [&thread.0],|r|Ok(PathBuf::from(r.get::<_,String>(0)?))).optional()?.ok_or(Error::Forbidden)
     }
     pub fn set_app_context(&self, thread: &ThreadId, context: &str) -> Result<()> {
-        self.db.execute("INSERT INTO app_context VALUES(?,?) ON CONFLICT(thread) DO UPDATE SET content=excluded.content",params![thread.0,context])?;
+        self.db.execute("INSERT INTO app_context(thread,content) VALUES(?,?) ON CONFLICT(thread) DO UPDATE SET content=excluded.content,claimed_run=NULL",params![thread.0,context])?;
         Ok(())
     }
 }

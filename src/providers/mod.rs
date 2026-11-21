@@ -37,6 +37,7 @@ pub(crate) struct AgentTools {
 }
 
 pub(crate) struct Turn {
+    pub has_app_context: bool,
     pub sample_suggestion: bool,
     pub fork: Option<(NativeThreadId, NativeTurnId)>,
     pub plan_mode: bool,
@@ -50,6 +51,16 @@ pub(crate) struct Turn {
     pub resume: Option<NativeThreadId>,
 }
 
+impl Turn {
+    /// Commit consumption just before the first write that could deliver the prompt.
+    pub fn submitting_prompt(&self, update: &impl Fn(Update) -> Result<()>) -> Result<()> {
+        if self.has_app_context {
+            update(Update::SubmittingAppContext)?;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) enum CommandFrame {
     Append(String),
     Snapshot {
@@ -59,6 +70,7 @@ pub(crate) enum CommandFrame {
 }
 
 pub(crate) enum Update {
+    SubmittingAppContext,
     CommandOutput {
         item: String,
         frame: CommandFrame,

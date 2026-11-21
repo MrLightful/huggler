@@ -407,6 +407,20 @@ async fn app_resources_tools_and_approved_next_turn_context() -> Result<()> {
         Err(Error::Forbidden)
     ));
     rt.close().await?;
+    let rt = Huggler::open(config.clone()).await?;
+    let marker = repo.join("fail-before-prompt");
+    std::fs::write(&marker, "")?;
+    let failed = rt.send(
+        CommandId("unavailable".into()),
+        owner.clone(),
+        "unavailable".into(),
+    )?;
+    assert_eq!(
+        rt.wait(&owner, &failed.run_id.unwrap()).await?.status,
+        RunStatus::Failed
+    );
+    rt.close().await?;
+    std::fs::remove_file(marker)?;
     let rt = Huggler::open(config).await?;
     for (thread, text) in [
         (&other, "unrelated"),

@@ -351,7 +351,7 @@ pub(crate) async fn execute(
     let mut outstanding = Outstanding::None;
     let run = async {
         if server.v2 {
-            return events::prompt(&server, &path, &id, &turn.text, &mut outstanding, update).await;
+            return events::prompt(&server, &path, &id, &turn, &mut outstanding, update).await;
         }
         let mut body = json!({"parts":[{"type":"text","text":turn.text}]});
         if let Some((p, m)) = turn.model.as_deref().and_then(|s| s.split_once('/')) {
@@ -359,6 +359,7 @@ pub(crate) async fn execute(
         }
         update(Update::Started(None))?;
         // V1 holds this request open until the session's prompt settles.
+        turn.submitting_prompt(&update)?;
         outstanding = Outstanding::Active;
         let reply = server
             .submit_prompt(&format!("{path}/message"), &body, &mut outstanding)

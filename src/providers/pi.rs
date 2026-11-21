@@ -125,6 +125,7 @@ async fn converse(rpc: &mut Rpc, turn: &Turn, update: impl Fn(Update) -> Result<
             .ok_or_else(|| protocol("Pi model must be provider/model"))?;
         request(rpc, "set_model", json!({"provider":provider,"modelId":id})).await?;
     }
+    turn.submitting_prompt(&update)?;
     rpc.write(json!({"type":"prompt","message":turn.text}))
         .await?;
     update(Update::Started(None))?;

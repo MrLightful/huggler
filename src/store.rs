@@ -82,6 +82,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/032.sql"),
     include_str!("../migrations/033.sql"),
     include_str!("../migrations/034.sql"),
+    include_str!("../migrations/035.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -718,6 +719,7 @@ impl Database {
             [&id.0],
             |r| {
                 Ok(Turn {
+                    has_app_context: false,
                     sample_suggestion: false,
                     fork: None,
                     plan_mode: r.get(7)?,
@@ -776,8 +778,9 @@ impl Database {
         }
         #[cfg(feature = "application")]
         if let Some(context) = tx.query_row(
-            "DELETE FROM app_context WHERE thread=(SELECT thread_id FROM run WHERE id=?) RETURNING content",
+            "UPDATE app_context SET claimed_run=?1 WHERE thread=(SELECT thread_id FROM run WHERE id=?1) RETURNING content",
             [&id.0], |r|r.get::<_,String>(0)).optional()? {
+            turn.has_app_context = true;
             turn.text = format!("MCP App context (host-approved data):\n{context}\n\n{}", turn.text);
         }
         tx.execute("UPDATE run SET session_generation=(SELECT session_reset FROM thread WHERE id=run.thread_id) WHERE id=?", [&id.0])?;
@@ -827,6 +830,9 @@ impl Database {
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::SubmittingAppContext => {
+                tx.execute("DELETE FROM app_context WHERE thread=? AND claimed_run=?", params![thread.0, id.0])?;
+            }
             Update::Steer(command,outcome) => steering::settle(&tx, thread,id,&command,outcome)?,
             Update::CommandOutput { item, frame } => command_output::record(&tx,thread,id,&item,frame)?,
             Update::Output(text) => {

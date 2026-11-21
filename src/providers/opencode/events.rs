@@ -1,7 +1,7 @@
 use super::{Outstanding, Server, http_error};
 use crate::{
     Error, NativeTurnId, Result,
-    providers::{Update, rpc::protocol},
+    providers::{Turn, Update, rpc::protocol},
 };
 use reqwest::{Method, Response};
 use serde_json::{Value, json};
@@ -53,7 +53,7 @@ pub(super) async fn prompt(
     server: &Server,
     path: &str,
     id: &str,
-    text: &str,
+    turn: &Turn,
     outstanding: &mut Outstanding,
     update: impl Fn(Update) -> Result<()>,
 ) -> Result<()> {
@@ -64,11 +64,12 @@ pub(super) async fn prompt(
         offset: 0,
     };
     let inbox = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    turn.submitting_prompt(&update)?;
     *outstanding = Outstanding::Queued(inbox.clone());
     let reply = server
         .submit_prompt(
             &format!("{path}/prompt"),
-            &json!({"id":inbox,"text":text,"delivery":"queue"}),
+            &json!({"id":inbox,"text":turn.text,"delivery":"queue"}),
             outstanding,
         )
         .await?;
