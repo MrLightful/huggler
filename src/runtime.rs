@@ -601,6 +601,44 @@ impl Huggler {
         self.shared.access(|db| db.read(id))
     }
 
+    /// Read up to 100 message previews, applying an optional ASCII case-insensitive literal search.
+    /// A change to the conversation invalidates its history cursor.
+    pub fn detail(
+        &self,
+        thread: &ThreadId,
+        before: Option<&HistoryCursor>,
+        query: &str,
+        limit: usize,
+    ) -> Result<ConversationDetail> {
+        self.shared
+            .access(|db| db.detail(thread, before, query, limit))
+    }
+
+    pub fn read_message(&self, thread: &ThreadId, id: &MessageId) -> Result<Message> {
+        self.shared.access(|db| db.read_message(thread, id))
+    }
+
+    /// Keep the most recent `count` replay events. Receipts and projections outlive the replay window.
+    pub fn retain_events(&self, thread: &ThreadId, count: u32) -> Result<()> {
+        self.shared.access(|db| db.retain_events(thread, count))
+    }
+
+    /// Coalesced notification for snapshot consumers. Returns the current high-water mark.
+    pub async fn wait_for_change(&self, thread: &ThreadId, after: i64) -> Result<i64> {
+        let mut changed = self.shared.changed.subscribe();
+        self.shared.access(|db| db.thread_position(thread))?;
+        loop {
+            let cursor = self.shared.access(|db| db.sequence(thread))?;
+            if after < 0 || after > cursor {
+                return Err(Error::Invalid("cursor outside thread snapshot".into()));
+            }
+            if cursor > after {
+                return Ok(cursor);
+            }
+            changed.changed().await.map_err(|_| Error::Closed)?;
+        }
+    }
+
     /// Wait for one specific application run. Dropping or timing out the future
     /// releases the observer while the provider continues.
     pub async fn wait(&self, thread: &ThreadId, run: &RunId) -> Result<Run> {
@@ -617,7 +655,15 @@ impl Huggler {
     /// Subscribe from a consistent snapshot, or replay events strictly after a saved cursor.
     pub fn subscribe(&self, id: &ThreadId, after: Option<i64>) -> Result<(Thread, Subscription)> {
         let changed = self.shared.changed.subscribe();
-        let snapshot = self.read(id)?;
+        let snapshot = self.shared.access(|db| {
+            if let Some(cursor) = after
+                && cursor >= 0
+            {
+                db.thread_position(id)?;
+                db.check_replay(id, cursor)?;
+            }
+            db.read(id)
+        })?;
         let cursor = after.unwrap_or(snapshot.cursor);
         if cursor < 0 || cursor > snapshot.cursor {
             return Err(Error::Invalid("cursor outside thread snapshot".into()));

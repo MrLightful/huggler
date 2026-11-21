@@ -317,6 +317,41 @@ pub struct Message {
     pub origin: Option<MessageOrigin>,
     pub text: String,
 }
+/// Continue a history query on the same thread, filter and snapshot.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryCursor {
+    pub(crate) query: String,
+    pub(crate) thread: ThreadId,
+    pub sequence: i64,
+    pub before: MessageId,
+}
+
+/// A bounded message preview. Fetch the original with `Huggler::read_message`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryItem {
+    pub message: Message,
+    pub truncated: bool,
+}
+
+/// Messages appear in delivery order. Pages are fetched from newest to oldest.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryPage {
+    pub messages: Vec<HistoryItem>,
+    pub older: Option<HistoryCursor>,
+    pub sequence: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConversationDetail {
+    pub id: ThreadId,
+    pub name: String,
+    pub provider_instance: ProviderInstanceId,
+    pub latest_run: Option<Run>,
+    pub permissions: Vec<PermissionRequest>,
+    pub native_children: Vec<NativeChild>,
+    pub history: HistoryPage,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThreadSummary {
     pub id: ThreadId,
@@ -566,6 +601,10 @@ pub enum Error {
         original_thread: ThreadId,
         requested_thread: ThreadId,
     },
+    #[error("event cursor expired; read a fresh snapshot")]
+    CursorExpired,
+    #[error("history changed; restart paging from the newest page")]
+    HistoryChanged,
     #[error("unknown {0}")]
     NotFound(String),
     #[error("thread already has an active run")]

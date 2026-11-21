@@ -1,4 +1,5 @@
 mod creation;
+mod history;
 mod interrupts;
 mod native_children;
 mod questions;
@@ -43,6 +44,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/013.sql"),
     include_str!("../migrations/014.sql"),
     include_str!("../migrations/015.sql"),
+    include_str!("../migrations/016.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
@@ -1000,26 +1002,10 @@ impl Database {
                 "SELECT m.id,m.run_id,m.role,m.text,m.origin FROM message m JOIN run r ON m.run_id=r.id
             WHERE r.thread_id=? ORDER BY coalesce(r.delivery_slot,r.ordinal),m.rowid",
             )?
-            .query_map([&id.0], |r| {
-                Ok(Message {
-                    id: MessageId(r.get(0)?),
-                    run_id: RunId(r.get(1)?),
-                    role: if r.get::<_, String>(2)? == "user" {
-                        Role::User
-                    } else {
-                        Role::Assistant
-                    },
-                    text: r.get(3)?,
-                    origin: r.get::<_,Option<String>>(4)?.map(|s| serde_json::from_str(&s).map_err(|e|rusqlite::Error::FromSqlConversionFailure(4,rusqlite::types::Type::Text,Box::new(e)))).transpose()?,
-                })
-            })?
+            .query_map([&id.0], history::message_row)?
             .collect::<rusqlite::Result<_>>()?;
-        thread.permissions = self.db.prepare("SELECT request FROM permission p JOIN run r ON p.run_id=r.id WHERE r.thread_id=? AND p.expired=0 AND p.decision IS NULL ORDER BY p.rowid")?.query_map([&id.0], |r|r.get::<_,String>(0))?.map(|row|Ok(serde_json::from_str(&row?)?)).collect::<Result<_>>()?;
-        thread.cursor = self.db.query_row(
-            "SELECT coalesce(max(sequence),0) FROM event WHERE thread_id=?",
-            [&id.0],
-            |r| r.get(0),
-        )?;
+        thread.permissions = self.open_permissions(id)?;
+        thread.cursor = self.sequence(id)?;
         Ok(thread)
     }
 
@@ -1035,14 +1021,21 @@ impl Database {
     }
 
     pub fn events(&self, thread: &ThreadId, after: i64) -> Result<Vec<Event>> {
+        self.check_replay(thread, after)?;
         let mut statement = self.db.prepare("SELECT sequence,change FROM event WHERE thread_id=? AND sequence>? ORDER BY sequence LIMIT 64")?;
         let mut rows = statement.query(params![thread.0, after])?;
         let mut events = vec![];
+        let mut bytes = 0;
         while let Some(row) = rows.next()? {
+            let change = row.get_ref(1)?.as_str().map_err(rusqlite::Error::from)?;
+            if !events.is_empty() && bytes + change.len() > 256 * 1024 {
+                break;
+            }
+            bytes += change.len();
             events.push(Event {
                 sequence: row.get(0)?,
                 thread_id: thread.clone(),
-                change: serde_json::from_str(&row.get::<_, String>(1)?)?,
+                change: serde_json::from_str(change)?,
             });
         }
         Ok(events)

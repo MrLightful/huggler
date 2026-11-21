@@ -12,7 +12,9 @@ Run `cargo test --locked stop_thread` to reproduce the stop checks. A scripted p
 
 **Host queue controls.** A host can enqueue, edit, move and cancel queued messages with command receipts. The ACP fixture logs both outbound prompts after the host stops the thread, edits and reverses the held queue, closes, reopens and resumes. Run `cargo test --locked host_queue_edits`. [Public API scenario](../tests/delegation.rs)
 
-**Next action for Stage 5.** Verify bounded history, search and stream replay against an authoritative snapshot. Exercise an expired cursor and the desktop detail view on a long conversation.
+**History and replay.** The Rust fixture pages through held messages, expands a large message, verifies an edit from a retained cursor and rebuilds the same messages after expiry and reopen. The GPUI fixture pages and searches 1,000 messages. The three pinned upstream stream suites passed 20 tests. [Rust test](../tests/runtime.rs) · [Window check](../scripts/check-desktop-history.py)
+
+**Next action for Stage 5.** Verify context fork, handoff and merge through the first outbound provider prompt, then exercise attachments, recovery and migration.
 
 **Branch recommendation.** Commit and continue on this branch while Stage 5 acceptance checks remain open.
 
