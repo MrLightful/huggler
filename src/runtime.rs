@@ -1,4 +1,6 @@
 mod questions;
+#[cfg(feature = "application")]
+mod workspace_setup;
 use crate::{
     contracts::{
         agent_commands::{CreateThreads, CreatedPeer, Delegation},

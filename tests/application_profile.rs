@@ -95,11 +95,25 @@ async fn approved_hosts_resume_one_remote_delegation_and_revoke_access() -> Resu
     ));
     assert_eq!(host.read(&thread)?.cursor, before);
     assert_eq!(host.threads()?.len(), 2);
-    let Reply::Accepted { receipt, .. } = operator.request(write.clone()).await? else {
-        panic!()
-    };
-    completed(&host, &thread, &receipt.run_id).await;
-    operator.request(write.clone()).await?;
+    // The operating host uses only the published HTTP contract, in its own process.
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let mut client = tokio::process::Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-client.py"))
+        .stdin(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let input = serde_json::json!({
+        "url":format!("http://{endpoint}/v1/peer"), "bearer":rw.bearer,
+        "target":address, "sender_run":run
+    });
+    client
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&input)?)
+        .await?;
+    assert!(client.wait().await?.success());
     let remote = host.read(&thread)?;
     assert_eq!(remote.runs.len(), 1);
     let origin = remote.messages[0].origin.as_ref().unwrap();
@@ -394,18 +408,47 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
         "scratch",
     ]);
     let cloned = rt.clone_project(scratch.root.to_str().unwrap(), &dir.path().join("clone"))?;
+    let external = dir.path().join("existing");
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        external.to_str().unwrap(),
+    ]);
+    for (name, checkout) in [
+        ("root", cloned.clone()),
+        ("existing", rt.open_project(&external)?),
+    ] {
+        let thread = launch(&rt, &checkout, name, Provider::Codex);
+        let run = rt.send(
+            CommandId(format!("send-{name}")),
+            thread.clone(),
+            name.into(),
+        )?;
+        completed(&rt, &thread, &run.run_id.unwrap()).await;
+        assert!(checkout.root.join("frames.ndjson").exists());
+        assert!(matches!(
+            rt.release_workspace(&checkout.id),
+            Err(Error::Forbidden)
+        ));
+    }
     let project = rt.allocate_workspace(&cloned.id)?;
+    assert_eq!(rt.allocated_workspaces(&cloned.id)?[0].id, project.id);
     assert_eq!(rt.open_project(&project.root)?.id, project.id);
     let a = launch(&rt, &project, "a", Provider::Codex);
     let b = launch(&rt, &project, "b", Provider::Codex);
-    let failed = rt.setup_workspace(&project.id, Path::new("/usr/bin/false"), &[])?;
+    let failed = rt
+        .setup_workspace(&project.id, Path::new("/usr/bin/false"), &[])
+        .await?;
     assert!(matches!(failed, SetupStatus::Failed(_)));
     assert_eq!(rt.workspace_setup_status(&project.id)?, Some(failed));
     let send = || rt.send(CommandId("release".into()), a.clone(), "ready".into());
     assert!(send().is_err());
     assert!(rt.read(&a)?.runs.is_empty());
     assert_eq!(
-        rt.setup_workspace(&project.id, Path::new("/usr/bin/true"), &[])?,
+        rt.setup_workspace(&project.id, Path::new("/usr/bin/true"), &[])
+            .await?,
         SetupStatus::Ready
     );
     completed(&rt, &a, &send()?.run_id.unwrap()).await;
@@ -419,11 +462,73 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
     std::fs::remove_file(project.root.join("frames.ndjson"))?;
     rt.release_workspace(&project.id)?;
     assert!(!project.root.exists());
+    assert!(rt.allocated_workspaces(&cloned.id)?.is_empty());
     assert_eq!(
         std::fs::read_to_string(cloned.root.join("original"))?,
         "scratch"
     );
     rt.close().await
+}
+
+#[cfg(feature = "application")]
+#[tokio::test]
+async fn closing_runtime_reaps_workspace_setup_and_records_failure() -> Result<()> {
+    use std::{sync::Arc, time::Duration};
+    use workspace::SetupStatus;
+    let dir = tempfile::tempdir()?;
+    let config = options(&dir.path().join("state"));
+    let rt = Arc::new(Huggler::open(config.clone()).await?);
+    let project = rt.create_scratch(&dir.path().join("scratch"))?;
+    let worker = rt.clone();
+    let id = project.id.clone();
+    let setup = tokio::spawn(async move {
+        worker
+            .setup_workspace(
+                &id,
+                Path::new("/bin/sh"),
+                &[
+                    "-c".into(),
+                    "echo $$ > started.tmp && mv started.tmp started && exec sleep 30".into(),
+                ],
+            )
+            .await
+    });
+    let marker = project.root.join("started");
+    let timeout = Duration::from_secs(5);
+    tokio::time::timeout(timeout, async {
+        while !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("setup did not start");
+    let pid = std::fs::read_to_string(marker)?
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    assert_eq!(
+        rt.workspace_setup_status(&project.id)?,
+        Some(SetupStatus::Running)
+    );
+    assert!(matches!(
+        rt.setup_workspace(&project.id, Path::new("/bin/sh"), &[])
+            .await,
+        Err(Error::Busy)
+    ));
+    tokio::time::timeout(timeout, rt.close())
+        .await
+        .expect("setup blocked close")?;
+    let status = setup.await.unwrap()?;
+    assert!(matches!(status, SetupStatus::Failed(_)));
+    // Signal zero checks whether the original process still exists.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    let reopened = Huggler::open(config).await?;
+    assert_eq!(reopened.workspace_setup_status(&project.id)?, Some(status));
+    reopened.close().await
 }
 
 #[tokio::test]

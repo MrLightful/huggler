@@ -117,6 +117,10 @@ impl Database {
                 None,
                 true,
             )?;
+            tx.execute(
+                "UPDATE turn_effect SET durable_launch=1 WHERE run_id=?",
+                [&run.0],
+            )?;
             (
                 Some(run.clone()),
                 (delivery == PeerDelivery::Started).then(|| (thread.clone(), run)),
