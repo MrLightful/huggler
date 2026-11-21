@@ -2,6 +2,8 @@
 
 Huggler is an async Rust library for durable agent orchestration. The Rust crate is the shared implementation. Deliver it through Cargo first, then build bindings so applications in other languages can use the same runtime. The first host is a native desktop app built with Zed’s GPUI framework. It opens the crate in-process and owns its lifecycle. Provider-specific runtime or bridge dependencies belong to their adapters. The base desktop app runs without Node.js.
 
+The [TypeScript bindings plan](typescript-bindings-plan.md) covers the Node.js package, its API, and the tests required before release.
+
 T3 Code supplies reference scenarios for user-visible behavior. Huggler can define its own Rust types, storage schema and transport payloads. Provider-native operations depend on the selected harness and version. [T3 Code behavior inventory](parity-inventory.md)
 
 ## Naming
