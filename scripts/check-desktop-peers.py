@@ -25,7 +25,7 @@ def check():
             *launch_thread(checkout, "Author", "Claude Agent"), *send_message(prompt),
             {"click": "thread/Reviewer"}, {"see": "Author/Review 2+2."},
             {"click": "permission/allow_once"}, {"click": "permission/allow_once"},
-            {"see": "status/Completed"}, {"click": "thread/Author"},
+            {"see": "Ready/Reviewer/Completed"}, {"click": "thread/Author"},
             {"see": "Reviewer/2+2=4"}, {"see": "Claude Agent/Received 2+2=4"},
         ], env)
         print("GPUI showed the new reviewer and attributed both sides of the peer exchange.")

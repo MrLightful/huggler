@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Page and search a long local conversation in a macOS qualification window."""
+"""Page through a long local conversation in a macOS qualification window."""
 import os
 from pathlib import Path
 import sqlite3
@@ -24,16 +24,12 @@ def main():
                 db.execute("INSERT INTO run(id,thread_id,status,ordinal) VALUES(?,?,'completed',?)",
                            (str(i), thread, i + 1))
                 db.execute("INSERT INTO message(id,run_id,role,text) VALUES(?,?,'assistant',?)",
-                           (str(i), str(i), long_message if i == 5 else f"Answer {i}"))
+                           (str(i), str(i), long_message if i == 998 else f"Answer {i}"))
         steps = [
             {"see": "Codex/Answer 999"}, {"absent": "Codex/Answer 967"},
             {"click": "Older"}, {"see": "Codex/Answer 967"}, {"absent": "Codex/Answer 999"},
             {"click": "Newest"}, {"see": "Codex/Answer 999"},
-            {"click": "Search messages"}, {"type": "unique ending"}, {"click": "Search"},
-            {"see": "expand/5"}, {"click": "expand/5"}, {"see": "Codex/" + long_message},
-            {"click": "Clear search"}, {"see": "Codex/Answer 999"}, {"absent": "Clear search"},
-            {"click": "Search messages"}, {"type": "Answer 732"}, {"key": "enter"},
-            {"see": "Codex/Answer 732"}, {"absent": "Codex/Answer 999"},
+            {"absent": "Search messages"}, {"click": "expand/998"}, {"see": "Codex/" + long_message},
         ]
         run_window(executable, state, steps, os.environ)
         env = dict(os.environ, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"),
@@ -58,7 +54,7 @@ def main():
             {"type": "Include the tests."}, {"key": "cmd-enter"}, {"contains": "Could not open"},
             {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"},
             {"type": str(checkout)}, {"click": "Conversation options"}, {"click": "Send first message"},
-            {"see": "thread/Review my changes"}, {"see": "status/Completed"},
+            {"see": "thread/Review my changes"}, {"see": "Ready/Review my changes/Completed"},
         ], env)
         with sqlite3.connect(starter_state / "huggler.sqlite3") as db:
             assert db.execute("SELECT text FROM message WHERE role='user' ORDER BY rowid").fetchall() == [
@@ -66,7 +62,9 @@ def main():
             ]
         run_window(executable, starter_state, [
             {"resize": [640, 440]}, {"click": "Settle/" + first},
-            {"see": "section/Settled/1"}, {"absent": "thread/" + first},
+            {"in_lower_half": "section/Settled/1"}, {"absent": "thread/" + first},
+            {"click": "Settle/Review my changes"}, {"absent": "section/Ready/1"},
+            {"in_lower_half": "section/Settled/2"}, {"click": "Unsettle/Review my changes"},
         ], env)
         run_window(executable, starter_state, [
             {"click": "Show settled"}, {"click": "thread/" + first},
@@ -82,7 +80,7 @@ def main():
             {"see": "Suggested reply"}, {"click": "Message"}, {"type": "My own question"},
             {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/My own question"},
         ], env)
-    print("Native history paging, search, full message and suggested replies passed")
+    print("Native history paging, full message and suggested replies passed")
 
 
 if __name__ == "__main__":

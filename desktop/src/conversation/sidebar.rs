@@ -1,6 +1,50 @@
 use super::*;
 use huggler::RunStatus;
 
+use std::time::Instant;
+
+#[derive(Default)]
+pub(super) struct SidebarVisibility {
+    open: Option<bool>,
+    transition: Option<(Instant, f32)>,
+}
+
+impl SidebarVisibility {
+    pub(super) fn is_open(&self, default: bool) -> bool {
+        self.open.unwrap_or(default)
+    }
+
+    fn progress(&self, open: bool) -> f32 {
+        let target = if open { 1.0 } else { 0.0 };
+        let Some((start, from)) = self.transition else {
+            return target;
+        };
+        let elapsed = (start.elapsed().as_secs_f32() / 0.18).min(1.0);
+        target + (from - target) * (1.0 - elapsed).powi(3)
+    }
+
+    pub(super) fn toggle(&mut self, was_open: bool) {
+        let from = self.progress(was_open);
+        self.open = Some(!was_open);
+        self.transition = Some((Instant::now(), from));
+        #[cfg(target_os = "macos")]
+        if objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() {
+            self.transition = None;
+        }
+    }
+
+    pub(super) fn fraction(&mut self, default: bool, window: &mut Window) -> f32 {
+        let open = self.is_open(default);
+        let fraction = self.progress(open);
+        if fraction == if open { 1.0 } else { 0.0 } {
+            self.transition = None;
+        } else {
+            window.request_animation_frame();
+        }
+        fraction
+    }
+}
+
 pub(super) const WIDTH: f32 = 184.;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,10 +99,14 @@ impl Desktop {
             .overflow_y_scroll();
         for section in [
             Section::Attention,
-            Section::Working,
             Section::Ready,
+            Section::Working,
             Section::Settled,
         ] {
+            // Keep the space above both lower groups even when Working is empty.
+            if section == Section::Working {
+                list = list.child(div().flex_grow());
+            }
             let rows: Vec<_> = self
                 .threads
                 .iter()
@@ -117,7 +165,6 @@ impl Desktop {
                 });
             let group = v_flex()
                 .flex_shrink_0()
-                .when(section == Section::Ready, |group| group.mt_auto())
                 .pb_3()
                 .gap_1()
                 .child(control!(format!("section/{title}/{count}"), header))
@@ -144,7 +191,7 @@ impl Desktop {
         // Button measures its custom label at its intrinsic width. Bound it to the
         // space inside the sidebar and row padding so long names get an ellipsis.
         let content = v_flex()
-            .w(px(WIDTH - 70.))
+            .w(px(WIDTH - 76.))
             .items_start()
             .child(div().w_full().truncate().child(thread.name.clone()))
             .when(attention, |row| {
@@ -163,29 +210,7 @@ impl Desktop {
                 && !thread.active_children
                 && thread.status.is_none_or(RunStatus::terminal));
         let target = id.clone();
-        let select = control!(
-            format!("thread/{}", thread.name),
-            Button::new(SharedString::from(id.0.clone()))
-                .w_full()
-                .compact()
-                .justify_start()
-                .when(attention, |button| button.h_12())
-                .child(control!(
-                    format!("{}/{}/{}", section.label(), thread.name, status),
-                    content
-                ))
-                .tooltip(format!("{} · {status}", thread.name))
-                .ghost()
-                .selected(selected)
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    view.show_settings = false;
-                    let result = view.select(id.clone(), window, cx);
-                    view.report(result, cx);
-                })),
-        )
-        .flex_1()
-        .min_w_0();
-        h_flex().child(select).child(control!(
+        let settlement = control!(
             format!("{action}/{}", thread.name),
             Button::new(SharedString::from(format!("settlement-{}", thread.id.0)))
                 .ghost()
@@ -199,6 +224,7 @@ impl Desktop {
                 .tooltip(format!("{action} conversation"))
                 .disabled(!enabled)
                 .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
                     let result = view
                         .runtime
                         .dispatch(Command {
@@ -209,6 +235,27 @@ impl Desktop {
                         .map(|_| ());
                     view.report(result, cx);
                 }))
-        ))
+        );
+        control!(
+            format!("thread/{}", thread.name),
+            Button::new(SharedString::from(id.0.clone()))
+                .w_full()
+                .compact()
+                .justify_start()
+                .when(attention, |button| button.h_12())
+                .child(control!(
+                    format!("{}/{}/{}", section.label(), thread.name, status),
+                    content
+                ))
+                .child(settlement)
+                .tooltip(format!("{} · {status}", thread.name))
+                .ghost()
+                .selected(selected)
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.show_settings = false;
+                    let result = view.select(id.clone(), window, cx);
+                    view.report(result, cx);
+                })),
+        )
     }
 }

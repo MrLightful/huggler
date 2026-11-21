@@ -80,8 +80,7 @@ for line in sys.stdin:
             emit(method="turn/completed", params={"threadId": session, "turn": {
                 "id": turn, "status": "failed", "error": {"message": "Review check failed"}}})
         else:
-            assert prompt.startswith("Use a single line.\n\n")
-            assert "Failed · exit 7" in prompt and "expected 42, got 41" in prompt
+            assert prompt == "Use a single line."
             assert file.read_text() == "41\n"
             file.write_text("42\n")
             complete("Corrected the answer.")

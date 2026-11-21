@@ -11,15 +11,10 @@ macro_rules! control {
 }
 
 mod changes;
-mod checks;
 mod git;
-mod publish;
 mod questions;
 mod settings;
 mod ui;
-
-/// Editable context to bring from a checkout tool into the conversation.
-struct FollowUp(String);
 
 mod conversation;
 #[cfg(all(feature = "qualification", target_os = "macos"))]
@@ -95,7 +90,7 @@ fn main() -> Result<()> {
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),
             items: vec![
-                MenuItem::action("New conversation", NewConversation),
+                MenuItem::action("Create", NewConversation),
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::separator(),
                 MenuItem::action("Quit Huggler", Quit),
