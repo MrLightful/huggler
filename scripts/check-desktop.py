@@ -31,7 +31,9 @@ def check(previous_app):
             previous = plistlib.loads((previous_app / info_path).read_bytes())
             assert previous["CFBundleIdentifier"] == new["CFBundleIdentifier"]
             assert int(previous["CFBundleVersion"]) < int(new["CFBundleVersion"])
-            print(f"Upgrade {previous['CFBundleShortVersionString']} to {new['CFBundleShortVersionString']}", flush=True)
+            def label(info):
+                return f"{info['CFBundleShortVersionString']} (build {info['CFBundleVersion']})"
+            print(f"Upgrade {label(previous)} to {label(new)}", flush=True)
         shutil.copytree(previous_app or current, app)
         executable = app / "Contents/MacOS/huggler-desktop"
         subprocess.run(["codesign", "--verify", "--strict", app], check=True)
