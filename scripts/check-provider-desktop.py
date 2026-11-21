@@ -11,14 +11,16 @@ from desktop_check import ROOT, isolated_env, launch_thread, run_window, send_me
 
 
 def check_models(executable, tmp, env):
-    checkout = tmp / "model-checkout"
+    checkout = tmp.resolve() / "model-checkout"
     state = tmp / "model-state"
     subprocess.run(["git", "init", "--quiet", checkout], check=True)
     env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
     default = "model/Provider default"
     run_window(executable, state, [
-        {"click": default}, {"click": "provider/available"}, {"click": "provider/Codex"}, {"key": "escape"},
-        {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)}, {"click": default},
+        {"click": default}, {"click": "provider/available"}, {"click": "provider/Codex"}, {"key": "escape"}, {"click": "First message"},
+        {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
+        {"see": "provider-status/Codex app-server · version unknown · login unverified · 2 models"},
+        {"click": default},
         {"see": "model-option/fixture-fast"}, {"type": "deep"},
         {"absent": "model-option/fixture-fast"}, {"key": "enter"}, {"see": "model/fixture-deep"},
         {"click": "model/fixture-deep"}, {"click": "provider/available"}, {"see": default},
@@ -31,6 +33,9 @@ def check_models(executable, tmp, env):
         {"click": "model-option/fixture-fast"}, {"see": "model/fixture-fast"},
         {"click": "Send"}, {"see": "Codex/reply Second turn"}, {"see": "Ready/Models/Completed"},
     ], env)
+    frames_path = checkout / "frames.ndjson"
+    frames = [json.loads(line) for line in frames_path.read_text().splitlines()]
+    assert sum(frame.get("method") == "model/list" for frame in frames) == 1
     run_window(executable, state, [
         {"see": "model/fixture-fast"}, {"click": "model/fixture-fast"},
         {"click": "model-option/Provider default"}, {"see": default},

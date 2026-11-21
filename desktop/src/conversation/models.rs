@@ -42,11 +42,14 @@ impl ProviderCatalog {
         let checkout = self.checkout.clone();
         self.result = None;
         cx.notify();
-        cx.spawn(async move |catalog, cx| {
-            let result = runtime
+        let job = cx.background_spawn(async move {
+            runtime
                 .probe_provider(instance.as_str(), checkout)
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |catalog, cx| {
+            let result = job.await;
             let _ = catalog.update(cx, |catalog, cx| {
                 catalog.result = Some(result);
                 cx.notify();
@@ -137,7 +140,7 @@ impl ListDelegate for Models {
 }
 
 impl Desktop {
-    fn model_source(&self, cx: &App) -> (ProviderInstanceId, PathBuf) {
+    pub(super) fn model_source(&self, cx: &App) -> (ProviderInstanceId, PathBuf) {
         match &self.current {
             Some(thread) => (
                 thread.provider_instance.clone(),
@@ -150,32 +153,36 @@ impl Desktop {
         }
     }
 
+    pub(super) fn preload_models(&mut self, cx: &mut Context<Self>) {
+        let source = self.model_source(cx);
+        if !self.model_catalogs.contains_key(&source) && source.1.is_dir() {
+            self.catalog(false, cx);
+        }
+    }
+
     pub(super) fn catalog(
         &mut self,
         refresh: bool,
         cx: &mut Context<Self>,
     ) -> Entity<ProviderCatalog> {
-        let (instance, checkout) = self.model_source(cx);
-        if let Some(catalog) = &self.provider_check {
-            let state = catalog.read(cx);
-            if state.instance == instance && state.checkout == checkout {
-                if refresh && !state.loading() {
-                    catalog.update(cx, |state, cx| state.load(self.runtime.clone(), cx));
-                }
-                return catalog.clone();
+        let source = self.model_source(cx);
+        if let Some(catalog) = self.model_catalogs.get(&source) {
+            if refresh && !catalog.read(cx).loading() {
+                catalog.update(cx, |state, cx| state.load(self.runtime.clone(), cx));
             }
+            return catalog.clone();
         }
         let catalog = cx.new(|cx| {
             let mut catalog = ProviderCatalog {
-                instance,
-                checkout,
+                instance: source.0.clone(),
+                checkout: source.1.clone(),
                 result: None,
             };
             catalog.load(self.runtime.clone(), cx);
             catalog
         });
         cx.observe(&catalog, |_, _, cx| cx.notify()).detach();
-        self.provider_check = Some(catalog.clone());
+        self.model_catalogs.insert(source, catalog.clone());
         cx.notify();
         catalog
     }
@@ -226,7 +233,7 @@ impl Desktop {
                             .label(name)
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 if id != view.instance {
-                                    view.choose_provider(&id);
+                                    view.choose_provider(&id, cx);
                                     view.open_models(window, cx);
                                 }
                             }))

@@ -68,7 +68,8 @@ pub struct Desktop {
     instance: ProviderInstanceId,
     launch_model: Option<String>,
     model_picker: Option<Entity<ListState<Models>>>,
-    provider_check: Option<Entity<ProviderCatalog>>,
+    model_catalogs: HashMap<(ProviderInstanceId, PathBuf), Entity<ProviderCatalog>>,
+    checkout_preload: Option<Task<()>>,
     error: Option<String>,
 }
 
@@ -108,7 +109,7 @@ impl Desktop {
                         view.focus_workspace(window, cx);
                     }
                     SettingsEvent::DefaultProvider(id) => {
-                        view.choose_provider(id);
+                        view.choose_provider(id, cx);
                     }
                 }
                 cx.notify();
@@ -163,14 +164,21 @@ impl Desktop {
             instance,
             launch_model: None,
             model_picker: None,
-            provider_check: None,
+            model_catalogs: HashMap::new(),
+            checkout_preload: None,
             error: None,
         };
         cx.subscribe(&view.checkout, |view, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 view.launch_model = None;
                 view.model_picker = None;
-                view.provider_check = None;
+                let delay = cx
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(300));
+                view.checkout_preload = Some(cx.spawn(async move |view, cx| {
+                    delay.await;
+                    let _ = view.update(cx, |view, cx| view.preload_models(cx));
+                }));
                 cx.notify();
             }
         })
@@ -233,6 +241,7 @@ impl Desktop {
             self.select(thread.id.clone(), window, cx)?;
         } else {
             self.starter.focus_handle(cx).focus(window);
+            self.preload_models(cx);
         }
         Ok(list.revision)
     }
@@ -261,6 +270,7 @@ impl Desktop {
         self.prompt = self.workspaces[&id].draft.clone();
         self.model_picker = None;
         self.current = Some(snapshot);
+        self.preload_models(cx);
         self.before = None;
         self.focus_workspace(window, cx);
         self.history_scroll.scroll_to_bottom();
@@ -441,10 +451,10 @@ impl Desktop {
         }
         self.launch_model = None;
         self.instance = self.settings.read(cx).default_provider();
-        self.provider_check = None;
         self.subscription = None;
         self.command_log = None;
         self.current = None;
+        self.preload_models(cx);
         self.error = None;
         self.name
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -621,11 +631,11 @@ impl Desktop {
         self.refresh()
     }
 
-    fn choose_provider(&mut self, id: &ProviderInstanceId) {
+    fn choose_provider(&mut self, id: &ProviderInstanceId, cx: &mut Context<Self>) {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
-            self.provider_check = None;
+            self.preload_models(cx);
         }
     }
 
@@ -740,7 +750,10 @@ impl Desktop {
                 .child(label("Opening conversation…"))
                 .into_any_element();
         }
-        let check = self.provider_check.as_ref().map(|check| check.read(cx));
+        let check = self
+            .model_catalogs
+            .get(&self.model_source(cx))
+            .map(|check| check.read(cx));
         let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
         let empty_message =
             self.starter.read(cx).value().trim().is_empty() && self.starter_attachments.is_empty();
