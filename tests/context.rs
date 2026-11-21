@@ -1,4 +1,5 @@
 #![cfg(unix)]
+use huggler::workspace::OrphanedWorktreeOutcome;
 use huggler::*;
 use serde_json::Value;
 use std::{fs, path::Path};
@@ -579,6 +580,101 @@ async fn checkpoint_forks_restore_only_the_destination_checkout() -> Result<()> 
     for (cmd, receipt) in forks {
         assert_eq!(rt.dispatch(cmd)?, receipt);
     }
+    rt.close().await
+}
+
+#[tokio::test]
+async fn public_cleanup_removes_a_pristine_deleted_thread_worktree() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    fs::write(repo.join(".git/info/exclude"), "frames.ndjson\n")?;
+    fs::write(repo.join("tracked"), "base")?;
+    assert!(
+        std::process::Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "add",
+                "tracked",
+            ])
+            .status()?
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "base",
+            ])
+            .status()?
+            .success()
+    );
+    let rt = Huggler::open(options(&dir.path().join("state"))).await?;
+    let root = launch(&rt, &rt.open_project(&repo)?, "root", Provider::Codex);
+    let run = rt
+        .send(
+            CommandId("capture-source".into()),
+            root.clone(),
+            "source".into(),
+        )?
+        .run_id
+        .unwrap();
+    completed(&rt, &root, &run).await;
+    rt.dispatch(command(
+        "capture",
+        &root,
+        Action::CaptureCheckpoint {
+            through: run.clone(),
+        },
+    ))?;
+    let fork = ThreadId("cleanup-fork".into());
+    let receipt = rt.dispatch(command(
+        "fork",
+        &fork,
+        Action::Fork {
+            source: root,
+            through: run,
+            name: "cleanup fork".into(),
+            instance: "codex".into(),
+            model: None,
+            mode: ForkMode::Checkpoint,
+            text: "continue".into(),
+        },
+    ))?;
+    completed(&rt, &fork, receipt.run_id.as_ref().unwrap()).await;
+    let path = rt.read(&fork)?.worktree_path.unwrap();
+    fs::remove_file(path.join("frames.ndjson"))?;
+    rt.delete_thread(&fork)?;
+
+    let inspected = rt.inspect_orphaned_worktrees()?;
+    let entry = inspected
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .unwrap();
+    assert_eq!(entry.outcome, OrphanedWorktreeOutcome::Removable);
+    let cleaned = rt.cleanup_orphaned_worktrees()?;
+    let entry = cleaned
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .unwrap();
+    assert_eq!(entry.outcome, OrphanedWorktreeOutcome::Removed);
+    assert!(!path.exists());
     rt.close().await
 }
 

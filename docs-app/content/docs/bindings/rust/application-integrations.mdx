@@ -13,6 +13,31 @@ Call `setup_workspace(project, program, args)` with a host-selected program and 
 
 Use `allocated_workspaces` to enumerate managed checkouts. `release_workspace` requires the checkout to be clean and its threads to be removed. Run blocking Git and registration calls off the host’s UI or async executor thread when responsiveness matters.
 
+## Clean up managed worktrees
+
+Huggler does not delete a thread's files as part of `delete_thread`. Call
+`inspect_orphaned_worktrees` to list thread-owned managed checkouts that no thread or project uses,
+including the reason each checkout can or cannot be removed. Call `cleanup_orphaned_worktrees` to
+remove the safe entries and receive the same per-checkout report plus best-effort logical bytes
+freed. Standalone workspaces allocated with `allocate_workspace` stay on the explicit
+`release_workspace` lifecycle so cleanup cannot race the gap between allocation and thread launch.
+
+Cleanup is intentionally conservative. A checkout is removed only when it is still registered to
+the same Git repository, remains at its recorded base commit, and contains no tracked, untracked,
+or ignored files. Changed worktrees, including detached worktrees with new commits, are kept.
+Missing checkout reservations are removed from Huggler's database.
+
+The host owns policy and scheduling. Keep automatic cleanup opt-in, and run the blocking cleanup
+call away from the UI thread—for example at startup, after a successful thread deletion, on a
+periodic retry, or after an explicit user request. Huggler does not yet remove worktrees belonging
+to settled or inactive threads because those threads would need durable commit preservation and
+worktree recreation before that can be safe.
+
+Huggler Desktop keeps automatic cleanup off by default. Its Storage settings provide a manual
+cleanup action and an opt-in automatic mode that checks at startup and hourly. The desktop does not
+currently expose thread deletion; a host that adds deletion should confirm the history deletion,
+then request cleanup after it succeeds.
+
 ## Drive a schedule
 
 Create a `Schedule` with `Trigger::Once`, `Interval`, `Daily`, or `Webhook`. Select `Destination::Continue`, `FreshSession`, or `NewThread`. Timestamps use Unix seconds. A daily schedule uses an IANA time zone, skips nonexistent local times, and chooses the earlier occurrence when clocks repeat.

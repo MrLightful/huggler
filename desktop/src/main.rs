@@ -78,6 +78,33 @@ fn main() -> Result<()> {
     }
     let executor = tokio::runtime::Runtime::new()?;
     let runtime = Arc::new(executor.block_on(Huggler::open(options))?);
+    let cleanup_runtime = runtime.clone();
+    let cleanup_state = paths.state_dir();
+    executor.spawn(async move {
+        loop {
+            match settings::Preferences::load(&cleanup_state) {
+                Ok(prefs) if prefs.automatic_worktree_cleanup => {
+                    let runtime = cleanup_runtime.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        runtime.cleanup_orphaned_worktrees()
+                    })
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            eprintln!("Could not clean up worktrees: {error}");
+                        }
+                        Err(error) => {
+                            eprintln!("Worktree cleanup task failed: {error}");
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("Could not read cleanup preference: {error}"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
+        }
+    });
 
     #[cfg(unix)]
     runtime.set_service_host(
