@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Install the GPUI app and drive three live Codex UI turns across actual process exits."""
+import argparse
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import sqlite3
 import subprocess
 import tempfile
 
-from desktop_check import install_check, launch_thread, run_window, send_message
+from desktop_check import installer, isolated_env, launch_thread, run_window, send_message
 
 
-def check():
+def check(previous_app):
     provider = os.environ.get("HUGGLER_CODEX") or shutil.which("codex")
     if not provider:
         raise SystemExit("Install Codex or set HUGGLER_CODEX to its executable.")
@@ -20,15 +22,25 @@ def check():
         case = Path(tmp)
         workspace = case / "checkout with spaces"
         subprocess.run(["git", "init", "-q", workspace], check=True)
-        app = case / "Huggler Qualification.app"
-        state = case / "state"
-        executable = install_check(app)
+        app = case / "Applications" / "Huggler.app"
+        current = case / "build" / "Huggler.app"
+        installer.install(current, qualification=True)
+        info_path = Path("Contents/Info.plist")
+        new = plistlib.loads((current / info_path).read_bytes())
+        if previous_app:
+            previous = plistlib.loads((previous_app / info_path).read_bytes())
+            assert previous["CFBundleIdentifier"] == new["CFBundleIdentifier"]
+            assert int(previous["CFBundleVersion"]) < int(new["CFBundleVersion"])
+            print(f"Upgrade {previous['CFBundleShortVersionString']} to {new['CFBundleShortVersionString']}", flush=True)
+        shutil.copytree(previous_app or current, app)
+        executable = app / "Contents/MacOS/huggler-desktop"
+        subprocess.run(["codesign", "--verify", "--strict", app], check=True)
+        env = isolated_env(case, codex_login=True)
+        state = Path(env["HOME"]) / "Library/Application Support" / new["CFBundleIdentifier"]
         bin_dir = case / "bin"
         bin_dir.mkdir()
         (bin_dir / "codex").symlink_to(codex)
-        env = dict(os.environ, PATH=f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin")
-        env.pop("HUGGLER_CODEX", None)
-        assert not shutil.which("node", path=env["PATH"])
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
         bundle_files = [p.name for p in app.rglob("*") if p.is_file()]
         assert not any("node" in name.lower() for name in bundle_files)
         assert "node" not in subprocess.check_output(["otool", "-L", executable], text=True).lower()
@@ -51,8 +63,14 @@ def check():
              {"click": "thread/Independent thread"}, {"absent": "Codex/" + resumed}],
         ]
         for step, controls in enumerate(workflows, start=1):
+            if step == 2 and previous_app:
+                # Both bundles and the destination belong to this disposable install.
+                app.rename(case / "previous.app")
+                current.rename(app)
+                subprocess.run(["codesign", "--verify", "--strict", app], check=True)
             run_window(executable, state, controls, env)
             with sqlite3.connect(database) as db:
+                assert (state / "selected-thread").is_file()
                 rows = db.execute("SELECT thread_id,ordinal,status,native_turn FROM run ORDER BY rowid").fetchall()
                 bindings = db.execute("SELECT id,native_thread FROM thread ORDER BY rowid").fetchall()
                 assert len(rows) == step and all(r[2] == "completed" for r in rows)
@@ -75,4 +93,6 @@ def check():
 
 
 if __name__ == "__main__":
-    check()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--previous-app", type=Path, help="signed older qualification bundle for the first launch")
+    check(parser.parse_args().previous_app)

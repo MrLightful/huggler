@@ -5,6 +5,9 @@ license = "MIT"
 edition = "2024"
 publish = false
 
+[package.metadata.macos]
+bundle-version = "2"
+
 [dependencies]
 anyhow = "1"
 dirs = "6"
