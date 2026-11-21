@@ -691,6 +691,73 @@ async fn allowlisted_tools_remain_callable_when_search_is_disabled() -> Result<(
 }
 
 #[tokio::test]
+#[ignore = "uses the authenticated Codex app-server and a synthetic secret"]
+async fn live_codex_managed_secret() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut config = HugglerOptions::new(dir.path().join("state"));
+    config.agent_tools = true;
+    config.codex.request_approvals = true;
+    let allowed = [
+        "orchestrator_capabilities",
+        "request_secret",
+        "send_to_user",
+    ];
+    config.agent_policy.allowed_tools = Some(allowed.map(String::from).into());
+    config.agent_policy.secret_ttl_seconds = Some(120);
+    let rt = Huggler::open(config).await?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let project = rt.open_project(&repo)?;
+    let thread = launch(&rt, &project, "requester", Provider::Codex);
+    let prompt = "Use only the Huggler MCP server. Call orchestrator_capabilities and send its tools array as JSON in a send_to_user notice with clientRequestId catalog. Call request_secret with clientRequestId fixture and label Qualification. Poll the same request until approved. Finish with just the reference string you received.";
+    let run = rt
+        .send(CommandId("qualify".into()), thread.clone(), prompt.into())?
+        .run_id
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        loop {
+            let snapshot = rt.read(&thread)?;
+            for request in &snapshot.permissions {
+                let input = &request.tool_call["rawInput"];
+                assert_eq!(input["serverName"], "huggler");
+                assert!(allowed.contains(&input["_meta"]["tool_name"].as_str().unwrap()));
+                rt.respond_to_permission(&thread, &run, &request.id, "accept".into())?;
+            }
+            for secret in rt.secret_requests(&thread)? {
+                if secret.state == "requested" {
+                    assert_eq!(secret.label, "Qualification");
+                    rt.answer_secret(&thread, &secret.id, Some(b"qualification-only".to_vec()))?;
+                }
+            }
+            if snapshot.runs[0].status.terminal() {
+                assert_eq!(
+                    snapshot.runs[0].status,
+                    RunStatus::Completed,
+                    "{:?}",
+                    snapshot.runs[0].error
+                );
+                let reference = snapshot.messages.last().unwrap().text.trim();
+                assert_eq!(
+                    rt.consume_secret(&project.id, reference)?,
+                    b"qualification-only"
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Ok::<_, Error>(())
+    })
+    .await
+    .expect("live Codex timed out")?;
+    let notices = rt.user_notices(&thread)?;
+    assert_eq!(notices.len(), 1);
+    let mut tools: Vec<String> = serde_json::from_str(&notices[0].1)?;
+    tools.sort();
+    assert_eq!(tools, allowed);
+    rt.close().await
+}
+
+#[tokio::test]
 async fn managed_agent_requests_and_one_use_secret_references() -> Result<()> {
     use application::{Preferences, Theme};
     use std::os::unix::fs::PermissionsExt;
