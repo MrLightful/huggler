@@ -1,15 +1,19 @@
 mod markdown;
+mod turn_rail;
 
 use self::markdown::prose;
 use super::*;
-use gpui_component::{Icon, scroll::ScrollableElement};
+use gpui_component::{Icon, tooltip::Tooltip};
 use huggler::{
     ActivityCounts, ActivityItem, ActivityKind, ActivityStatus, HistoryItem, PermissionRequest,
     Role, RunActivity, RunStatus,
 };
 use std::time::{Duration, Instant};
+use turn_rail::TurnPreview;
 
 const GUTTER: Pixels = px(20.);
+// Markdown must measure at the final width so wrapped lines clear the footer.
+const MAX_RESPONSE_WIDTH: Pixels = px(700.);
 
 pub(super) struct TurnClock {
     pub(super) run: RunId,
@@ -196,13 +200,18 @@ impl Desktop {
             .runtime
             .output()
             .provider_label(thread.provider_instance.as_str());
-        let history = div()
+        let mut history = v_flex()
             .id("history")
             .track_scroll(&self.history_scroll)
-            .flex_1()
-            .min_h_0()
+            .size_full()
+            .items_center()
+            .pt_3()
+            .pb_4()
+            .gap_5()
             .overflow_y_scroll();
         let pager = h_flex()
+            .w(width)
+            .mx_auto()
             .px(GUTTER)
             .pt_2()
             .gap_2()
@@ -231,54 +240,68 @@ impl Desktop {
                 ))
             });
         let messages = &thread.history.messages;
-        let mut rows = v_flex().px(GUTTER).pt_3().pb_4().gap_5();
         let content_width = (width - GUTTER * 2.).max(px(0.));
-        if messages.is_empty() && thread.foreground_run.is_none() {
-            rows = rows.child(hint("Send a message to start this conversation.", cx));
-        }
+        let response_width = content_width.min(MAX_RESPONSE_WIDTH);
+        let column = || v_flex().w(width).px(GUTTER).gap_5().flex_shrink_0();
+        let mut previews = Vec::new();
         let mut shown = HashSet::new();
-        for (index, item) in messages.iter().enumerate() {
-            let message = &item.message;
-            let run = &message.run_id;
+        let foreground = thread
+            .foreground_run
+            .as_ref()
+            .filter(|_| self.before.is_none());
+        for messages in messages.chunk_by(|a, b| a.message.run_id == b.message.run_id) {
+            let run = &messages[0].message.run_id;
             let activity = thread
                 .activity
                 .iter()
                 .find(|activity| &activity.run_id == run);
-            if message.role == Role::Assistant
-                && let Some(activity) = activity
+            let streaming = foreground.is_some_and(|active| &active.id == run);
+            previews.push(TurnPreview::new(
+                messages,
+                activity,
+                streaming.then_some(thread.streaming_text.as_str()),
+            ));
+            let mut rows = column();
+            for item in messages {
+                if item.message.role == Role::Assistant
+                    && let Some(activity) = activity
+                    && shown.insert(run)
+                {
+                    rows = rows.child(self.activity_rows(
+                        thread,
+                        activity,
+                        response_width,
+                        window,
+                        cx,
+                    ));
+                }
+                rows =
+                    rows.child(self.message_row(thread, item, provider, content_width, window, cx));
+            }
+            if let Some(activity) = activity
                 && shown.insert(run)
             {
-                rows = rows.child(self.activity_rows(thread, activity, window, cx));
+                rows = rows.child(self.activity_rows(thread, activity, response_width, window, cx));
             }
-            rows = rows.child(self.message_row(thread, item, provider, content_width, window, cx));
-            let last_for_run = messages
-                .get(index + 1)
-                .is_none_or(|next| &next.message.run_id != run);
-            if last_for_run
-                && let Some(activity) = activity
-                && shown.insert(run)
-            {
-                rows = rows.child(self.activity_rows(thread, activity, window, cx));
+            if streaming {
+                rows = rows.children(self.streaming(thread, response_width, window, cx));
             }
-            if last_for_run
-                && thread
-                    .foreground_run
-                    .as_ref()
-                    .is_some_and(|active| &active.id == run)
-            {
-                rows = rows.children(self.streaming(thread, window, cx));
-            }
+            history = history.child(rows);
+        }
+        let mut tail = Vec::new();
+        if messages.is_empty() && thread.foreground_run.is_none() {
+            tail.push(hint("Send a message to start this conversation.", cx));
         }
         if self.before.is_none() {
             for activity in &thread.activity {
                 if shown.insert(&activity.run_id) {
-                    rows = rows.child(self.activity_rows(thread, activity, window, cx));
+                    tail.push(self.activity_rows(thread, activity, response_width, window, cx));
                 }
             }
-            if let Some(run) = &thread.foreground_run
+            if let Some(run) = foreground
                 && !messages.iter().any(|item| item.message.run_id == run.id)
             {
-                rows = rows.children(self.streaming(thread, window, cx));
+                tail.extend(self.streaming(thread, response_width, window, cx));
             }
             for child in &thread.native_children {
                 let status = match child.status {
@@ -292,8 +315,11 @@ impl Desktop {
                     huggler::NativeChildStatus::Failed => "Failed",
                     huggler::NativeChildStatus::Disconnected => "Disconnected",
                 };
-                rows = rows.child(activity_row(IconName::Bot, &child.path, Some(status), cx));
+                tail.push(activity_row(IconName::Bot, &child.path, Some(status), cx));
             }
+        }
+        if !tail.is_empty() {
+            history = history.child(column().children(tail));
         }
         v_flex()
             .flex_1()
@@ -302,7 +328,26 @@ impl Desktop {
                 thread.history.older.is_some() || self.before.is_some(),
                 |column| column.child(pager),
             )
-            .child(history.child(rows).vertical_scrollbar(&self.history_scroll))
+            .child(div().relative().flex_1().min_h_0().child(history).when(
+                !previews.is_empty(),
+                |viewport| {
+                    viewport.child(turn_rail::render(
+                        previews,
+                        &self.history_scroll,
+                        window,
+                        cx,
+                    ))
+                },
+            ))
+    }
+
+    pub(super) fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
+        if self.before.is_some() {
+            self.page_history(None, cx);
+        } else {
+            self.history_scroll.scroll_to_bottom();
+            cx.notify();
+        }
     }
 
     fn page_history(&mut self, before: Option<HistoryCursor>, cx: &mut Context<Self>) {
@@ -367,7 +412,7 @@ impl Desktop {
                         .accent
                         .blend(cx.theme().foreground.opacity(0.035)))
             })
-            .when(!outgoing, |body| body.w_full().max_w(px(700.)));
+            .when(!outgoing, |body| body.w_full());
         if !caption.is_empty() {
             body = body.child(control!(
                 format!("{author}/{caption}"),
@@ -432,14 +477,9 @@ impl Desktop {
                 Err(error) => view.report(Err(error), cx),
             }
         }));
-        let provider_label = if outgoing || message.origin.is_some() {
-            format!("{author} · {provider}")
-        } else {
-            provider.to_owned()
-        };
         let metadata = message_footer(
             &group,
-            provider_label,
+            message.origin.is_some().then_some(author),
             item.timestamp_ms,
             item.turn_duration_ms,
             copy_button,
@@ -458,8 +498,7 @@ impl Desktop {
                 .child(metadata.justify_end())
         } else {
             v_flex()
-                .w_full()
-                .max_w(px(700.))
+                .w(content_width.min(MAX_RESPONSE_WIDTH))
                 .group(group)
                 .child(body)
                 .child(metadata)
@@ -469,6 +508,7 @@ impl Desktop {
     fn streaming(
         &self,
         thread: &ConversationDetail,
+        width: Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
@@ -493,7 +533,7 @@ impl Desktop {
         Some(
             v_flex()
                 .gap_1()
-                .max_w(px(700.))
+                .w(width)
                 .when(!thread.streaming_text.is_empty(), |row| {
                     row.child(control!(
                         format!("writing/{}", thread.streaming_text),
@@ -513,39 +553,36 @@ impl Desktop {
         &self,
         thread: &ConversationDetail,
         activity: &RunActivity,
+        width: Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let mut rows = v_flex().gap_2().min_w_0().max_w(px(700.));
-        if activity.live_counts.is_some() {
-            return rows.child(self.activity_group(
-                thread,
-                activity,
-                &activity.items,
-                0,
-                window,
-                cx,
-            ));
-        }
-        if activity.truncated {
-            rows = rows.child(hint("Earlier activity omitted", cx));
-        }
-        let mut command_index = 0;
-        for group in activity.items.chunk_by(|a, b| {
-            a.kind != ActivityKind::Compaction && b.kind != ActivityKind::Compaction
-        }) {
-            let first = &group[0];
-            let commands = group
-                .iter()
-                .filter(|item| item.kind == ActivityKind::Command)
-                .count();
-            if first.kind == ActivityKind::Compaction {
-                rows = rows.child(compaction_row(cx));
-            } else {
-                let start = command_index;
-                rows = rows.child(self.activity_group(thread, activity, group, start, window, cx));
+        let mut rows = v_flex().gap_2().min_w_0().w(width);
+        if activity.status.producing_output() || activity.truncated {
+            rows =
+                rows.child(self.activity_group(thread, activity, &activity.items, 0, window, cx));
+        } else {
+            let mut command_index = 0;
+            for group in activity.items.chunk_by(|a, b| {
+                a.kind != ActivityKind::Compaction && b.kind != ActivityKind::Compaction
+            }) {
+                if group[0].kind == ActivityKind::Compaction {
+                    rows = rows.child(compaction_row(cx));
+                } else {
+                    rows = rows.child(self.activity_group(
+                        thread,
+                        activity,
+                        group,
+                        command_index,
+                        window,
+                        cx,
+                    ));
+                    command_index += group
+                        .iter()
+                        .filter(|item| item.kind == ActivityKind::Command)
+                        .count();
+                }
             }
-            command_index += commands;
         }
         let status = match activity.status {
             RunStatus::Failed => Some((IconName::TriangleAlert, "Run failed")),
@@ -568,10 +605,10 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> Div {
         let run = &activity.run_id;
-        let live = activity.live_counts.is_some();
+        let live = activity.status.producing_output();
         let key = (run.clone(), (!live).then(|| group[0].id.clone()));
         let expanded = self.expanded_activity.contains(&key);
-        let counts = activity.live_counts.unwrap_or_else(|| {
+        let counts = activity.counts.unwrap_or_else(|| {
             let messages = group
                 .iter()
                 .filter(|item| item.kind == ActivityKind::Commentary)
@@ -657,8 +694,11 @@ impl Desktop {
                 .gap_2()
                 .border_l_1()
                 .border_color(cx.theme().border);
-            if live && expanded && activity.truncated {
-                entries = entries.child(hint("Earlier activity omitted", cx));
+            if expanded && activity.truncated {
+                entries = entries.child(control!(
+                    "Earlier activity omitted",
+                    hint("Earlier activity omitted", cx)
+                ));
             }
             for (index, item) in group.iter().enumerate() {
                 if item.kind == ActivityKind::Command {
@@ -679,28 +719,15 @@ impl Desktop {
                         cx,
                     ));
                 } else if item.kind == ActivityKind::Commentary {
-                    let id = format!("commentary-{run}-{}", item.id);
-                    let text = item.title.clone();
-                    let copy = copy_button(&id).on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                    });
-                    let provider = self
-                        .runtime
-                        .output()
-                        .provider_label(thread.provider_instance.as_str());
-                    let body = control!(
+                    entries = entries.child(control!(
                         format!("commentary/{}", item.title),
-                        prose(id.clone(), &item.title, window, cx)
-                    );
-                    let footer = message_footer(
-                        &id,
-                        provider.to_owned(),
-                        item.timestamp_ms,
-                        activity.turn_duration_ms,
-                        copy,
-                        cx,
-                    );
-                    entries = entries.child(v_flex().w_full().group(id).child(body).child(footer));
+                        prose(
+                            format!("commentary-{run}-{}", item.id),
+                            &item.title,
+                            window,
+                            cx
+                        )
+                    ));
                 } else {
                     let (icon, fallback) = match item.kind {
                         ActivityKind::FileChange => (IconName::File, "File change"),
@@ -872,23 +899,38 @@ fn copy_button(group: &str) -> Button {
 
 fn message_footer(
     group: &str,
-    provider: String,
+    author: Option<&str>,
     timestamp_ms: Option<i64>,
     duration_ms: Option<i64>,
     copy: Button,
     cx: &App,
 ) -> Div {
-    let time = timestamp_ms
+    let local = timestamp_ms
         .and_then(chrono::DateTime::from_timestamp_millis)
-        .map(|time| {
-            time.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|| "Time unavailable".into());
-    let duration = duration_ms.map_or_else(|| "Duration unavailable".into(), format_duration);
-    let label = format!("{provider} · {time} · {duration}");
+        .map(|time| time.with_timezone(&chrono::Local));
+    let time = local.as_ref().map_or_else(
+        || "Time unavailable".into(),
+        |time| time.format("%H:%M").to_string(),
+    );
+    let time = control!(format!("message-time/{time}"), div().child(time))
+        .id(SharedString::from(format!("time-{group}")))
+        .when_some(local, |time, date| {
+            let date = date.format("%A, %B %-d, %Y at %H:%M").to_string();
+            time.tooltip(move |window, cx| Tooltip::new(date.clone()).build(window, cx))
+        });
+    let duration = duration_ms.map_or_else(
+        || "Duration unavailable".into(),
+        |ms| {
+            let seconds = ms / 1_000;
+            if seconds >= 60 {
+                format!("{}m, {}s", seconds / 60, seconds % 60)
+            } else {
+                format!("{seconds}s")
+            }
+        },
+    );
     h_flex()
+        .mt_1()
         .gap_2()
         .text_xs()
         .text_color(transcript_muted(cx))
@@ -896,7 +938,17 @@ fn message_footer(
         .group_hover(SharedString::from(group.to_owned()), |style| {
             style.visible()
         })
-        .child(control!(format!("metadata/{label}"), div().truncate().child(label)).min_w_0())
+        .when_some(author, |footer, author| {
+            footer
+                .child(div().min_w_0().truncate().child(author.to_owned()))
+                .child("·")
+        })
+        .child(time)
+        .child("·")
+        .child(control!(
+            format!("message-duration/{duration}"),
+            div().child(duration)
+        ))
         .child(copy.flex_shrink_0())
 }
 

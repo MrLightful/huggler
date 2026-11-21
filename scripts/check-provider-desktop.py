@@ -28,7 +28,7 @@ def check_models(executable, tmp, env):
         {"key": "escape"}, {"click": default}, {"click": "provider/Codex"},
         {"click": "model-option/fixture-deep"}, {"click": "Conversation name"}, {"type": "Models"},
         {"click": "Open conversation"}, {"see": "status/Ready"}, {"see": "model/fixture-deep"},
-        *send_message("First turn"), {"see": "Ready/Models/Completed"},
+        {"click": "Show conversations"}, *send_message("First turn"), {"see": "Ready/Models/Completed"},
         {"click": "Message"}, {"type": "Second turn"}, {"click": "model/fixture-deep"},
         {"click": "model-option/fixture-fast"}, {"see": "model/fixture-fast"},
         {"click": "Send"}, {"see": "Codex/reply Second turn"}, {"see": "Ready/Models/Completed"},
@@ -37,7 +37,7 @@ def check_models(executable, tmp, env):
     frames = [json.loads(line) for line in frames_path.read_text().splitlines()]
     assert sum(frame.get("method") == "model/list" for frame in frames) == 1
     run_window(executable, state, [
-        {"see": "model/fixture-fast"}, {"click": "model/fixture-fast"},
+        {"click": "Show conversations"}, {"see": "model/fixture-fast"}, {"click": "model/fixture-fast"},
         {"click": "model-option/Provider default"}, {"see": default},
         *send_message("Default turn"), {"see": "Codex/reply Default turn"},
         {"see": "Ready/Models/Completed"},
@@ -48,7 +48,7 @@ def check_models(executable, tmp, env):
             "fixture-deep", "fixture-fast", None]
     (checkout / "empty-model-list").touch()
     run_window(executable, state, [
-        {"click": default}, {"see": "model-status/This provider listed no models."},
+        {"click": "Show conversations"}, {"click": default}, {"see": "model-status/This provider listed no models."},
         {"see": "Retry models"}, {"click": "model-option/Provider default"},
         *send_message("Empty catalog"), {"see": "Codex/reply Empty catalog"},
         {"see": "Ready/Models/Completed"},
@@ -95,14 +95,14 @@ def main():
         run_window(executable, state, [
             {"see": "Checkout unavailable"}, {"see": "You/Try Codex"},
             {"click": "Choose another checkout"}, *launch_thread(moved, "Recovered"),
-            {"absent": "Checkout unavailable"}, {"click": "thread/Original"},
+            {"absent": "Checkout unavailable"}, {"click": "Show conversations"}, {"click": "thread/Original"},
             {"see": "Checkout unavailable"}, {"see": "You/Try Codex"},
         ], env)
         # Removing the inner .git leaves a directory inside a valid parent checkout.
         # The sidebar must report the missing inner repository.
         (moved / ".git").rename(tmp / "disconnected-git")
         run_window(executable, state, [
-            {"click": "thread/Recovered"},
+            {"click": "Show conversations"}, {"click": "thread/Recovered"},
             {"contains": "not a git repository"},
         ], dict(env, LC_ALL="C"))
     print("Native window provider discovery passed")

@@ -178,7 +178,7 @@ export interface RunActivity {
   runId: RunId
   status: Run["status"]
   turnDurationMs: number | null
-  liveCounts: { tools: number; messages: number; failed: number } | null
+  counts: { tools: number; messages: number; failed: number } | null
   items: {
     id: string
     kind: "command" | "file_change" | "tool" | "search" | "agent" | "commentary" | "compaction"

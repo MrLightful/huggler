@@ -372,6 +372,11 @@ impl RunStatus {
     pub fn terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Interrupted)
     }
+
+    /// The provider can still produce conversational output for this run.
+    pub fn producing_output(self) -> bool {
+        matches!(self, Self::Starting | Self::Running)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -490,8 +495,9 @@ pub struct RunActivity {
     pub status: RunStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_duration_ms: Option<i64>,
+    /// Counts across the whole run when live or when the item list is truncated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub live_counts: Option<ActivityCounts>,
+    pub counts: Option<ActivityCounts>,
     /// Most recent records in discovery order. For a live run, this also
     /// retains the latest commentary and tool call when they precede the tail.
     pub items: Vec<ActivityItem>,

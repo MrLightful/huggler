@@ -18,7 +18,7 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Selectable, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Enter, Input, InputEvent, InputState},
@@ -37,6 +37,10 @@ use std::{
 use uuid::Uuid;
 
 pub(crate) const COMPOSER_CONTEXT: &str = "HugglerComposer";
+
+fn history_at_bottom(scroll: &ScrollHandle) -> bool {
+    scroll.max_offset().height + scroll.offset().y <= px(2.)
+}
 
 struct Workspace {
     root: PathBuf,
@@ -377,10 +381,8 @@ impl Desktop {
                 }
                 result => result?,
             };
-            let at_bottom =
-                self.history_scroll.max_offset().height + self.history_scroll.offset().y <= px(2.);
             if self.before.is_none()
-                && at_bottom
+                && history_at_bottom(&self.history_scroll)
                 && (thread.history.messages.last().map(|m| &m.message.id)
                     != old.history.messages.last().map(|m| &m.message.id)
                     || thread.streaming_text != old.streaming_text
@@ -398,7 +400,8 @@ impl Desktop {
             }
             self.expanded_activity.retain(|(run, group)| {
                 thread.activity.iter().any(|activity| {
-                    &activity.run_id == run && (group.is_some() || activity.live_counts.is_some())
+                    &activity.run_id == run
+                        && (group.is_some() || activity.status.producing_output())
                 })
             });
             self.full_messages.retain(|id, _| {
@@ -667,7 +670,12 @@ impl Desktop {
         }
     }
 
-    fn workspace_header(&self, changes_open: bool, cx: &Context<Self>) -> Div {
+    fn workspace_header(
+        &self,
+        navigation_open: bool,
+        changes_open: bool,
+        cx: &Context<Self>,
+    ) -> Div {
         let checkout = self.checkout.read(cx).value();
         let (root, title) = match &self.current {
             Some(thread) => (
@@ -704,7 +712,7 @@ impl Desktop {
             .border_color(cx.theme().border)
             .gap_2()
             .child({
-                let open = self.navigation.is_open(true);
+                let open = navigation_open;
                 let action = if open {
                     "Hide conversations"
                 } else {
@@ -764,8 +772,10 @@ impl Desktop {
     fn send_icon(id: &'static str, tooltip: &'static str) -> Button {
         Button::new(id)
             .large()
+            .w_8()
+            .px_0()
             .rounded(px(999.))
-            .icon(IconName::ArrowUp)
+            .child(Icon::new(IconName::ArrowUp).with_size(px(16.)))
             .tooltip(tooltip)
     }
 
@@ -797,7 +807,7 @@ impl Desktop {
             let composer = v_flex()
                 .key_context(COMPOSER_CONTEXT)
                 .capture_action(cx.listener(|view, action: &Enter, window, cx| {
-                    if !action.secondary {
+                    if !action.secondary && view.starter.focus_handle(cx).is_focused(window) {
                         cx.stop_propagation();
                         if !view.starter.read(cx).value().trim().is_empty()
                             || !view.starter_attachments.is_empty()
@@ -1074,20 +1084,73 @@ impl Desktop {
             )
         };
         let pending = thread.permissions.len() + thread.questions.len();
-        let page = v_flex().flex_1().min_h_0();
         let fresh = last_run.is_none()
             && thread.history.messages.is_empty()
             && self.before.is_none()
             && pending == 0
             && !busy;
+        // Keep the left rail clear of the centered text in narrow windows.
+        let transcript_width = (width - px(24.)).clamp(px(0.), px(800.));
         let width = width.min(px(800.));
-        let column = v_flex()
-            .w_full()
-            .max_w(width)
-            .mx_auto()
+        let scroll_to_end_visibility = (!fresh).then(|| {
+            window.use_keyed_state(
+                SharedString::from(format!("show-scroll-to-end-{}", thread.id)),
+                cx,
+                |_, _| false,
+            )
+        });
+        let show_scroll_to_end = self.before.is_some()
+            || scroll_to_end_visibility
+                .as_ref()
+                .is_some_and(|visible| *visible.read(cx));
+        let page = v_flex()
             .flex_1()
             .min_h_0()
-            .when(fresh, |column| column.justify_center())
+            .when(fresh, |page| page.justify_center())
+            .when(!fresh, |page| {
+                page.child(self.transcript(thread, transcript_width, window, cx))
+            })
+            .when_some(scroll_to_end_visibility, |page, visible| {
+                let history = self.history_scroll.clone();
+                page.on_children_prepainted(move |_, _, cx| {
+                    // The scroll handle has clamped the offset against the current layout.
+                    let next = !history_at_bottom(&history);
+                    if *visible.read(cx) != next {
+                        visible.update(cx, |visible, cx| {
+                            *visible = next;
+                            cx.notify();
+                        });
+                    }
+                })
+            })
+            .when(pending != 0, |page| {
+                page.child(
+                    div()
+                        .id("permissions")
+                        .w(width)
+                        .mx_auto()
+                        .px_5()
+                        .max_h(relative(0.30))
+                        .overflow_y_scroll()
+                        .children(
+                            thread
+                                .permissions
+                                .iter()
+                                .map(|r| Self::permission(thread, r, cx)),
+                        )
+                        .children(
+                            thread
+                                .questions
+                                .iter()
+                                .filter_map(|q| workspace.questions.get(&q.id).cloned()),
+                        ),
+                )
+            });
+        let column = v_flex()
+            .w(width)
+            .mx_auto()
+            .relative()
+            .when(show_scroll_to_end, |column| column.child(Self::scroll_to_end_button(cx)))
             .when(fresh, |column| {
                 column.child(
                     div()
@@ -1096,29 +1159,7 @@ impl Desktop {
                         .text_2xl()
                         .child("What should we build?"),
                 )
-            });
-        let column = column.when(!fresh, |column| column.child(self.transcript(thread, width, window, cx)))
-        .when(pending != 0, |view| {
-            view.child(
-                div()
-                    .id("permissions")
-                    .px_5()
-                    .max_h(relative(0.30))
-                    .overflow_y_scroll()
-                    .children(
-                        thread
-                            .permissions
-                            .iter()
-                            .map(|r| Self::permission(thread, r, cx)),
-                    )
-                    .children(
-                        thread
-                            .questions
-                            .iter()
-                            .filter_map(|q| workspace.questions.get(&q.id).cloned()),
-                    ),
-            )
-        })
+            })
         .child(
             v_flex()
                 .key_context(COMPOSER_CONTEXT)
@@ -1227,6 +1268,28 @@ impl Desktop {
             .child(workspace.root.display().to_string()));
         page.child(column)
     }
+
+    fn scroll_to_end_button(cx: &Context<Self>) -> Div {
+        h_flex()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(relative(1.))
+            .justify_center()
+            .pb_2()
+            .child(control!(
+                "Scroll to end",
+                Button::new("scroll-to-end")
+                    .size(px(30.))
+                    .p_0()
+                    .rounded(px(999.))
+                    .border_color(cx.theme().border)
+                    .shadow_sm()
+                    .block_mouse_except_scroll()
+                    .child(Icon::new(IconName::ArrowDown).with_size(px(16.)))
+                    .on_click(cx.listener(|view, _, _, cx| view.scroll_to_end(cx)))
+            ))
+    }
 }
 
 impl Render for Desktop {
@@ -1286,7 +1349,9 @@ impl Render for Desktop {
         let viewport = f32::from(window.viewport_size().width);
         let narrow = viewport < 900.;
         let changes_open = self.changes_sidebar.is_open(!narrow);
-        let left = self.navigation.fraction(true, window);
+        let navigation_default = self.current.is_none() || self.show_settings;
+        let navigation_open = self.navigation.is_open(navigation_default);
+        let left = self.navigation.fraction(navigation_default, window);
         let right = if self.current.is_some() && !self.show_settings {
             self.changes_sidebar.fraction(!narrow, window)
         } else {
@@ -1383,7 +1448,7 @@ impl Render for Desktop {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(self.workspace_header(changes_open, cx))
+                    .child(self.workspace_header(navigation_open, changes_open, cx))
                     .child(if self.show_settings {
                         self.settings.clone().into_any_element()
                     } else {

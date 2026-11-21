@@ -33,7 +33,7 @@ def check(binary):
         env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
         run_window(binary, state, [
             {"see": "First message"}, {"right_of": ["Send first message", "Attach files"]}, {"absent": "Conversation options"},
-            *launch_thread(checkout, "Implementation"),
+            *launch_thread(checkout, "Implementation"), {"click": "Show conversations"},
             {"see": "Ready/Implementation/New conversation"},
             {"resize": [1120, 740]},
             {"center_x": ["Resize conversations", 256]}, {"center_x": ["Resize changes", 820]},
@@ -45,7 +45,7 @@ def check(binary):
             {"click": "Show changes"}, {"center_x": ["Resize changes", 860]},
             {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
-            {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open project"]},
+            {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open in"]},
             {"right_of": ["Hide changes", "Create PR"]},
             *send_message("Create the answer file."),
             {"see": "writing/Checking the requested filename. I will confirm the path with you before "
@@ -76,8 +76,8 @@ def check(binary):
         other = root / "other"
         subprocess.run(["git", "init", "-q", other], check=True)
         run_window(binary, state, [
-            {"resize": [640, 440]}, {"see": "Codex/Corrected the answer."},
-            {"right_of": ["Create PR", "Open project"]},
+            {"resize": [640, 440]}, {"click": "Show conversations"}, {"see": "Codex/Corrected the answer."},
+            {"right_of": ["Create PR", "Open in"]},
             {"right_of": ["Show changes", "Create PR"]},
             {"absent": f"Changed/{name}"}, {"click": "Show changes"}, {"see": f"Changed/{name}"},
             {"click": "Hide changes"}, {"resize": [1120, 740]}, {"click": "Show changes"},
@@ -97,7 +97,7 @@ def check(binary):
         assert git("show", f":{name}") == "staged change"
         assert (checkout / name).read_text() == "later edit\n"
         run_window(binary, state, [
-            {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
+            {"click": "Show conversations"}, {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
             {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review"),
             {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
             {"click": "thread/Implementation"}, {"click": "Refresh changes"}, {"see": f"Changed/{name}"},

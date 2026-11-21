@@ -75,26 +75,33 @@ impl Database {
         let mut items = self.db.prepare(&format!(
             "SELECT item FROM ({ENTRIES}) ORDER BY native DESC, position DESC LIMIT ?2"
         ))?;
+        let classified = format!(
+            "SELECT *, CASE json_extract(item,'$.kind')
+                WHEN 'commentary' THEN 'message'
+                WHEN 'compaction' THEN 'compaction'
+                ELSE 'tool' END AS kind
+             FROM ({ENTRIES})"
+        );
         let mut live_items = self.db.prepare(&format!(
-            "WITH entries AS ({ENTRIES}), classified AS (
-                SELECT *, CASE json_extract(item,'$.kind')
-                    WHEN 'commentary' THEN 'message'
-                    WHEN 'compaction' THEN 'compaction'
-                    ELSE 'tool' END AS kind
-                FROM entries
-             ), ranked AS (
+            "WITH ranked AS (
                 SELECT item, kind,
                     row_number() OVER recent AS rank,
                     row_number() OVER (PARTITION BY kind ORDER BY native DESC,position DESC) AS kind_rank,
                     count(*) OVER () AS total,
                     sum(kind='tool') OVER () AS tools,
                     sum(kind='message') OVER () AS messages,
-                    sum(json_extract(item,'$.status')='failed') OVER () AS failed
-                FROM classified
+                    sum(kind='tool' AND json_extract(item,'$.status')='failed') OVER () AS failed
+                FROM ({classified})
                 WINDOW recent AS (ORDER BY native DESC,position DESC)
              )
              SELECT item,total,tools,messages,failed FROM ranked
              WHERE rank<=?2 OR (kind_rank=1 AND kind<>'compaction') ORDER BY rank DESC"
+        ))?;
+        let mut total_counts = self.db.prepare(&format!(
+            "SELECT count(*) FILTER (WHERE kind='tool'),
+                    count(*) FILTER (WHERE kind='message'),
+                    count(*) FILTER (WHERE kind='tool' AND json_extract(item,'$.status')='failed')
+             FROM ({classified})"
         ))?;
         let mut activity = Vec::new();
         for run in runs {
@@ -107,45 +114,55 @@ impl Database {
                 continue;
             };
             let status: RunStatus = serde_json::from_value(status.into())?;
-            let (records, truncated, live_counts) =
-                if matches!(status, RunStatus::Starting | RunStatus::Running) {
-                    let mut rows = live_items.query(params![run.0, MAX_ITEMS as i64])?;
-                    let mut records = Vec::new();
-                    let mut total: i64 = 0;
-                    let mut counts = None;
-                    while let Some(row) = rows.next()? {
-                        if counts.is_none() {
-                            total = row.get(1)?;
-                            counts = Some(ActivityCounts {
-                                tools: row.get(2)?,
-                                messages: row.get(3)?,
-                                failed: row.get(4)?,
-                            });
-                        }
-                        records.push(serde_json::from_str::<ActivityItem>(
-                            &row.get::<_, String>(0)?,
-                        )?);
+            let (records, truncated, counts) = if status.producing_output() {
+                let mut rows = live_items.query(params![run.0, MAX_ITEMS as i64])?;
+                let mut records = Vec::new();
+                let mut total: i64 = 0;
+                let mut counts = None;
+                while let Some(row) = rows.next()? {
+                    if counts.is_none() {
+                        total = row.get(1)?;
+                        counts = Some(ActivityCounts {
+                            tools: row.get(2)?,
+                            messages: row.get(3)?,
+                            failed: row.get(4)?,
+                        });
                     }
-                    let truncated = total > records.len() as i64;
-                    (records, truncated, counts)
+                    records.push(serde_json::from_str::<ActivityItem>(
+                        &row.get::<_, String>(0)?,
+                    )?);
+                }
+                let truncated = total > records.len() as i64;
+                (records, truncated, counts)
+            } else {
+                let mut records = items
+                    .query_map(params![run.0, MAX_ITEMS as i64 + 1], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .map(|row| Ok(serde_json::from_str::<ActivityItem>(&row?)?))
+                    .collect::<Result<Vec<_>>>()?;
+                let truncated = records.len() > MAX_ITEMS;
+                records.truncate(MAX_ITEMS);
+                records.reverse();
+                let counts = if truncated {
+                    Some(total_counts.query_row([&run.0], |row| {
+                        Ok(ActivityCounts {
+                            tools: row.get(0)?,
+                            messages: row.get(1)?,
+                            failed: row.get(2)?,
+                        })
+                    })?)
                 } else {
-                    let mut records = items
-                        .query_map(params![run.0, MAX_ITEMS as i64 + 1], |row| {
-                            row.get::<_, String>(0)
-                        })?
-                        .map(|row| Ok(serde_json::from_str::<ActivityItem>(&row?)?))
-                        .collect::<Result<Vec<_>>>()?;
-                    let truncated = records.len() > MAX_ITEMS;
-                    records.truncate(MAX_ITEMS);
-                    records.reverse();
-                    (records, truncated, None)
+                    None
                 };
+                (records, truncated, counts)
+            };
             if !records.is_empty() || matches!(status, RunStatus::Failed | RunStatus::Interrupted) {
                 activity.push(RunActivity {
                     run_id: (*run).clone(),
                     status,
                     turn_duration_ms,
-                    live_counts,
+                    counts,
                     items: records,
                     truncated,
                 });
@@ -160,7 +177,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_counts_and_latest_message_survive_a_long_tool_sequence() -> Result<()> {
+    fn long_activity_counts_survive_turn_completion() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let mut db = Database::open(directory.path())?;
         let project = db.project(directory.path())?;
@@ -215,7 +232,7 @@ mod tests {
         assert!(detail.foreground_run.unwrap().started_at_ms.is_some());
         let activity = &detail.activity[0];
         assert_eq!(
-            activity.live_counts,
+            activity.counts,
             Some(ActivityCounts {
                 tools: 70,
                 messages: 1,
@@ -226,6 +243,21 @@ mod tests {
         assert_eq!(activity.items.len(), MAX_ITEMS + 1);
         assert_eq!(activity.items.first().unwrap().id, "commentary");
         assert_eq!(activity.items.last().unwrap().id, "tool-69");
+        db.update(&thread, &run, Update::Started(None))?;
+        db.update(
+            &thread,
+            &run,
+            Update::Finalizing("Checked the patch".into()),
+        )?;
+        db.finish(&thread, &run, Ok(()))?;
+        let settled = db.detail(&thread, None, "", 32)?;
+        let saved = &settled.activity[0];
+        assert_eq!(saved.status, RunStatus::Completed);
+        assert_eq!(saved.counts, activity.counts);
+        assert!(saved.truncated);
+        assert_eq!(saved.items.len(), MAX_ITEMS);
+        assert_eq!(saved.items.first().unwrap().id, "tool-6");
+        assert_eq!(saved.items.last().unwrap().id, "tool-69");
         Ok(())
     }
 }

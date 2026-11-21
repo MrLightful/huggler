@@ -53,6 +53,7 @@ exec /usr/bin/git "$@"
             {"click": "Conversation name"}, {"type": "After restart"},
             {"click": "Open conversation"}, {"key": "cmd-,"}, {"click": "Light"},
             {"see": "thread/After restart"}, {"click": "Done"}, {"see": "status/Ready"},
+            {"click": "Show conversations"},
             {"click": "Settings"}, {"click": "Dark"}, {"click": "Done"},
             {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Background"},
             {"click": "Open conversation"}, {"click": "thread/Original"},
@@ -72,12 +73,12 @@ exec /usr/bin/git "$@"
             assert db.execute("SELECT name FROM thread WHERE id=?", (selected,)).fetchone() == ("Original",)
         # A process-level override wins over the saved executable.
         run_window(executable, state, [
-            {"click": "Settings"}, {"see": "Codex executable"}, {"absent": "Save path"},
+            {"key": "cmd-,"}, {"see": "Codex executable"}, {"absent": "Save path"},
             {"click": "Done"}, {"click": "Message"}, {"type": "Check override"}, {"click": "Send"},
             {"see": "status/Failed"},
         ], dict(env, HUGGLER_CODEX=str(root / "missing")))
         run_window(executable, state, [
-            {"click": "Settings"}, {"click": "System"}, {"click": "Codex executable"},
+            {"key": "cmd-,"}, {"click": "System"}, {"click": "Codex executable"},
             {"key": "cmd-a"}, {"key": "backspace"}, {"click": "Done"}, {"see": "Message"},
         ], env)
         assert json.loads(prefs.read_text()) == {

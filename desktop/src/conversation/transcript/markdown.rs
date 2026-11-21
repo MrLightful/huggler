@@ -6,6 +6,7 @@ use gpui_component::{
     v_flex,
 };
 use markdown::mdast::Node;
+use std::borrow::Cow;
 
 pub(super) fn prose(id: String, source: &str, window: &mut Window, cx: &mut App) -> Div {
     let safe = safe_markdown(source);
@@ -32,6 +33,7 @@ pub(super) fn prose(id: String, source: &str, window: &mut Window, cx: &mut App)
             MarkdownBlock {
                 source: &safe,
                 definitions: &definitions,
+                in_list: false,
             }
             .render(node, &format!("{id}-{index}"), window, cx),
         );
@@ -42,6 +44,7 @@ pub(super) fn prose(id: String, source: &str, window: &mut Window, cx: &mut App)
 struct MarkdownBlock<'a> {
     source: &'a str,
     definitions: &'a str,
+    in_list: bool,
 }
 
 impl MarkdownBlock<'_> {
@@ -101,18 +104,11 @@ impl MarkdownBlock<'_> {
                             }),
                     ),
             ),
-            Node::Blockquote(quote) => Some(
-                self.children(&quote.children, id, window, cx)
-                    .border_l_1()
-                    .border_color(cx.theme().border)
-                    .pl_3()
-                    .text_color(transcript_muted(cx)),
-            ),
             Node::Definition(_) => None,
             _ => {
-                let source = node_source(node, self.source)?;
+                let source = standalone_source(node, self.source, self.in_list)?;
                 let source = if self.definitions.is_empty() {
-                    source.to_owned()
+                    source.into_owned()
                 } else {
                     format!("{source}\n\n{}", self.definitions)
                 };
@@ -140,12 +136,41 @@ impl MarkdownBlock<'_> {
     }
 
     fn children(&self, nodes: &[Node], id: &str, window: &mut Window, cx: &mut App) -> Div {
+        let block = Self {
+            in_list: true,
+            ..*self
+        };
         v_flex().gap_1().children(
             nodes.iter().enumerate().filter_map(|(index, node)| {
-                self.render(node, &format!("{id}-{index}"), window, cx)
+                block.render(node, &format!("{id}-{index}"), window, cx)
             }),
         )
     }
+}
+
+fn standalone_source<'a>(node: &Node, source: &'a str, in_list: bool) -> Option<Cow<'a, str>> {
+    let prefix_width = node.position()?.start.column.saturating_sub(1);
+    let source = node_source(node, source)?;
+    if !in_list || prefix_width == 0 {
+        return Some(source.into());
+    }
+    let Some((first, rest)) = source.split_once('\n') else {
+        return Some(source.into());
+    };
+    // The first line starts at the block's marker. Continuation lines still
+    // carry the list indentation in the original source.
+    let mut standalone = String::with_capacity(source.len());
+    standalone.push_str(first);
+    standalone.push('\n');
+    for line in rest.split_inclusive('\n') {
+        let prefix = line
+            .bytes()
+            .take(prefix_width)
+            .take_while(|byte| *byte == b' ')
+            .count();
+        standalone.push_str(&line[prefix..]);
+    }
+    Some(standalone.into())
 }
 
 fn node_source<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
@@ -207,4 +232,26 @@ fn escape_markdown(text: &str) -> String {
 
 fn web_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::standalone_source;
+
+    #[test]
+    fn standalone_list_blocks_keep_quotes_and_code_indentation() {
+        let source = "1. > First line\n   > Second line\n\n   ```text\n     two spaces\n   ```";
+        let tree = markdown::to_mdast(source, &markdown::ParseOptions::gfm()).unwrap();
+        let list = &tree.children().unwrap()[0];
+        let item = &list.children().unwrap()[0];
+        let blocks = item.children().unwrap();
+        assert_eq!(
+            standalone_source(&blocks[0], source, true).unwrap(),
+            "> First line\n> Second line"
+        );
+        assert_eq!(
+            standalone_source(&blocks[1], source, true).unwrap(),
+            "```text\n  two spaces\n```"
+        );
+    }
 }

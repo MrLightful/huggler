@@ -82,8 +82,10 @@ pub fn detail(d: ConversationDetail) -> Result<Value> {
         .history
         .messages
         .into_iter()
-        .map(|i| json!({"message": message(i.message), "truncated": i.truncated,
-            "timestampMs": i.timestamp_ms, "turnDurationMs": i.turn_duration_ms}))
+        .map(|i| {
+            json!({"message": message(i.message), "truncated": i.truncated,
+            "timestampMs": i.timestamp_ms, "turnDurationMs": i.turn_duration_ms})
+        })
         .collect();
     Ok(json!({
         "id": d.id, "name": d.name, "settled": d.settled, "providerInstanceId": d.provider_instance, "model": d.model,
@@ -96,7 +98,7 @@ pub fn detail(d: ConversationDetail) -> Result<Value> {
                 "id": item.id, "kind": item.kind, "title": item.title, "status": item.status,
                 "timestampMs": item.timestamp_ms
             })).collect::<Vec<_>>(),
-            "turnDurationMs": a.turn_duration_ms, "liveCounts": a.live_counts
+            "turnDurationMs": a.turn_duration_ms, "counts": a.counts
         })).collect::<Vec<_>>(),
         "questions": d.questions.into_iter().map(question).collect::<Vec<_>>(),
         "permissions": d.permissions.into_iter().map(permission).collect::<Vec<_>>(),

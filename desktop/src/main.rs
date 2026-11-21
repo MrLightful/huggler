@@ -11,6 +11,7 @@ macro_rules! control {
 }
 
 mod changes;
+mod fonts;
 mod git;
 mod questions;
 mod settings;
@@ -89,6 +90,7 @@ fn main() -> Result<()> {
     let app = Application::new().with_assets(gpui_component_assets::Assets);
     app.run(move |cx| {
         gpui_component::init(cx);
+        fonts::init(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),

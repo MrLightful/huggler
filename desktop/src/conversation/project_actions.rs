@@ -8,10 +8,15 @@ impl Desktop {
         let view = cx.weak_entity();
         let launcher = Button::new("open-project")
             .small()
+            .compact()
             .ghost()
-            .icon(IconName::FolderOpen)
-            .dropdown_caret(true)
-            .tooltip("Open project")
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::FolderOpen).small())
+                    .child(Icon::new(IconName::ChevronDown).xsmall()),
+            )
+            .tooltip("Open in")
             .dropdown_menu_with_anchor(Corner::TopRight, move |mut menu, _, _| {
                 for (name, bundle) in [
                     ("Finder", "com.apple.finder"),
@@ -40,9 +45,9 @@ impl Desktop {
                 menu
             });
         h_flex()
-            .gap_1()
+            .gap_2()
             .flex_shrink_0()
-            .child(control!("Open project", launcher))
+            .child(control!("Open in", launcher))
             .child(control!(
                 "Create PR",
                 Button::new("create-pr")
