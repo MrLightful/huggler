@@ -1,4 +1,5 @@
 #![cfg(unix)]
+#[cfg(feature = "application")]
 use huggler::workspace::OrphanedWorktreeOutcome;
 use huggler::*;
 use serde_json::Value;
@@ -584,6 +585,7 @@ async fn checkpoint_forks_restore_only_the_destination_checkout() -> Result<()> 
 }
 
 #[tokio::test]
+#[cfg(feature = "application")]
 async fn public_cleanup_removes_a_pristine_deleted_thread_worktree() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let repo = dir.path().join("repo");
