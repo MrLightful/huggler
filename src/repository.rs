@@ -18,7 +18,7 @@ pub enum Driver {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Binding {
-    pub id: String,
+    pub id: RepositoryBindingId,
     pub project: ProjectId,
     pub driver: Driver,
     /// Service API origin, e.g. https://api.github.com.
@@ -83,7 +83,7 @@ impl Huggler {
     pub fn repository_client(
         &self,
         project: &ProjectId,
-        binding: &str,
+        binding: &RepositoryBindingId,
         authorization: Option<&str>,
     ) -> Result<RepositoryClient> {
         let binding = self
@@ -110,24 +110,36 @@ impl Huggler {
     pub fn link_repository_item(
         &self,
         thread: &ThreadId,
-        binding: &str,
+        binding: &RepositoryBindingId,
         item: &str,
-    ) -> Result<String> {
+    ) -> Result<RepositoryLinkId> {
         self.shared
             .access(|db| db.link_repository_item(thread, binding, item))
     }
     pub fn repository_links(&self, thread: &ThreadId) -> Result<Vec<LinkedItem>> {
         self.shared.access(|db| db.repository_links(thread))
     }
-    pub fn unlink_repository_item(&self, thread: &ThreadId, link: &str) -> Result<bool> {
+    pub fn unlink_repository_item(
+        &self,
+        thread: &ThreadId,
+        link: &RepositoryLinkId,
+    ) -> Result<bool> {
         self.shared
             .access(|db| db.unlink_repository_item(thread, link))
     }
-    pub fn watch_repository_item(&self, thread: &ThreadId, link: &str) -> Result<String> {
+    pub fn watch_repository_item(
+        &self,
+        thread: &ThreadId,
+        link: &RepositoryLinkId,
+    ) -> Result<RepositoryWatchId> {
         self.shared
             .access(|db| db.watch_repository_item(thread, link))
     }
-    pub fn unwatch_repository_item(&self, thread: &ThreadId, watch: &str) -> Result<bool> {
+    pub fn unwatch_repository_item(
+        &self,
+        thread: &ThreadId,
+        watch: &RepositoryWatchId,
+    ) -> Result<bool> {
         self.shared
             .access(|db| db.unwatch_repository_item(thread, watch))
     }
@@ -135,7 +147,7 @@ impl Huggler {
     /// changed state queues one wake. Removing a watch invalidates its observation handle.
     pub fn sync_repository_watch(
         &self,
-        watch: &str,
+        watch: &RepositoryWatchId,
         revision: i64,
         state: &str,
     ) -> Result<Option<RunId>> {
@@ -149,8 +161,8 @@ impl Huggler {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct LinkedItem {
-    pub link: String,
-    pub binding: String,
+    pub link: RepositoryLinkId,
+    pub binding: RepositoryBindingId,
     pub item: String,
 }
 #[derive(Debug, PartialEq, Eq)]

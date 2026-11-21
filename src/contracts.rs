@@ -23,6 +23,12 @@ id!(MessageId);
 id!(UploadId);
 id!(TaskId);
 id!(ProjectId);
+#[cfg(feature = "application")]
+id!(RepositoryBindingId);
+#[cfg(feature = "application")]
+id!(RepositoryLinkId);
+#[cfg(feature = "application")]
+id!(RepositoryWatchId);
 id!(EnvironmentId);
 id!(RequestId);
 id!(NativeThreadId);
