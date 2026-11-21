@@ -1,0 +1,57 @@
+---
+title: Configure providers
+description: Register provider instances, discover capabilities, and bind a thread to a specific installation.
+---
+
+## Register an installation
+
+`HugglerOptions::new` registers two built-in instances. `codex` looks for `codex` on PATH, and `claudeAgent` looks for `claude-agent-acp`. Set `options.codex.executable` or `options.claude_agent.executable` to override those paths. Opening the runtime validates the registry. Provider startup and login checks happen when you probe an instance or use it.
+
+Add named configurations before calling `Huggler::open`. For example, use a separate authenticated Codex home for work:
+
+```rust
+use huggler::{HugglerOptions, Provider, ProviderInstance};
+
+let mut options = HugglerOptions::new("/path/to/app-state");
+let mut work = ProviderInstance::new("work-codex", Provider::Codex, "codex");
+work.home = Some("/path/to/codex-work-home".into());
+work.request_approvals = true;
+options.instances.push(work);
+```
+
+Instance IDs support ASCII letters, digits, period, underscore, and hyphen, with a maximum of 100 characters. IDs must be unique. Use an executable name on PATH or an absolute executable path. Absolute instance homes are supported by Codex, Claude Agent, and Pi. See the [provider and transport matrix](/reference/providers/) for other driver settings.
+
+## Probe and select
+
+List the registry with `provider_instances()` and probe the chosen ID in the project checkout. A probe can start a provider and, for ACP, create an empty session for model discovery. It sends no prompt. An empty model catalog can still support turns using the provider’s default model.
+
+```rust
+use huggler::{Action, Command, CommandId, ThreadId};
+
+let report = huggler.probe_provider("work-codex", &project.root).await?;
+let thread = ThreadId("work-review".into());
+
+huggler.dispatch(Command {
+    id: CommandId("launch-work-review".into()),
+    thread_id: thread.clone(),
+    action: Action::LaunchInstance {
+        project: project.id,
+        name: "Work review".into(),
+        instance: "work-codex".into(),
+        model: report.models.first().cloned(),
+    },
+})?;
+```
+
+Use `model: None` to let the provider pick its default. `Thread.provider_instance` identifies the configuration used to launch the thread. For native continuation after a restart, preserve the instance ID and its executable, invocation arguments, home, and server settings. To transfer context to a different instance, use a [portable fork](/guides/history-and-context/#fork-at-a-completed-turn).
+
+## Diagnose discovery failures
+
+| Error | What to check |
+| --- | --- |
+| `MissingExecutable` | Install the executable or update its configured path. |
+| `LoginRequired` | Sign in with the selected provider’s CLI using the instance’s home. |
+| `ServerAccessDenied` | Check the external OpenCode server’s credentials and permissions. |
+| `IncompatibleProvider` | Check the executable, arguments, and negotiated protocol version. |
+
+A `ProviderReport` exposes the transport, optional version and authentication status, model IDs, and booleans for native continuation and Huggler agent tools. Authentication can remain unverified even when discovery succeeds.

@@ -1,0 +1,80 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+@theme {
+  --font-sans: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --color-fd-background: #fcfbf8;
+  --color-fd-foreground: #242520;
+  --color-fd-muted: #eeede6;
+  --color-fd-muted-foreground: #55574e;
+  --color-fd-card: #f7f6f0;
+  --color-fd-card-foreground: #242520;
+  --color-fd-border: #dedfd5;
+  --color-fd-primary: #28574a;
+  --color-fd-primary-foreground: #fff;
+  --color-fd-accent: #e5ede7;
+  --color-fd-accent-foreground: #234c40;
+  --color-fd-popover: #fcfbf8;
+  --color-fd-popover-foreground: #242520;
+}
+
+.dark {
+  --color-fd-background: #191d1a;
+  --color-fd-foreground: #f2f1e9;
+  --color-fd-muted: #292f2a;
+  --color-fd-muted-foreground: #b6bdb0;
+  --color-fd-card: #212722;
+  --color-fd-card-foreground: #f2f1e9;
+  --color-fd-border: #3c453e;
+  --color-fd-primary: #a5d7c2;
+  --color-fd-primary-foreground: #132c22;
+  --color-fd-accent: #2a3e34;
+  --color-fd-accent-foreground: #d9f0e3;
+  --color-fd-popover: #242b25;
+  --color-fd-popover-foreground: #f2f1e9;
+}
+
+.docs-brand {
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.docs-brand span {
+  margin-inline-start: 0.25rem;
+  color: var(--color-fd-muted-foreground);
+  font-weight: 500;
+}
+
+#nd-docs-layout {
+  /* Keep the sidebar at the viewport edge while Fumadocs caps the article width. */
+  --fd-layout-width: 100%;
+}
+
+#nd-page h1 {
+  letter-spacing: -0.035em;
+}
+
+#nd-page .prose a:where(:not([data-card])) {
+  text-underline-offset: 0.2em;
+}
+
+#nd-page .docs-start {
+  margin-block: 1.75rem 2.5rem;
+}
+
+#nd-page .docs-start a {
+  display: inline-flex;
+  border: 1px solid var(--color-fd-primary);
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.95rem;
+  background: var(--color-fd-primary);
+  color: var(--color-fd-primary-foreground);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+#nd-page .docs-start a:hover {
+  background: var(--color-fd-accent);
+  color: var(--color-fd-accent-foreground);
+}

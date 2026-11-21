@@ -1,0 +1,31 @@
+---
+title: Agent tools
+description: Built-in MCP tools, caller scope, and request identity.
+---
+
+With `HugglerOptions.agent_tools` enabled, supported providers receive a loopback Streamable HTTP MCP connection at `/mcp`. The connection is scoped to an active caller run. The Rust host can revoke it using `revoke_agent_tools`. Host permission decisions remain on the Rust API.
+
+## Tool catalog
+
+| Built-in key | Operation |
+| --- | --- |
+| `orchestrator_capabilities` | List the names exposed or available through deferred discovery. |
+| `tool_search` | Find permitted tools by name and expose matching schemas to the current run. |
+| `send_to_user` | Deliver an interim notice to the host user in the caller’s thread. |
+| `request_secret` | Request a secret from the host. Poll with the same key and label to receive the decision and any one-use reference. Requires `secret_ttl_seconds`. |
+| `pending_request` | List, read, or answer eligible provider questions. Answers use the supplied question IDs. |
+| `create_threads` | Create 1–20 independent peers in the caller’s project and checkout. Retry with the same key and ordered entries. |
+| `thread_list` | List other threads in the caller’s project. |
+| `thread_send` | Send to an idle or busy peer, or create a follow-up task on an owned child after settlement. |
+| `thread_interrupt` | Interrupt a specific authorized run. Queued work can proceed. A settled target returns its status. |
+| `delegate_task` | Create an owned child. Select shared or worktree isolation, a target instance, and async or bounded wait mode. |
+| `task_status` | Read an owned task and acknowledge a terminal result. |
+| `task_cancel` | Stop current and queued work in an owned child’s subtree. Completed results remain readable. |
+
+Use the tool schemas exposed by MCP for arguments. Fields such as `threadId`, `runId`, and `clientRequestId` are camelCase. Retain a stable `clientRequestId` for retries of the same write and use a new one for a new intent. The host can inspect local delivery receipts with `peer_receipt`.
+
+## Scope and policy
+
+Use `AgentPolicy.allowed_tools` to restrict built-in keys and `defer_tools` to use discovery. `AgentOutput.tools` can change the name exposed to agents. Stored policy and discovery state use the built-in key. See [Coordinate agents](/guides/collaboration/) for the collaboration workflow.
+
+When secret requests are enabled, the host can approve or deny through `answer_secret` or use `approve_onepassword` with the path of an authenticated 1Password CLI and a host-selected reference. Secret bytes live in process memory. `consume_secret` redeems the reference once in the owning project.

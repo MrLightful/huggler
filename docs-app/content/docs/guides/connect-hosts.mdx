@@ -1,0 +1,33 @@
+---
+title: Connect hosts and guests
+description: Mount the authenticated HTTP endpoints and scope access to a conversation.
+---
+
+## Mount the router
+
+`Huggler::remote_router()` returns an Axum router with `POST /v1/peer` and `POST /v1/guest`. The embedding host serves this router on loopback or behind a host-managed authenticated TLS transport. Send JSON and supply the bearer in the `Authorization` header. On the Rust client, `remote::Peer::loopback` accepts a loopback socket address, including a local tunnel endpoint.
+
+```rust
+let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+let addr = listener.local_addr()?;
+let router = huggler.remote_router();
+let server = tokio::spawn(async move { axum::serve(listener, router).await });
+```
+
+Keep the server handle in the host and arrange shutdown with the rest of the application. The example uses `axum` 0.8 and Tokio’s `net` feature.
+
+## Link two Huggler hosts
+
+1. On each host, call `address(&thread)` for the thread you want to link. The address combines an environment ID and thread ID.
+2. On the target host, use `approve_link` with the target thread and sender address. Grant `remote::Access::Read` for history and results or `Operate` to allow writes as well.
+3. Transfer the returned bearer privately to the sender. Use `remote::Request::Read` and its history cursor to page the target history, or `Request::Write` to send or delegate with an operating grant. Use the same sender run, key, and payload for an identical write retry.
+4. Use `revoke_link` on the target host when access should end.
+
+For owned work across hosts, call `delegate_remote` on the parent runtime and poll `follow_remote` for the result. The recorded remote child and follow-up survive a restart, and settlement wakes the parent once. The host drives polling and connectivity. Remote cancellation is unavailable.
+
+## Moderate guest submissions
+
+1. Call `invite_guest` for the thread. Give the guest its one-use invitation bearer.
+2. The guest calls `guest::Request::Redeem` with a name. The response supplies a thread-scoped session bearer for `View` and `Submit`.
+3. A submission enters `guest_inbox`. Call `moderate_guest` on the owning thread to accept it into the conversation or dismiss it.
+4. Call `close_share` with the invitation’s share ID to end guest access.

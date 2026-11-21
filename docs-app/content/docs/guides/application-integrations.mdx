@@ -1,0 +1,42 @@
+---
+title: Application integrations
+description: Prepare checkouts, schedule turns, link repositories, and attach host-owned services.
+---
+
+Enable the optional Cargo feature on a local dependency with `cargo add huggler --path ../huggler --features application`. This adds the `workspace`, `automation`, `repository`, and `services` modules and their `Huggler` methods.
+
+## Prepare a workspace
+
+Use `clone_project` to create a local clone, or `create_scratch` to register a new directory and `promote_scratch` to initialize Git there while preserving its project ID. Use `allocate_workspace` to create a managed detached checkout at the source’s current HEAD.
+
+Call `setup_workspace(project, program, args)` with a host-selected program and arguments. Huggler runs it in the project directory. An active run in that checkout blocks setup. A failed setup blocks new runs there until a successful retry. Register an isolated thread’s `worktree_path` with `open_project` to address setup to that checkout.
+
+Use `allocated_workspaces` to enumerate managed checkouts. `release_workspace` requires the checkout to be clean and its threads to be removed. Run blocking Git and registration calls off the host’s UI or async executor thread when responsiveness matters.
+
+## Drive a schedule
+
+Create a `Schedule` with `Trigger::Once`, `Interval`, `Daily`, or `Webhook`. Select `Destination::Continue`, `FreshSession`, or `NewThread`. Timestamps use Unix seconds. A daily schedule uses an IANA time zone, skips nonexistent local times, and chooses the earlier occurrence when clocks repeat.
+
+- For a clock schedule, use `schedules` to read due times and call `tick_schedule` from the host’s scheduler. A tick releases one due occurrence and coalesces missed intervals.
+- For a webhook, the host keeps the signing key and passes the exact body bytes, key, and hex HMAC-SHA256 signature to `deliver_webhook`. The JSON body includes `id` and `event`. Delivery IDs support replay-safe processing.
+- Use `schedule_history` to recover recorded occurrences and `delete_schedule` to stop future deliveries.
+
+## Bind repositories and issue trackers
+
+Call `bind_repository` with a project, driver, API origin, and repository or team identifier. Use `repository_client` with that binding and the service’s complete authorization header. Supported reads and comments vary by driver. GitHub status checks use `checks`, while Linear issue comments use `comment_on_issue`.
+
+Use `link_repository_item` to associate an external item with a thread. Use `watch_repository_item` to register a linked item and feed ordered observations to `sync_repository_watch` from the host. Huggler ignores stale or repeated observations. The host acquires the upstream observations.
+
+## Attach a host service
+
+Register a `ServiceHost` with `set_service_host` for a `services::Kind`, then call `open_service`, `service_call`, and `close_service` using the owning thread and handle.
+
+| Kind | Host capability |
+| --- | --- |
+| `Terminal` | Start a process and reconnect to bounded output by byte cursor. `TerminalHost` ships on Unix. |
+| `Preview` | Navigate to a URL and capture the result. |
+| `Device` | Enumerate devices and capture output. |
+| `Html` | Open and capture an HTML document. |
+| `McpApp` | Read approved MCP resources and call allowlisted tools through a host-supplied connection. |
+
+Preview, Device, and HTML require host-provided adapters. Apply the host’s URL, HTML, or device policies in those adapters. Service callbacks are synchronous and must avoid reentering the service registry. To add an MCP App result to the next eligible turn, use `approve_app_context` explicitly.
