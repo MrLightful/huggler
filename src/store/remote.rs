@@ -218,20 +218,36 @@ impl Database {
             return Err(Error::Invalid("empty delegation key or task".into()));
         }
         let destination = serde_json::to_string(target)?;
-        let inserted = self.db.execute(
-            "INSERT INTO remote_task(parent_run,request_key,destination,task) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
-            params![run.0, key, destination, task],
-        )?;
-        if inserted > 0 {
-            return Ok(None);
-        }
-        let child: Option<String> = self.db.query_row(
-            "SELECT child FROM remote_task WHERE parent_run=? AND request_key=? AND destination=? AND task=?",
-            params![run.0, key, destination, task], |r| r.get(0),
-        ).optional()?.ok_or_else(|| Error::Conflict {
-            command: CommandId(key.into()), original_thread: parent.clone(), requested_thread: parent.clone(),
-        })?;
+        let child: Option<String> = self
+            .db
+            .query_row(
+                "INSERT INTO remote_task(parent_run,request_key,destination,task) VALUES(?,?,?,?)
+             ON CONFLICT(parent_run,request_key) DO UPDATE
+             SET unresolved_attempts=unresolved_attempts+(child IS NULL)
+             WHERE destination=excluded.destination AND task=excluded.task RETURNING child",
+                params![run.0, key, destination, task],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::Conflict {
+                command: CommandId(key.into()),
+                original_thread: parent.clone(),
+                requested_thread: parent.clone(),
+            })?;
         Ok(child.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
+    pub fn remote_request_denied(&mut self, run: &RunId, key: &str) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "UPDATE remote_task SET unresolved_attempts=unresolved_attempts-1
+                    WHERE parent_run=? AND request_key=? AND child IS NULL",
+            params![run.0, key],
+        )?;
+        tx.execute("DELETE FROM remote_task WHERE parent_run=? AND request_key=? AND unresolved_attempts=0 AND child IS NULL",
+                   params![run.0,key])?;
+        tx.commit()?;
+        Ok(())
     }
     pub fn record_remote_child(
         &self,
@@ -240,7 +256,7 @@ impl Database {
         child: &Address,
         child_run: &RunId,
     ) -> Result<()> {
-        let count=self.db.execute("UPDATE remote_task SET child=?1,child_run=?2 WHERE parent_run=?3 AND request_key=?4 AND (child IS NULL OR (child=?1 AND child_run=?2))",params![serde_json::to_string(child)?,child_run.0,run.0,key])?;
+        let count=self.db.execute("UPDATE remote_task SET child=?1,child_run=?2,unresolved_attempts=0 WHERE parent_run=?3 AND request_key=?4 AND (child IS NULL OR (child=?1 AND child_run=?2))",params![serde_json::to_string(child)?,child_run.0,run.0,key])?;
         if count == 0 {
             return Err(Error::Invalid("remote delegation identity changed".into()));
         }

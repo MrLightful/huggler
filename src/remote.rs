@@ -199,7 +199,7 @@ impl Huggler {
         {
             return Ok(child);
         }
-        let Reply::Accepted { address, receipt } = peer
+        let result = peer
             .request(Request::Write {
                 target: target.clone(),
                 sender_run: run.clone(),
@@ -209,8 +209,12 @@ impl Huggler {
                     worktree: false,
                 },
             })
-            .await?
-        else {
+            .await;
+        if matches!(result, Err(Error::Forbidden | Error::Unsupported(_))) {
+            self.shared
+                .access(|db| db.remote_request_denied(run, key))?;
+        }
+        let Reply::Accepted { address, receipt } = result? else {
             return Err(Error::Invalid("expected a delegation receipt".into()));
         };
         if address.environment != target.environment || receipt.thread_id != address.thread {

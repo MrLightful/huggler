@@ -13,9 +13,11 @@ fn options(state: &Path) -> HugglerOptions {
     options
 }
 async fn serve(rt: &Huggler) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    serve_router(rt.remote_router()).await
+}
+async fn serve_router(router: axum::Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = listener.local_addr().unwrap();
-    let router = rt.remote_router();
     (
         endpoint,
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() }),
@@ -119,6 +121,46 @@ async fn approved_hosts_resume_one_remote_delegation_and_revoke_access() -> Resu
     let origin = remote.messages[0].origin.as_ref().unwrap();
     assert_eq!(origin.environment_id.as_ref(), Some(&sender.environment));
     assert_eq!((&origin.thread_id, &origin.run_id), (&parent, &run));
+    // A definitive rejection leaves the key free to use with corrected intent.
+    assert!(matches!(
+        local
+            .delegate_remote(
+                &reader,
+                address.clone(),
+                &parent,
+                &run,
+                "review",
+                "old draft".into()
+            )
+            .await,
+        Err(Error::Forbidden)
+    ));
+    // Lose the receipt after the remote transaction commits. A denial on retry
+    // must preserve the original intent until an operating grant recovers it.
+    let lossy = host.remote_router().layer(axum::middleware::map_response(
+        |response: axum::response::Response| async move {
+            assert!(response.status().is_success());
+            "incomplete receipt"
+        },
+    ));
+    let (lossy_endpoint, lossy_server) = serve_router(lossy).await;
+    let lossy_peer = Peer::loopback(lossy_endpoint, rw.bearer.clone())?;
+    for (peer, text, expected) in [
+        (&lossy_peer, "check result", "unknown"),
+        (&reader, "check result", "denied"),
+        (&operator, "changed task", "conflict"),
+    ] {
+        let result = local
+            .delegate_remote(peer, address.clone(), &parent, &run, "review", text.into())
+            .await;
+        assert!(matches!(
+            (result, expected),
+            (Err(Error::Io(_)), "unknown")
+                | (Err(Error::Forbidden), "denied")
+                | (Err(Error::Conflict { .. }), "conflict")
+        ));
+    }
+    lossy_server.abort();
     let child = local
         .delegate_remote(
             &operator,
