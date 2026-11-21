@@ -130,7 +130,10 @@ async fn peer_answers_recorded_question_once_and_only_the_host_resolves_permissi
             format!("check question {case}")
         };
         completed(&rt, &outside, &send(&rt, &outside, check(true))).await;
-        assert_eq!(rt.read(&planner).unwrap().questions, [request.clone()]);
+        assert_eq!(
+            rt.read(&planner).unwrap().questions,
+            std::slice::from_ref(&request)
+        );
         let peer_run = send(&rt, &peer, check(false));
         completed(&rt, &peer, &peer_run).await;
         completed(&rt, &planner, &run).await;

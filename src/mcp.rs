@@ -229,7 +229,7 @@ impl AgentServer {
     }
 
     #[tool(
-        description = "Delegate a task to a new child thread. Default isolation shared uses your current checkout. Use worktree to start a separate Git checkout at your current commit. Default async completion wakes you when idle. With mode wait, return on completion, a human approval request or timeout. Reuse clientRequestId to retry."
+        description = "Delegate a task to a new child thread. For each new round of a delegated review, call delegate_task with a fresh clientRequestId and include the original brief, prior findings and fixes to verify. Reuse the key for retries of the same round. Default isolation shared uses your current checkout. Use worktree to start a separate Git checkout at your current commit. Default async completion wakes you when idle. With mode wait, return on completion, a human approval request or timeout."
     )]
     async fn delegate_task(
         &self,
@@ -336,7 +336,7 @@ impl AgentServer {
     }
 
     #[tool(
-        description = "Send a message to another Huggler thread. An idle recipient starts a run. A busy recipient queues it. Sending to your delegated child after its original task settles returns a new taskId. Reuse clientRequestId for an identical retry."
+        description = "Send a message to an existing Huggler thread, including a reply to the independent peer identified in a message's origin. An idle recipient starts a run. A busy recipient queues it. For a follow-up addressed to a specific delegated child after its task settles, sending returns a new taskId. Reuse clientRequestId for an identical retry."
     )]
     fn thread_send(
         &self,

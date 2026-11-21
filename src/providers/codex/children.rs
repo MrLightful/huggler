@@ -43,9 +43,8 @@ impl Children {
                 return None;
             }
             if item["kind"] == "started" {
-                if !(thread == root && parent_turn == root_turn)
-                    && !self.running(thread, parent_turn)
-                {
+                let from_root = thread == root && parent_turn == root_turn;
+                if !(from_root || self.running(thread, parent_turn)) {
                     return None;
                 }
                 let Entry::Vacant(entry) = self.0.entry(target.to_owned()) else {

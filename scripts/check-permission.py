@@ -52,7 +52,9 @@ def check(mode):
         root = Path(tmp)
         checkout = root / "project"
         subprocess.run(["git", "init", "-q", checkout], check=True)
-        prompt = "Use the Write tool to create approval-check.txt containing approved. If permission is denied, finish without trying another tool."
+        target = (checkout / "approval-check.txt").resolve()
+        prompt = (f"Use the Write tool to create the file at this exact absolute path: {target}\n"
+                  "Set its content to approved. If permission is denied, finish without trying another tool.")
         name = "Permission qualification"
         if replay:
             path, name, prompt = prepare_replay(root)
@@ -92,9 +94,15 @@ def check(mode):
                 return
             choice = next(o for o in request["options"] if o["optionId"] == selected)
             assert choice["kind"] == "reject_once"
+            if provider == "claudeAgent":
+                assert request["tool_call"]["name"] == "Write"
+                proposed_write = request["tool_call"]["rawInput"]
+                assert proposed_write["content"].strip() == "approved"
+                proposed = Path(proposed_write["file_path"])
+                assert (checkout / proposed).resolve() == target, proposed
             expected = "interrupted" if selected == "cancel" else "completed"
             assert runs[0][1] == expected, runs
-            assert not (checkout / "approval-check.txt").exists()
+            assert not target.exists()
             print(f"{provider}: GPUI selected {selected!r}, same run {expected}, file absent")
 
 

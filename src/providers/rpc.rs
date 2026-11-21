@@ -27,10 +27,10 @@ impl Rpc {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        if turn.provider == crate::Provider::Codex {
-            if let Some(tools) = &turn.agent_tools {
-                command.env("HUGGLER_MCP_TOKEN", &tools.token);
-            }
+        if turn.provider == crate::Provider::Codex
+            && let Some(tools) = &turn.agent_tools
+        {
+            command.env("HUGGLER_MCP_TOKEN", &tools.token);
         }
         #[cfg(unix)]
         command.process_group(0);

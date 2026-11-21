@@ -55,6 +55,18 @@ def hold():
     })
 
 
+def approve_mcp(name):
+    tool_name = "mcp__huggler__" + name
+    emit(id="approve-mcp", method="session/request_permission", params={
+        "sessionId": session, "toolCall": {"toolCallId": str(uuid.uuid4()), "title": tool_name,
+            "_meta": {"claudeCode": {"toolName": tool_name, "mcpServer": {"name": "huggler"}}}},
+        "options": [{"optionId": "allow-once", "name": "Yes", "kind": "allow_once"}],
+    })
+    decision = json.loads(next(sys.stdin))
+    assert decision["id"] == "approve-mcp"
+    assert decision["result"]["outcome"] == {"outcome": "selected", "optionId": "allow-once"}
+
+
 def finish(answer):
     emit(method="session/update", params={"sessionId": session, "update": {
         "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": answer}
@@ -91,7 +103,8 @@ for line in sys.stdin:
             bad = mcp("tools/call", {"name": "thread_send", "arguments": {
                 "threadId": "reviewer", "message": "bad", "clientRequestId": "review-1", "mode": "admin"}})
             assert "error" in bad or bad["result"]["isError"]
-            deliver(peers[0]["id"], "review-1", "Review 2+2")
+            review = text.split('quoted text: "', 1)[1].split('". After sending', 1)[0]
+            deliver(peers[0]["id"], "review-1", review)
             finish("Review requested")
         elif text.startswith("checkout task "):
             args = json.loads(text.removeprefix("checkout task "))
@@ -187,6 +200,10 @@ for line in sys.stdin:
             leaf = delegate("held review", "leaf")
             assert deliver(leaf["childThreadId"], "revise", "revised finding")["delivery"] == "queued"
             hold()
+        elif text.startswith("First call the huggler thread_list"):
+            approve_mcp("thread_list")
+            call("thread_list")
+            finish("2+2=4")
         elif text == "held review":
             hold()
         elif text.startswith("wait "):
@@ -237,8 +254,10 @@ for line in sys.stdin:
                 hold()
             elif message in ("interrupt this review", "second review"):
                 hold()
-            elif message == "Review 2+2":
+            elif message.startswith("Review 2+2."):
+                approve_mcp("thread_send")
                 first = deliver(sender, "reply-1", "2+2=4")
+                approve_mcp("thread_send")
                 retry = deliver(sender, "reply-1", "2+2=4")
                 assert first == retry
                 assert deliver(sender, "reply-1", "different")["code"] == "conflict"

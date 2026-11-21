@@ -103,10 +103,10 @@ async fn recorded_nested_children_retain_their_ancestry_and_results() {
         let mut completed = vec![];
         loop {
             let event = replay.next().await.unwrap();
-            if let Change::NativeChild { child } = event.change {
-                if child.status == NativeChildStatus::Completed {
-                    completed.push(child);
-                }
+            if let Change::NativeChild { child } = event.change
+                && child.status == NativeChildStatus::Completed
+            {
+                completed.push(child);
             }
             if event.sequence == reopened.cursor {
                 break;
@@ -209,10 +209,10 @@ async fn background_child_can_finish_or_be_interrupted_after_root_completion() {
                 NativeChildStatus::Completed
             };
             loop {
-                if let Change::NativeChild { child } = events.next().await.unwrap().change {
-                    if child.status == expected {
-                        break;
-                    }
+                if let Change::NativeChild { child } = events.next().await.unwrap().change
+                    && child.status == expected
+                {
+                    break;
                 }
             }
             rt.close().await.unwrap();

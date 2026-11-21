@@ -2,7 +2,10 @@
 #[path = "support/agents.rs"]
 mod agents;
 use agents::*;
+#[path = "support/reviewer.rs"]
+mod reviewer;
 use huggler::*;
+use reviewer::{Reviewer, allow_once, requested_huggler_tool};
 use std::{path::Path, time::Duration};
 use tokio::time::timeout;
 
@@ -10,6 +13,12 @@ async fn permission(rt: &Huggler, thread: &ThreadId) -> PermissionRequest {
     let (snapshot, mut events) = rt.subscribe(thread, None).unwrap();
     if let Some(request) = snapshot.permissions.into_iter().next() {
         return request;
+    }
+    if !snapshot.runs.is_empty() && snapshot.runs.iter().all(|r| r.status.terminal()) {
+        panic!(
+            "expected a pending permission on {thread}, got {:?}",
+            snapshot.runs.last()
+        );
     }
     loop {
         match events.next().await.unwrap().change {
@@ -23,14 +32,15 @@ async fn permission(rt: &Huggler, thread: &ThreadId) -> PermissionRequest {
 async fn release(rt: &Huggler, thread: &ThreadId, live_tool: Option<&str>) {
     let request = permission(rt, thread).await;
     let choice = if let Some(tool) = live_tool {
-        let input = &request.tool_call["rawInput"];
-        assert_eq!(input["serverName"], "huggler");
-        assert_eq!(input["_meta"]["tool_name"], tool);
-        "accept"
+        assert_eq!(
+            requested_huggler_tool(&request, rt.read(thread).unwrap().provider),
+            tool
+        );
+        allow_once(&request)
     } else {
-        "done"
+        "done".into()
     };
-    rt.respond_to_permission(thread, &request.run_id, &request.id, choice.into())
+    rt.respond_to_permission(thread, &request.run_id, &request.id, choice)
         .unwrap();
 }
 
@@ -59,22 +69,22 @@ fn options(state: &Path) -> HugglerOptions {
     options
 }
 
-async fn scenario(mode: &str, parent_provider: Provider, child_provider: Provider) {
+async fn scenario(mode: &str, parent_provider: Provider, reviewer: Reviewer) {
+    let child_provider = reviewer.provider();
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("checkout");
     checkout(&repo);
-    let options = options(&dir.path().join("state"));
+    let mut options = options(&dir.path().join("state"));
+    reviewer.configure(&mut options, &repo);
     let rt = Huggler::open(options.clone()).await.unwrap();
     let project = rt.open_project(&repo).unwrap();
     let parent = launch(&rt, &project, "author", parent_provider);
     let prompt = if parent_provider == Provider::Codex {
-        let (instance, review) = match child_provider {
-            Provider::Codex => (
-                "codex",
-                "First call the huggler thread_list tool once, then return exactly 2+2=4 as your final answer.",
-            ),
-            Provider::ClaudeAgent => ("claudeAgent", "held review"),
+        let instance = match child_provider {
+            Provider::Codex => "codex",
+            Provider::ClaudeAgent => "claudeAgent",
         };
+        let review = "First call the huggler thread_list tool once. When it returns, finish the turn by copying the five-character review finding verbatim as plain text: 2+2=4";
         format!(
             "Use the huggler delegate_task tool once with clientRequestId review, title Reviewer, target.providerInstanceId {instance}, mode async and isolation shared. Set its task to exactly the following quoted text: \"{review}\". After delegation finish this turn immediately. When Huggler delivers the child result, reply with the finding."
         )
@@ -108,7 +118,7 @@ async fn scenario(mode: &str, parent_provider: Provider, child_provider: Provide
                 release(
                     &rt,
                     child,
-                    (child_provider == Provider::Codex).then_some("thread_list"),
+                    (parent_provider == Provider::Codex).then_some("thread_list"),
                 )
                 .await;
             }
@@ -640,7 +650,10 @@ async fn cancellation_reaches_grandchildren_and_queued_work_even_after_a_result(
             rt.close().await.unwrap();
             let rt = Huggler::open(options).await.unwrap();
             assert_eq!(rt.read(&parent).unwrap().runs.len(), 1);
-            assert_eq!(rt.read(&parent).unwrap().tasks, [settled.clone()]);
+            assert_eq!(
+                rt.read(&parent).unwrap().tasks,
+                std::slice::from_ref(&settled)
+            );
             assert_eq!(rt.read(child).unwrap().tasks, [nested]);
             let leaf_thread = rt.read(&leaf.child_thread_id).unwrap();
             assert!(leaf_thread.permissions.is_empty());
@@ -733,7 +746,7 @@ async fn completion_wakes_once_after_idle_or_restart_and_groups_siblings() {
     for mode in ["idle", "recover", "siblings", "nested"] {
         timeout(
             Duration::from_secs(15),
-            scenario(mode, Provider::ClaudeAgent, Provider::ClaudeAgent),
+            scenario(mode, Provider::ClaudeAgent, Reviewer::ScriptedAcp),
         )
         .await
         .expect(mode);
@@ -745,7 +758,7 @@ async fn only_the_parent_can_acknowledge_or_cancel_delivery() {
     for mode in ["ack", "cancel"] {
         timeout(
             Duration::from_secs(15),
-            scenario(mode, Provider::ClaudeAgent, Provider::ClaudeAgent),
+            scenario(mode, Provider::ClaudeAgent, Reviewer::ScriptedAcp),
         )
         .await
         .expect(mode);
@@ -757,7 +770,7 @@ async fn only_the_parent_can_acknowledge_or_cancel_delivery() {
 async fn live_codex_delegation() {
     timeout(
         Duration::from_secs(240),
-        scenario("idle", Provider::Codex, Provider::Codex),
+        scenario("idle", Provider::Codex, Reviewer::Codex),
     )
     .await
     .unwrap();
@@ -768,7 +781,18 @@ async fn live_codex_delegation() {
 async fn live_codex_to_acp_delegation() {
     timeout(
         Duration::from_secs(240),
-        scenario("idle", Provider::Codex, Provider::ClaudeAgent),
+        scenario("idle", Provider::Codex, Reviewer::ScriptedAcp),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "uses a live Codex parent and an authenticated standalone Claude Agent ACP reviewer"]
+async fn live_codex_to_claude_delegation() {
+    timeout(
+        Duration::from_secs(240),
+        scenario("idle", Provider::Codex, Reviewer::ClaudeAgent),
     )
     .await
     .unwrap();
@@ -794,6 +818,163 @@ fn git(cwd: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim_end().into()
+}
+
+async fn review_round(rt: &Huggler, parent: &ThreadId, key: &str, prompt: String) -> DelegatedTask {
+    let (before, mut events) = rt.subscribe(parent, None).unwrap();
+    let run = rt
+        .send(CommandId(key.into()), parent.clone(), prompt)
+        .unwrap()
+        .run_id
+        .unwrap();
+    let mut delegated = false;
+    let settle = async {
+        completed(rt, parent, &run).await;
+        let snapshot = rt.read(parent).unwrap();
+        assert_eq!(
+            snapshot.tasks.len(),
+            before.tasks.len() + 1,
+            "{:?}",
+            snapshot.messages.last()
+        );
+        let result = task(rt, parent, before.tasks.len(), |t| {
+            t.status.terminal() && t.delivery != CompletionDelivery::Pending
+        })
+        .await;
+        assert_eq!(result.parent_thread_id, *parent);
+        assert_eq!(result.parent_run_id, run);
+        assert_eq!(result.status, RunStatus::Completed, "{result:?}");
+        assert_eq!(result.result_run_id.as_ref(), Some(&result.child_run_id));
+        match result.delivery {
+            CompletionDelivery::Acknowledged => assert!(result.wake_run_id.is_none()),
+            CompletionDelivery::Delivered => {
+                completed(rt, parent, result.wake_run_id.as_ref().unwrap()).await
+            }
+            other => panic!("unexpected review delivery {other:?}"),
+        }
+        result
+    };
+    tokio::pin!(settle);
+    loop {
+        tokio::select! {
+            result = &mut settle => {
+                assert!(delegated, "{key} did not call delegate_task");
+                return result;
+            }
+            event = events.next() => {
+                if let Change::PermissionRequested { request } = event.unwrap().change {
+                    let input = &request.tool_call["rawInput"];
+                    assert_eq!(input["serverName"], "huggler");
+                    match input["_meta"]["tool_name"].as_str() {
+                        Some("delegate_task") => {
+                            assert_eq!(request.run_id, run);
+                            delegated = true;
+                        }
+                        Some("task_status" | "thread_list") => {}
+                        other => panic!("{key} chose {other:?}"),
+                    }
+                    rt.respond_to_permission(parent, &request.run_id, &request.id, "accept".into()).unwrap();
+                }
+            }
+        }
+    }
+}
+
+async fn delegated_review_rounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("checkout");
+    checkout(&repo);
+    let cache = repo.join("cache.py");
+    let original = "def decode_usage(entry):
+    return entry['usage'] if entry['version'] == 5 else {}
+
+def cache_path(directory, app_version):
+    return directory / 'usage.json'
+";
+    std::fs::write(&cache, original).unwrap();
+    git(&repo, &["add", "cache.py"]);
+    git(&repo, &["commit", "-qm", "Persist usage per file"]);
+
+    let options = options(&dir.path().join("state"));
+    let rt = Huggler::open(options.clone()).await.unwrap();
+    let project = rt.open_project(&repo).unwrap();
+    let author = launch(&rt, &project, "author", Provider::Codex);
+    let first = review_round(
+        &rt,
+        &author,
+        "round-one",
+        "Have a delegated Codex reviewer in Huggler review cache.py, read-only. \
+         Requirements: v4 and v5 entries must retain usage even for deleted files, and \
+         different app versions must be able to persist usage independently in the same directory. \
+         Identify affected cache filenames and versions in the findings. \
+         Wait for its verdict. Report the findings and stop until I request another round."
+            .into(),
+    )
+    .await;
+    let fixed = original
+        .replace("== 5", "in (4, 5)")
+        .replace("'usage.json'", "f'usage-{app_version}.json'");
+    std::fs::write(&cache, fixed).unwrap();
+    git(
+        &repo,
+        &[
+            "commit",
+            "-qam",
+            "Read v4 usage and separate cache files by app version",
+        ],
+    );
+    let fix = git(&repo, &["rev-parse", "--short", "HEAD"]);
+    let second = review_round(
+        &rt,
+        &author,
+        "round-two",
+        format!("Both are fixed in commit {fix}. Run round 2 of the Codex review."),
+    )
+    .await;
+    rt.close().await.unwrap();
+
+    let rt = Huggler::open(options).await.unwrap();
+    assert_ne!(first.task_id, second.task_id);
+    assert_ne!(first.child_thread_id, second.child_thread_id);
+    assert_ne!(first.child_run_id, second.child_run_id);
+    assert_ne!(first.parent_run_id, second.parent_run_id);
+    for round in [&first, &second] {
+        let reviewer = rt.read(&round.child_thread_id).unwrap();
+        assert_eq!(reviewer.provider, Provider::Codex);
+        assert_eq!(reviewer.project, project.id);
+        assert_eq!(reviewer.runs.len(), 1);
+        assert_eq!(reviewer.runs[0].id, round.child_run_id);
+        let answer = reviewer.messages.last().unwrap();
+        assert_eq!(answer.role, Role::Assistant);
+        assert_eq!(answer.run_id, round.child_run_id);
+        assert_eq!(round.result.as_deref(), Some(answer.text.as_str()));
+    }
+    let reviewer = rt.read(&second.child_thread_id).unwrap();
+    let brief = &reviewer.messages[0];
+    assert_eq!(brief.role, Role::User);
+    assert_eq!(brief.run_id, second.child_run_id);
+    // The follow-up names only the commit. The shared filename comes from the first review.
+    for report in [first.result.as_deref().unwrap(), brief.text.as_str()] {
+        let text = report.to_lowercase();
+        assert!(
+            text.contains("v4") || text.contains("version 4"),
+            "missing v4 finding: {report}"
+        );
+        assert!(
+            text.contains("usage.json"),
+            "missing shared cache filename: {report}"
+        );
+    }
+    assert_eq!(rt.read(&author).unwrap().tasks, [first, second]);
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "uses a live Codex author and two delegated Codex reviewers"]
+async fn live_codex_delegated_review_rounds() {
+    timeout(Duration::from_secs(360), delegated_review_rounds())
+        .await
+        .expect("Codex review rounds timed out");
 }
 
 async fn acp_prompt(rt: &Huggler, thread: &ThreadId, key: &str, text: &str) -> String {
