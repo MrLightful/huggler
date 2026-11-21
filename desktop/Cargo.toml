@@ -6,7 +6,7 @@ edition = "2024"
 publish = false
 
 [package.metadata.macos]
-bundle-version = "2"
+bundle-version = "3"
 
 [dependencies]
 anyhow = "1"

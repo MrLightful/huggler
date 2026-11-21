@@ -60,13 +60,22 @@ pub(super) enum SidebarEdge {
 }
 
 impl SidebarEdge {
-    pub(super) fn max_width(self, viewport: f32, narrow: bool) -> f32 {
+    pub(super) fn max_width(
+        self,
+        viewport: f32,
+        narrow: bool,
+        opposite_width: f32,
+        opposite_fraction: f32,
+    ) -> f32 {
         // The narrow Changes panel overlays the conversation. Wide windows share
-        // the space left after reserving room for the composer between both panels.
+        // the remaining space equally when both preferred widths cannot fit.
         match (narrow, self) {
             (true, Self::Right) => viewport - 160.,
             (true, Self::Left) => viewport - 400.,
-            (false, _) => (viewport - 400.) / 2.,
+            (false, _) => {
+                let available = viewport - 400.;
+                available - opposite_width.min(available / 2.) * opposite_fraction
+            }
         }
         .max(160.)
     }

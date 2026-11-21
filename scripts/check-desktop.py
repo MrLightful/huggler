@@ -51,9 +51,17 @@ def check(previous_app):
         second = "provider thread resume fixture second turn complete"
         resumed = first + "\n" + second
         prompt = "Respond with exactly: " + first
+        if previous_app and int(previous["CFBundleVersion"]) < 3:
+            # Builds before the first-message starter opened directly on the setup form.
+            launch = [{"click": "Git checkout"}, {"type": str(workspace)}, {"click": "Codex"},
+                      {"click": "Conversation name"}, {"type": "Resume check"},
+                      {"click": "Open conversation"}, {"see": "status/Ready"}]
+            completed = "status/Completed"
+        else:
+            launch = launch_thread(workspace, "Resume check")
+            completed = "Ready/Resume check/Completed"
         workflows = [
-            [*launch_thread(workspace, "Resume check"), *send_message(prompt),
-             {"see": "Codex/" + first}, {"see": "Ready/Resume check/Completed"}],
+            [*launch, *send_message(prompt), {"see": "Codex/" + first}, {"see": completed}],
             [{"see": "Codex/" + first}, *send_message(
                 "Using the conversation history available in this resumed thread, first repeat the exact final "
                 "answer you gave in the previous turn. Then on a new line write exactly: " + second

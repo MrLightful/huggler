@@ -313,7 +313,7 @@ impl Desktop {
             ListState::new(models, window, cx).searchable(true)
         });
         cx.subscribe_in(&list, window, move |view, list, event, window, cx| {
-            if view.model_picker.as_ref() != Some(&list) {
+            if view.model_picker.as_ref() != Some(list) {
                 return;
             }
             if matches!(event, ListEvent::Cancel) {

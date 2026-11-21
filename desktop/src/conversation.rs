@@ -1514,13 +1514,18 @@ impl Render for Desktop {
         use sidebar::SidebarEdge;
         let viewport = f32::from(window.viewport_size().width);
         let narrow = viewport < 900.;
-        let left_max = SidebarEdge::Left.max_width(viewport, narrow);
-        let right_max = SidebarEdge::Right.max_width(viewport, narrow);
-        let left_width = self.navigation.width.min(left_max);
-        let right_width = self.changes_sidebar.width.min(right_max);
         let changes_open = self.changes_sidebar.is_open(!narrow);
         let left = self.navigation.fraction(true, window);
-        let right = self.changes_sidebar.fraction(!narrow, window);
+        let right = if self.current.is_some() && !self.show_settings {
+            self.changes_sidebar.fraction(!narrow, window)
+        } else {
+            0.
+        };
+        let left_max =
+            SidebarEdge::Left.max_width(viewport, narrow, self.changes_sidebar.width, right);
+        let right_max = SidebarEdge::Right.max_width(viewport, narrow, self.navigation.width, left);
+        let left_width = self.navigation.width.min(left_max);
+        let right_width = self.changes_sidebar.width.min(right_max);
         div()
             .flex()
             .track_focus(&self.focus)
@@ -1611,7 +1616,7 @@ impl Render for Desktop {
                     } else {
                         match &self.current {
                             Some(thread) => self.conversation(thread, cx).into_any_element(),
-                            None => self.launch_form(window.viewport_size().width < px(800.), cx),
+                            None => self.launch_form(viewport - left_width * left < 800., cx),
                         }
                     })
                     .when_some(
