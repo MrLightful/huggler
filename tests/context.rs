@@ -1044,8 +1044,11 @@ async fn prompt_suggestions_settle_independently_and_stay_with_the_latest_turn()
     let dir = tempfile::tempdir()?;
     let repo = dir.path().join("repo");
     checkout(&repo);
-    let mut opts = options(&dir.path().join("state"));
+    let state = dir.path().join("state");
+    let mut opts = options(&state).with_name_and_slug("Studio / Lab", "studio_2")?;
+    opts.output.version = "7".into();
     let rt = Huggler::open(opts.clone()).await?;
+    assert!(state.join("huggler.sqlite3").is_file());
     let root = launch(&rt, &rt.open_project(&repo)?, "root", Provider::Codex);
     let run = rt
         .send(CommandId("disabled".into()), root.clone(), "first".into())?
@@ -1063,9 +1066,6 @@ async fn prompt_suggestions_settle_independently_and_stay_with_the_latest_turn()
         }
     }
     opts.output.text = std::sync::Arc::new(SuggestionText);
-    opts.output.name = "studio".into();
-    opts.output.title = "Studio".into();
-    opts.output.version = "7".into();
     opts.prompt_suggestions = true;
     let rt = Huggler::open(opts.clone()).await?;
     let send = |prompt: &str| {
@@ -1132,7 +1132,7 @@ async fn prompt_suggestions_settle_independently_and_stay_with_the_latest_turn()
     let init = frames(&repo, "initialize").pop().unwrap();
     assert_eq!(
         init["clientInfo"],
-        serde_json::json!({"name":"studio","title":"Studio","version":"7"})
+        serde_json::json!({"name":"studio_2","title":"Studio / Lab","version":"7"})
     );
     rt.close().await?;
     let rt = Huggler::open(opts).await?;

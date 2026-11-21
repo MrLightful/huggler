@@ -24,6 +24,10 @@ The desktop owns trigger detection, file search, selection, and draft edits. For
 
 The [provider fixture test](../tests/provider_instances.rs) verifies checkout scope, disabled skills, same-named skills, and independent model discovery. The [macOS qualification check](../scripts/check-provider-desktop.py) drives the composer with keyboard and mouse and inspects the resulting Codex `turn/start` input. The live protocol check used `skills/list` only.
 
+## Desktop storage layout
+
+Desktop chooses a base directory with sibling `userdata`, `worktrees` and `scratch` directories, following T3 Code at the pinned revision. A name in the Rust or TypeScript SDK supplies the provider and MCP identifier and defaults storage to `userdata` and `worktrees` under `~/.<identifier>`. Embedders can set a base directory, database path, or provider identity explicitly. Desktop reopens legacy state in place because saved checkout paths are absolute. [Upstream desktop path resolution](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/desktop/src/app/DesktopStatePaths.ts) · [Upstream server paths](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/config.ts) · [Huggler desktop paths and tests](../desktop/src/paths.rs)
+
 ## Commands
 
 A host should normally use launch, send, stop and the other management operations. Low-level dispatch accepts a broader schema, including messages normally produced by server workers. Use the authenticated intake, scope checks, provenance normalization and existing command policy for any remote dispatch API. A thread agent gets the narrower MCP interface below. [Management service][src-9] · [Message intake][src-10] · [RPC authorization][src-11]

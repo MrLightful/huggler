@@ -6,7 +6,7 @@ On macOS, install Git, Xcode, Rust/Cargo 1.94.1 or later and a signed-in Codex C
 cargo run --locked --manifest-path desktop/Cargo.toml --target-dir target/desktop
 ```
 
-To install a bundle, use the release build prerequisites and choose an unused destination. Set `HUGGLER_STATE_DIR` before launch to use a custom state directory. [Release build prerequisites](verification.md#package-the-crate-and-desktop-app)
+To install a bundle, use the release build prerequisites and choose an unused destination. [Release build prerequisites](verification.md#package-the-crate-and-desktop-app)
 
 ```sh
 python3 scripts/install-desktop.py "$HOME/Applications/Huggler.app"
@@ -45,6 +45,14 @@ Use the left sidebar button in the workspace header to hide or show conversation
 - **Ready** shows new conversations and conversations whose work completed or was stopped.
 - **Working** shows conversations with queued or active work, including running subagents. By default, only your open conversation appears in this group. A request for your input moves the conversation into **Needs attention** automatically.
 - **Settled** holds conversations you have marked as finished. Click the checkmark beside an idle conversation to settle it. Expand **Settled** to browse its history. Click the undo arrow to unsettle it, or send a message to reopen it automatically. Settlement persists across restarts.
+
+## Desktop data directory
+
+Desktop uses `~/.huggler` by default. `userdata/` holds `huggler.sqlite3`, preferences, and the saved conversation selection. Managed Git checkouts go in `worktrees/`, and conversations started without a project go in `scratch/`.
+
+Set `HUGGLER_HOME` before launch to use the same layout under a different directory. The existing `HUGGLER_STATE_DIR` override takes precedence and uses its original flat layout, with `huggler.sqlite3`, `worktrees/`, and `scratch/` directly under the specified path.
+
+If `~/.huggler/userdata/huggler.sqlite3` is absent and an existing database is found at `~/Library/Application Support/dev.huggler.stage2/huggler.sqlite3`, Desktop continues to use the old directory in place. Saved conversations can still open their original checkout paths. If the home directory cannot be resolved, Desktop uses the previous platform data directory when available.
 
 ## Desktop settings
 
