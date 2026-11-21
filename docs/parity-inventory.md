@@ -14,6 +14,8 @@ Stage 5 verified durable queue controls, delegation-tree stop, Codex steering an
 
 Stage 6 verified authenticated peer sends and remote completion, moderated guest messages, worktree preparation, scheduled and signed triggers, repository links and watches, managed secret requests and thread-owned host services. Its tool map accounts for all 92 declarations, identifying the agent tool, trusted host API or current limit for each workflow. [Stage 6 acceptance results](stage-6.md#acceptance-results) · [Upstream tool coverage](stage-6.md#upstream-tool-coverage)
 
+Stage 7 links each inventory group to a passing Rust or host scenario and its limits. The upstream review advances independently of the counts at the original source pin. [Release coverage](stage-7.md#capability-coverage-at-release) · [Upstream comparison](stage-7.md#upstream-comparison)
+
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
 | Thread orchestration commands | 58 wire variants + 15 additional internal variants | [Command and event unions][src-1] · [Command policy][src-2] |

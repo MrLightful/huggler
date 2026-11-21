@@ -4,7 +4,7 @@ The packaged `huggler` library and the installed desktop app both continued a co
 
 ## Reproduce the checks
 
-Run from the Huggler root with Rust/Cargo 1.94 or later, Git and Python 3.12 or later. The replay uses a POSIX executable fixture and runs without a Codex login. The live check requires a logged-in, native Codex executable, macOS with Xcode and an active GUI session. Set `HUGGLER_CODEX` to the absolute executable path if Codex is outside the launcher's search path.
+Run from the Huggler root with Rust/Cargo 1.94.1 or later, Git and Python 3.12 or later. The replay uses a POSIX executable fixture and runs without a Codex login. The live check requires a logged-in, native Codex executable, macOS with Xcode and an active GUI session. Set `HUGGLER_CODEX` to the absolute executable path if Codex is outside the launcher's search path.
 
 ```sh
 cargo test --locked
@@ -14,7 +14,7 @@ python3 scripts/check-package.py
 python3 scripts/check-desktop.py
 ```
 
-The package check runs `cargo package`, verifies the archive, extracts it and builds a separate Cargo binary against that extracted source. The binary runs the same public API assertions as the integration test. The verified 0.1.0 archive contained 20 files, including the migration, test peer, recorded frames and upstream MIT notice. Cargo warns that the original Huggler crate has no declared license. The maintainer still needs to select one for registry publication. [Package check](../scripts/check-package.py) · [Fixture license](reference/codex-resume/LICENSE)
+The package check runs `cargo package`, verifies the archive, extracts it and builds a separate Cargo binary against that extracted source. The binary runs the same public API assertions as the integration test. The verified 0.1.0 archive contained 20 files, including the migration, test peer, recorded frames and upstream MIT notice. Cargo warned that the Stage 2 manifest lacked a license. Stage 7 adopted MIT for Huggler. [Release terms](stage-7.md#what-ships) · [Package check](../scripts/check-package.py) · [Fixture license](reference/codex-resume/LICENSE)
 
 ## What the replay verifies
 
@@ -57,7 +57,7 @@ On macOS with Rust, Cargo and Xcode installed, run the app from a terminal with 
 cargo run --locked --release --manifest-path desktop/Cargo.toml --target-dir target/desktop
 ```
 
-To install an ad-hoc signed bundle, choose an unused destination. The second command launches the installed executable with your shell environment.
+For the current installer, prepare cargo-about, the Rust library notices and the locked dependencies, then choose an unused destination. The second command launches the installed executable with your shell environment. [Build prerequisites](stage-7.md#reproduce)
 
 ```sh
 python3 scripts/install-desktop.py "$HOME/Applications/Huggler.app"

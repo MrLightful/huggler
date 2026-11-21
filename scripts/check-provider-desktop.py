@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Exercise instance discovery in a macOS qualification build using isolated state."""
 import json
-import os
 from pathlib import Path
 import sys
 import tempfile
 
-from desktop_check import ROOT, run_window
+from desktop_check import ROOT, isolated_env, run_window
 
 
 def main():
@@ -28,7 +27,7 @@ def main():
             {"click": "available"}, {"click": "Check provider"},
             {"see": status + "ACP v1 · 1 · login unverified · 2 models"},
         ]
-        run_window(executable, tmp / "state", steps, dict(os.environ, HUGGLER_PROVIDERS=str(config)))
+        run_window(executable, tmp / "state", steps, dict(isolated_env(tmp), HUGGLER_PROVIDERS=str(config)))
     print("Native window provider discovery passed")
 
 

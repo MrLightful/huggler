@@ -1,4 +1,49 @@
 {
-  "reviewedThrough": "338352dee2f43079482e054e8229a2ba055641d9",
-  "deferred": []
+  "reviewedThrough": "22dcb0af5a836ec10a38674e219c123ba67a49de",
+  "deferred": [
+    {
+      "upstream": "ad4d0f0659b0b147591724999b0e2f1d59d4b42e",
+      "followUp": "Antigravity native child history. Align a complete step with the start of the retained transcript tail and verify it survives. A tail containing only a partial line must yield no steps."
+    },
+    {
+      "upstream": "9294a9801e804646dbce0cad78fea1102e6c98ce",
+      "followUp": "ACP activity projection. When exposing command tool calls, replay a running and a failed call with no command text and verify the host shows its status without inventing a command."
+    },
+    {
+      "upstream": "1cb3a8c753047efc4fa00600105f5388de8fd7eb",
+      "followUp": "Linked-thread relay. Read a paged thread through an intermediary in an independent client, revoke its grant and verify further reads fail. Stage 6 qualified direct grants."
+    },
+    {
+      "upstream": "d7f6b3efcac375160bbe20e28276be853eaf7315",
+      "followUp": "Linked-environment pairing. Start from a read-only linked thread, verify approval and redemption at a reachable address and preserve read-only scope when pairing fails."
+    },
+    {
+      "upstream": "6d6ca6090794510dff93a203fc60d17e8b85a2a2",
+      "followUp": "ACP native compaction. After session/load, delay available_commands_update and verify immediate compaction uses the advertised command, with a bounded wait when absent."
+    },
+    {
+      "upstream": "c53ac237a0af3d48229a509945edb0168fc92df1",
+      "followUp": "Pi native children. Replay a settled run whose last member still reports running. Verify the host immediately reports terminal child status."
+    },
+    {
+      "upstream": "f68d36d8aa9ca83eff811f285c4d20fc31e1a3bd",
+      "followUp": "Antigravity retry classification. Replay 404s before and after the first model output and verify the host exposes the distinct failure and retry outcome."
+    },
+    {
+      "upstream": "a1b9e1cc8709d50190bf8e1f50e94257ce206525",
+      "followUp": "Claude skill discovery. Probe absolute and relative --plugin-dir arguments and check active skills against the launch directory and disabled-plugin configuration."
+    },
+    {
+      "upstream": "5e59fc677fbb52b75488659745c174c4a14a4b63",
+      "followUp": "SCM merge. When providing a merge operation, exercise abbreviated matching and stale head revisions and verify the full resolved head guards the write."
+    },
+    {
+      "upstream": "b076d8c8bf62e9780be6ab0b0c2b671ab697b37f",
+      "followUp": "SCM watch enrollment. With remote reconciliation, enroll a merged PR and report its terminal state without adding a watch; preserve an existing active watch offline."
+    },
+    {
+      "upstream": "d984b71385910bd575d4ed10ae6c0d1caf48f008",
+      "followUp": "PR review guides. Create and read a guide for a fork-owned PR and verify its repository identity stays distinct from the upstream PR."
+    }
+  ]
 }

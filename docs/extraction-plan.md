@@ -6,11 +6,11 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Stage 6 passed.** An independent HTTP client sent and retried a message and read the completed conversation. Two runtimes recovered a remote delegation after a lost receipt and restart, with one parent completion. The checkout tests covered root and isolated worktrees under separate setup failures. Sixteen recorded HTTP requests exercised repository services, including team-scoped Linear comments. A live Codex session returned an approved secret reference under a three-tool policy. All 92 upstream tools have a workflow mapping or a documented limitation. [Stage 6 results and commands](stage-6.md) · [Tool coverage](stage-6.md#upstream-tool-coverage)
+**Extraction complete.** Stage 7 qualified the MIT-licensed Huggler 0.0.1 crate, the Apple Silicon GPUI app and the optional Pi extension. A consumer built from the Cargo archive verified native continuation, receipt retry and sibling isolation. Across four launches, the installed app preserved a live Codex conversation when upgrading from build 1 to build 2. [Release evidence and reproduction](stage-7.md) · [Archive contents](reference/stage-7/huggler-0.0.1.contents.txt)
 
-**First Stage 7 action.** From the Huggler root, run `python3 scripts/check-package.py`. Confirm the archive includes migrations and fixtures. The independent consumer must build from that archive, resume the original native session, recover the original receipt on retry and keep the sibling thread isolated. [Package check](../scripts/check-package.py) · [Release criteria](#7-validate-cargo-and-desktop-releases)
+**Qualification scope.** The desktop checks used the development Mac with a fresh home and a Node-free PATH. Testing on a separate clean Mac, testing the macOS deployment floor and Gatekeeper assessment of a notarized download remain open. The release review accounts for 31 upstream commits and records each deferred workflow with its next check. [Installed results](stage-7.md#compatibility-and-installed-results) · [Upstream comparison](stage-7.md#upstream-comparison)
 
-**Branch recommendation.** Merge Stage 6. The default and all-features suites passed. The Pi fixture, headless Chromium capture and authenticated Codex secret-request scenario each passed independently. Formatting and Clippy passed for the crate and desktop. The qualification record identifies which operations require an embedding host or use recorded service responses.
+**Branch recommendation.** Merge Stage 7. The independent consumer, production startup and shutdown, installed upgrade, provider checks and both Cargo feature suites passed within the agreed scope. Future upstream reviews start from the [review record](upstream-review.json).
 
 ### Maintaining the handoff
 
@@ -29,7 +29,7 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 | [4. Qualify all drivers](#4-qualify-every-provider-instance-and-capability) | Two harnesses share a conformance suite | [Instance configuration, live and fixture results, usage and transport limitations](stage-4.md). |
 | [5. Complete runtime behavior](#5-complete-control-history-and-recovery) | Stage 2 works, with qualified drivers available for provider-specific cases | [Runtime controls, context, bounded history, crash recovery and import results](stage-5.md). |
 | [6. Assemble the full profile](#6-assemble-the-full-application-profile) | Agent tools and runtime controls work | [Independent host, application integration results and upstream tool coverage](stage-6.md). |
-| [7. Qualify a release](#7-validate-cargo-and-desktop-releases) | Begin Cargo packaging and desktop install checks in stage 2 | Build and upgrade results for the crate and installed app, plus a comparison to the reviewed upstream SHA. |
+| [7. Qualify a release](#7-validate-cargo-and-desktop-releases) | Begin Cargo packaging and desktop install checks in stage 2 | [Packaged consumer, installed upgrade, distribution sizes and upstream dispositions](stage-7.md). |
 
 ## 1. Capture the upstream reference
 

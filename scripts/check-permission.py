@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 
-from desktop_check import ROOT, install_check, launch_thread, run_window, send_message
+from desktop_check import ROOT, install_check, isolated_env, launch_thread, run_window, send_message
 
 
 def prepare_replay(root):
@@ -64,7 +64,11 @@ def check(mode):
                       "If denied, finish without trying a second time.")
         executable = install_check(root / "Huggler Qualification.app")
         state = root / "state"
-        env = dict(os.environ, PATH="/usr/bin:/bin:/usr/sbin:/sbin")
+        if provider == "codex":
+            env = isolated_env(root, codex_login=not replay)
+        else:
+            # The separately installed Claude ACP adapter uses its logged-in home.
+            env = dict(os.environ, PATH="/usr/bin:/bin:/usr/sbin:/sbin")
         env[variable] = str(Path(path).resolve(strict=True))
         controls = launch_thread(checkout, name, "Codex" if provider == "codex" else "Claude Agent")
         controls.extend(send_message(prompt))

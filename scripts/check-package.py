@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tomllib
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
@@ -17,23 +18,29 @@ version = metadata["packages"][0]["version"]
 name = f"huggler-{version}"
 with tempfile.TemporaryDirectory(prefix="huggler independent ") as tmp:
     consumer = Path(tmp)
-    with tarfile.open(target / "package" / f"{name}.crate") as archive:
+    artifact = target / "package" / f"{name}.crate"
+    with tarfile.open(artifact) as archive:
         members = set(archive.getnames())
-        fixtures = ("fx", "grok", "kiro", "registry", "muse", "pi", "open1", "open2")
-        migrations = sorted(path.relative_to(root).as_posix() for path in (root / "migrations").glob("*.sql"))
-        for required in ("Cargo.lock", *migrations, "tests/fixtures/context-provider.py",
-                         "docs/reference/codex-resume/LICENSE",
-                         "tests/fixtures/providers/LICENSE", "docs/reference/codex-resume/codex_transcript.ndjson",
-                         "src/providers/codex.rs", *(f"tests/fixtures/providers/{f}.ndjson" for f in fixtures),
-                         "tests/fixtures/providers/antigravity-initialize.json",
-                         "tests/fixtures/providers/antigravity-cli-startup.json",
-                         "tests/fixtures/providers/cursor-cli-startup.json"):
-            assert f"{name}/{required}" in members, required
+        # Every tracked fixture and migration must survive Cargo's include filters.
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z", "--", "tests/fixtures", "migrations"], cwd=root
+        ).decode().split("\0")
+        reference = "docs/reference/codex-resume"
+        required = {p for p in tracked if p} | {
+            "Cargo.lock", "LICENSE", "src/providers/codex.rs", "tests/support/resume.rs",
+            *(f"{reference}/{f}" for f in ("LICENSE", "cursors.json", "expected.txt", "codex_transcript.ndjson")),
+        }
+        missing = {p for p in required if f"{name}/{p}" not in members}
+        assert not missing, sorted(missing)
         assert not any(p.startswith((name + "/desktop/", name + "/adapters/")) or p.endswith("/huggler.mjs") for p in members)
         assert not any("__pycache__" in Path(p).parts or p.endswith(".pyc") for p in members)
         archive.extractall(consumer, filter="data")
     package = consumer / name
-    assert (package / "docs/reference/codex-resume/LICENSE").read_bytes() == (root / "docs/reference/codex-resume/LICENSE").read_bytes()
+    for path in required - {"Cargo.lock"}:
+        assert (package / path).read_bytes() == (root / path).read_bytes(), path
+    manifest = artifact.with_suffix(".contents.txt")
+    manifest.write_text("".join(f"{p}\n" for p in sorted(members)))
+    print(f"{artifact.name}: {len(members)} files, {artifact.stat().st_size} bytes; contents in {manifest}", flush=True)
     src = consumer / "src"
     src.mkdir()
     shutil.copy2(package / "tests/support/resume.rs", src / "resume.rs")
@@ -60,3 +67,9 @@ tokio = {{ version = "1", features = ["rt", "macros", "time"] }}
     # Seed the independent resolver with the exact dependency versions shipped by Cargo.
     shutil.copy2(package / "Cargo.lock", consumer / "Cargo.lock")
     subprocess.run(["cargo", "run", "--", str(package)], cwd=consumer, env=env, check=True)
+    def registry_packages(lock):
+        return {(p["name"], p["version"], p["source"], p["checksum"])
+                for p in tomllib.loads(lock.read_text())["package"] if "source" in p}
+
+    extra = registry_packages(consumer / "Cargo.lock") - registry_packages(package / "Cargo.lock")
+    assert not extra, f"Consumer resolved dependencies outside the packaged lock: {extra}"

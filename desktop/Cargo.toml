@@ -1,8 +1,12 @@
 [package]
 name = "huggler-desktop"
 version = "0.0.1"
+license = "MIT"
 edition = "2024"
 publish = false
+
+[package.metadata.macos]
+bundle-version = "2"
 
 [dependencies]
 anyhow = "1"
