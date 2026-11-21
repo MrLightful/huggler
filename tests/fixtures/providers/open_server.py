@@ -5,11 +5,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+from socketserver import TCPServer
 import sys
 import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from replay import attachment, check_tools, frames
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind does a reverse lookup that can stall on macOS CI.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
 
 
 class Peer(BaseHTTPRequestHandler):
@@ -170,7 +178,7 @@ if __name__ == "__main__":
     if managed:
         assert password and sys.argv[-5:] == ["serve", "--hostname", "127.0.0.1", "--port", "0"]
     auth = "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
-    with ThreadingHTTPServer(("127.0.0.1", 0), Peer) as server:
+    with LoopbackServer(("127.0.0.1", 0), Peer) as server:
         server.seen = set()
         server.registered = False
         server.stopped = threading.Event()
