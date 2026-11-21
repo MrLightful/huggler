@@ -557,3 +557,173 @@ async fn checkpoint_forks_restore_only_the_destination_checkout() -> Result<()> 
     }
     rt.close().await
 }
+
+async fn question(rt: &Huggler, thread: &ThreadId) -> Result<UserInputRequest> {
+    let (snapshot, mut sub) = rt.subscribe(thread, None)?;
+    if let Some(q) = snapshot.questions.into_iter().next() {
+        return Ok(q);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Change::QuestionRequested { request } = sub.next().await?.change {
+                return Ok(request);
+            }
+        }
+    })
+    .await
+    .expect("provider question")
+}
+
+#[tokio::test]
+async fn restart_targets_one_active_run_and_keeps_queue_and_model_selection() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let opts = options(&dir.path().join("state"));
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&repo)?;
+    let root = launch(&rt, &project, "root", Provider::Codex);
+    let run = rt
+        .send(CommandId("active".into()), root.clone(), "ask".into())?
+        .run_id
+        .unwrap();
+    assert_eq!(question(&rt, &root).await?.run_id, run);
+    let queued = rt
+        .dispatch(command(
+            "queue",
+            &root,
+            Action::Enqueue {
+                text: "queued".into(),
+            },
+        ))?
+        .run_id
+        .unwrap();
+    rt.dispatch(command(
+        "select",
+        &root,
+        Action::SetModel {
+            model: Some("next".into()),
+        },
+    ))?;
+    let restart = command(
+        "restart",
+        &root,
+        Action::Restart {
+            active: run.clone(),
+            text: "replacement".into(),
+        },
+    );
+    let receipt = rt.dispatch(restart.clone())?;
+    assert_eq!(rt.dispatch(restart.clone())?, receipt);
+    assert!(matches!(
+        rt.dispatch(command("stale", &root, restart.action.clone())),
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(rt.wait(&root, &run).await?.status, RunStatus::Interrupted);
+    completed(&rt, &root, receipt.run_id.as_ref().unwrap()).await;
+    completed(&rt, &root, &queued).await;
+    let starts = frames(&repo, "turn/start");
+    assert_eq!(
+        starts
+            .iter()
+            .map(|f| f["input"][0]["text"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["ask", "replacement", "queued"]
+    );
+    assert_eq!(starts[1]["model"], "next");
+    assert!(starts[0]["model"].is_null() && starts[2]["model"].is_null());
+    assert_eq!(starts[0]["threadId"], starts[1]["threadId"]);
+    let fresh = launch(&rt, &project, "fresh", Provider::Codex);
+    let new = rt
+        .send(CommandId("new".into()), fresh.clone(), "fresh start".into())?
+        .run_id
+        .unwrap();
+    completed(&rt, &fresh, &new).await;
+    let wire = frames(&repo, "turn/start").pop().unwrap();
+    assert_ne!(wire["threadId"], starts[0]["threadId"]);
+    assert_eq!(wire["input"][0]["text"], "fresh start");
+    rt.close().await?;
+    let rt = Huggler::open(opts).await?;
+    assert_eq!(rt.dispatch(restart)?, receipt);
+    assert_eq!(frames(&repo, "turn/start").len(), 4);
+    rt.close().await
+}
+
+#[tokio::test]
+#[ignore = "subprocess for outstanding_callbacks_expire_after_process_loss"]
+async fn exit_with_callbacks() -> Result<()> {
+    let Some(path) = std::env::var_os("HUGGLER_CALLBACK_FIXTURE") else {
+        return Ok(());
+    };
+    let path = Path::new(&path);
+    let repo = path.join("repo");
+    checkout(&repo);
+    let mut opts = options(&path.join("state"));
+    opts.codex.request_approvals = true;
+    let rt = Huggler::open(opts).await?;
+    let thread = launch(&rt, &rt.open_project(&repo)?, "owner", Provider::Codex);
+    rt.send(CommandId("send".into()), thread.clone(), "callbacks".into())?;
+    let q = question(&rt, &thread).await?;
+    let state = rt.read(&thread)?;
+    assert_eq!(state.permissions.len(), 1);
+    fs::write(
+        path.join("callbacks"),
+        serde_json::to_vec(&(q.run_id, q.id, &state.permissions[0].id, state.cursor))?,
+    )?;
+    std::process::exit(74)
+}
+
+#[tokio::test]
+async fn outstanding_callbacks_expire_after_process_loss() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let exit = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", "exit_with_callbacks", "--ignored"])
+        .env("HUGGLER_CALLBACK_FIXTURE", dir.path())
+        .status()?;
+    assert_eq!(exit.code(), Some(74));
+    let (run, q, p, cursor): (RunId, RequestId, RequestId, i64) =
+        serde_json::from_slice(&fs::read(dir.path().join("callbacks"))?)?;
+    let rt = Huggler::open(options(&dir.path().join("state"))).await?;
+    let thread = ThreadId("owner".into());
+    let (state, mut stream) = rt.subscribe(&thread, Some(cursor))?;
+    assert!(state.questions.is_empty() && state.permissions.is_empty());
+    assert_eq!(state.runs[0].status, RunStatus::Failed);
+    assert!(
+        matches!(stream.next().await?.change,Change::PermissionClosed{id,option:None} if id==p)
+    );
+    assert!(
+        matches!(stream.next().await?.change,Change::QuestionClosed{id,answered:false,..} if id==q)
+    );
+    assert!(matches!(
+        rt.dismiss_question(&thread, &run, &q).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        rt.respond_to_permission(&thread, &run, &p, "accept".into()),
+        Err(Error::NotFound(_))
+    ));
+    assert_eq!(
+        rt.send(CommandId("send".into()), thread, "callbacks".into())?
+            .run_id,
+        Some(run)
+    );
+    rt.close().await?;
+    let log = fs::read_to_string(dir.path().join("repo/frames.ndjson"))?;
+    let frames: Vec<Value> = log
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<serde_json::Result<_>>()?;
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f["method"] == "turn/start")
+            .count(),
+        1
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|f| f["id"] != "approve" && f["id"] != "ask")
+    );
+    Ok(())
+}

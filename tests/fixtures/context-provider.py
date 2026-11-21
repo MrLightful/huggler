@@ -64,7 +64,10 @@ for line in sys.stdin:
         result = {"turn": {"id": turn}}
     emit(id=frame["id"], result=result)
     if method == "turn/start":
-        if prompt == "ask":
+        if prompt == "callbacks":
+            emit(id="approve", method="item/commandExecution/requestApproval", params={
+                "threadId": session, "turnId": turn, "availableDecisions": ["accept", "decline"]})
+        if prompt in ("ask", "callbacks"):
             emit(id="ask", method="item/tool/requestUserInput", params={"threadId": session, "turnId": turn,
                  "questions": [{"id": "one"}, {"id": "two"}]})
         else:

@@ -274,6 +274,11 @@ pub enum Action {
     Enqueue {
         text: String,
     },
+    /// Interrupt the expected foreground run, then deliver the replacement before queued work.
+    Restart {
+        active: RunId,
+        text: String,
+    },
     EditQueued {
         run: RunId,
         text: String,

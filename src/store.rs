@@ -525,6 +525,49 @@ impl Database {
                 receipt.message_id = Some(msg);
                 receipt.event_sequences = events;
             }
+            Action::Restart { active, text } => {
+                if tx.execute("UPDATE run SET stop_requested=1,stop_reason='Restarted by the host'
+                    WHERE thread_id=? AND id=? AND stop_requested=0 AND status IN ('starting','running')",
+                    params![thread.0,active.0])? == 0 {
+                    return Err(Error::Invalid("expected an active foreground run".into()));
+                }
+                let first = tx
+                    .query_row(
+                        "SELECT id FROM run WHERE thread_id=? AND status='queued'
+                    ORDER BY coalesce(delivery_slot,ordinal) LIMIT 1",
+                        [&thread.0],
+                        |r| Ok(RunId(r.get(0)?)),
+                    )
+                    .optional()?;
+                receipt.event_sequences.push(event(
+                    &tx,
+                    thread,
+                    Change::RunStopRequested {
+                        run_id: active.clone(),
+                    },
+                )?);
+                let (id, msg, events, _) =
+                    start_message(&tx, thread, text, selection.flatten(), None, true)?;
+                receipt.event_sequences.extend(events);
+                if let Some(before) = first {
+                    receipt.event_sequences.extend(queue::move_before(
+                        &tx,
+                        thread,
+                        &id,
+                        Some(&before),
+                    )?);
+                }
+                if tx.execute(
+                    "UPDATE run SET queue_held=0 WHERE id=? AND queue_held=1",
+                    [&id.0],
+                )? != 0
+                {
+                    receipt.event_sequences.push(run_event(&tx, thread, &id)?);
+                }
+                receipt.run_id = Some(id);
+                receipt.message_id = Some(msg);
+                work.stop.push(active.clone());
+            }
             Action::EditQueued { run, text } => {
                 let (msg, seq) = queue::edit(&tx, thread, run, text)?;
                 receipt.run_id = Some(run.clone());
