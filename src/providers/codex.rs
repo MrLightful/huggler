@@ -23,6 +23,8 @@ pub struct CodexOptions {
     pub executable: PathBuf,
     /// Route explicit command or permission requests to the host.
     pub request_approvals: bool,
+    /// Allow Codex to edit the turn checkout outside plan mode.
+    pub workspace_write: bool,
 }
 
 impl Default for CodexOptions {
@@ -30,6 +32,7 @@ impl Default for CodexOptions {
         Self {
             executable: "codex".into(),
             request_approvals: false,
+            workspace_write: false,
         }
     }
 }
@@ -72,6 +75,7 @@ impl Client {
                     frame["method"].as_str(),
                     Some(
                         "item/commandExecution/requestApproval"
+                            | "item/fileChange/requestApproval"
                             | "item/tool/requestUserInput"
                             | "item/permissions/requestApproval"
                             | "mcpServer/elicitation/request"
@@ -115,10 +119,12 @@ impl Client {
                             "item/started"
                                 | "item/commandExecution/outputDelta"
                                 | "item/agentMessage/delta"
+                                | "item/plan/delta"
                                 | "item/completed"
                                 | "turn/started"
                                 | "turn/completed"
                                 | "item/commandExecution/requestApproval"
+                                | "item/fileChange/requestApproval"
                                 | "item/tool/requestUserInput"
                                 | "serverRequest/resolved"
                                 | "item/permissions/requestApproval"
@@ -203,7 +209,7 @@ impl Client {
         &mut self,
         turn: Turn,
         update: impl Fn(Update) -> Result<()>,
-        request_approvals: bool,
+        options: &ProviderInstance,
         mut permissions: Permissions<impl Fn(PermissionRequest) -> Result<()>>,
         mut controls: mpsc::UnboundedReceiver<Control>,
     ) -> Result<()> {
@@ -228,9 +234,16 @@ impl Client {
                 "required": true
             });
         }
-        if request_approvals {
+        let writable = options.workspace_write && !turn.plan_mode;
+        if options.request_approvals {
             session["approvalPolicy"] = json!("on-request");
-            session["sandbox"] = json!("read-only");
+        }
+        if options.request_approvals || options.workspace_write {
+            session["sandbox"] = json!(if writable {
+                "workspace-write"
+            } else {
+                "read-only"
+            });
         }
         if let Some(model) = model {
             session["model"] = json!(model);
@@ -282,7 +295,10 @@ impl Client {
         self.request("config/read", read_config).await?;
         let mut params = json!({"threadId":thread, "cwd":turn.cwd, "input":[{"type":"text","text":turn.text}],
             "approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly"},"summary":"auto"});
-        if request_approvals {
+        if writable {
+            params["sandboxPolicy"] = json!({"type":"workspaceWrite", "networkAccess":false});
+        }
+        if options.request_approvals {
             params["approvalPolicy"] = json!("on-request");
         }
         if let Some(model) = model.or_else(|| response["model"].as_str()) {
@@ -320,6 +336,7 @@ impl Client {
         };
         update(Update::Started(Some(NativeTurnId(id.to_owned()))))?;
         let mut answer = None;
+        let mut proposed_plan = None;
         let mut pending = HashMap::<RequestId, PendingApproval>::new();
         let mut questions = HashMap::<RequestId, Value>::new();
         let mut children = Children::default();
@@ -457,7 +474,7 @@ impl Client {
                     }))?;
                     continue;
                 }
-                if !request_approvals || (!root_request && child.is_none()) {
+                if !options.request_approvals || (!root_request && child.is_none()) {
                     self.rpc.write(json!({"id":wire_id,"error":self.rpc.error(-32602, "No matching interactive run")})).await?;
                     continue;
                 }
@@ -481,6 +498,10 @@ impl Client {
                             }),
                         )
                     }
+                    Some("item/fileChange/requestApproval") => (
+                        Approval::Command,
+                        turn.output.text.label("Allow file changes"),
+                    ),
                     Some("item/commandExecution/requestApproval") => (
                         Approval::Command,
                         turn.output.text.label("Run command outside the sandbox"),
@@ -571,7 +592,7 @@ impl Client {
                         })?;
                     }
                 }
-                Some("item/agentMessage/delta") if p["turnId"] == id => {
+                Some("item/agentMessage/delta" | "item/plan/delta") if p["turnId"] == id => {
                     if let Some(delta) = p["delta"].as_str() {
                         update(Update::Output(delta.into()))?;
                     }
@@ -588,6 +609,9 @@ impl Client {
                             answered: false,
                         })?;
                     }
+                }
+                Some("item/completed") if p["turnId"] == id && p["item"]["type"] == "plan" => {
+                    proposed_plan = p["item"]["text"].as_str().map(str::to_owned);
                 }
                 Some("item/completed")
                     if p["turnId"] == id
@@ -617,9 +641,14 @@ impl Client {
                             p["turn"]["status"], p["turn"]["error"]
                         )));
                     }
-                    let text = answer
-                        .take()
-                        .ok_or_else(|| protocol("completed turn has no final answer"))?;
+                    let text = match (answer.take(), proposed_plan.take()) {
+                        (Some(answer), Some(plan)) if !answer.contains(&plan) => {
+                            format!("{answer}\n\n{plan}")
+                        }
+                        (Some(answer), _) => answer,
+                        (None, Some(plan)) => plan,
+                        (None, None) => return Err(protocol("completed turn has no final answer")),
+                    };
                     update(Update::Finalizing(text))?;
                     if !children.active() && interrupt_replies.is_empty() {
                         if turn.sample_suggestion {
@@ -662,7 +691,7 @@ pub(crate) async fn execute(
     let result = tokio::select! {
         biased;
         _ = stop.wait_for(|v| *v) => Err(Error::Closed),
-        answer = client.converse(turn, update,options.request_approvals,permissions,controls) => answer,
+        answer = client.converse(turn, update,options,permissions,controls) => answer,
     };
     client.rpc.finish(result).await
 }

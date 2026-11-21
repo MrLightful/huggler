@@ -33,13 +33,13 @@ impl Rpc {
     }
 
     pub fn open(
-        command: std::process::Command,
+        mut command: std::process::Command,
         cwd: &Path,
         output: &crate::AgentOutput,
     ) -> Result<Self> {
+        crate::worktree::set_checkout(&mut command, cwd);
         let mut command = Command::from(command);
         command
-            .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -47,7 +47,11 @@ impl Rpc {
         #[cfg(unix)]
         command.process_group(0);
         let mut child = command.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
+            use std::io::ErrorKind::{NotADirectory, NotFound};
+            // A missing working directory and a missing program can both return ENOENT.
+            if matches!(e.kind(), NotFound | NotADirectory) && !cwd.is_dir() {
+                Error::CheckoutUnavailable(cwd.to_owned())
+            } else if e.kind() == NotFound {
                 Error::MissingExecutable(
                     command
                         .as_std()

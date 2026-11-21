@@ -499,11 +499,15 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
     let replay_second = || rt.deliver_webhook(&hook, key, &signed(key, second_body), second_body);
     let second = replay_second()?.unwrap();
     completed(&rt, &second.thread, &second.run).await;
+    let list = rt.conversation_list()?;
+    assert_eq!(list.threads[0].id, second.thread);
+    assert_eq!(list.threads[0].status, Some(RunStatus::Completed));
     let (snapshot, mut subscription) = rt.subscribe(&second.thread, None)?;
     let observers = async {
         tokio::join!(
             rt.wait_for_change(&second.thread, snapshot.cursor),
-            subscription.next()
+            subscription.next(),
+            rt.wait_for_conversation_list(list.revision),
         )
     };
     tokio::pin!(observers);
@@ -513,9 +517,13 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
         _ = std::future::ready(()) => {}
     }
     rt.delete_thread(&second.thread)?;
-    let (change, event) = tokio::time::timeout(std::time::Duration::from_secs(2), observers)
-        .await
-        .expect("deletion should wake both observers");
+    let (change, event, new_list) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), observers)
+            .await
+            .expect("deletion should wake thread and list observers");
+    let new_list = new_list?;
+    assert!(new_list.revision > list.revision);
+    assert_eq!(new_list.threads, list.threads[1..]);
     assert!(matches!(change, Err(Error::NotFound(id)) if id == second.thread.0));
     assert!(matches!(event, Err(Error::NotFound(id)) if id == second.thread.0));
     assert_eq!(replay_second()?.as_ref(), Some(&second));

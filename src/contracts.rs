@@ -468,7 +468,25 @@ pub struct ConversationDetail {
     pub id: ThreadId,
     pub name: String,
     pub provider_instance: ProviderInstanceId,
+    /// Model requested for subsequent turns. None uses the provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub latest_run: Option<Run>,
+    /// Run holding the thread's execution slot, even when later messages are queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_run: Option<Run>,
+    #[serde(default)]
+    pub queued_count: i64,
+    #[serde(default)]
+    pub queue_held: bool,
+    /// Tail of recent assistant deltas on the foreground run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub streaming_text: String,
+    /// Command output IDs on the foreground run, or the latest run when idle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_items: Vec<String>,
+    #[serde(default)]
+    pub questions: Vec<UserInputRequest>,
     pub permissions: Vec<PermissionRequest>,
     pub native_children: Vec<NativeChild>,
     pub history: HistoryPage,
@@ -478,6 +496,27 @@ pub struct ConversationDetail {
 pub struct ThreadSummary {
     pub id: ThreadId,
     pub name: String,
+}
+
+/// Lightweight activity for a conversation, including work outside the foreground turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConversationSummary {
+    pub id: ThreadId,
+    pub name: String,
+    /// Foreground run, otherwise queued work, otherwise the most recent delivered run.
+    pub status: Option<RunStatus>,
+    pub needs_approval: bool,
+    pub needs_answer: bool,
+    pub queue_held: bool,
+    pub active_children: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConversationList {
+    /// Invalidation cursor scoped to this state database.
+    pub revision: i64,
+    /// Most recent conversation activity first. Output fragments do not reorder rows.
+    pub threads: Vec<ConversationSummary>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -716,6 +755,8 @@ fn display_error<E: fmt::Display, S: serde::Serializer>(
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", content = "detail", rename_all = "snake_case")]
 pub enum Error {
+    #[error("Checkout directory is unavailable: {}", .0.display())]
+    CheckoutUnavailable(PathBuf),
     #[error("install the provider executable or configure its path: {0}")]
     MissingExecutable(String),
     #[error("sign in with the provider CLI for this instance, then refresh")]

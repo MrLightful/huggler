@@ -84,13 +84,14 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/034.sql"),
     include_str!("../migrations/035.sql"),
     include_str!("../migrations/036.sql"),
+    include_str!("../migrations/037.sql"),
+    include_str!("../migrations/038.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
 
-fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
-    let status: String = row.get(2)?;
-    let status = match status.as_str() {
+fn run_status(status: &str) -> rusqlite::Result<RunStatus> {
+    Ok(match status {
         "queued" => RunStatus::Queued,
         "starting" => RunStatus::Starting,
         "running" => RunStatus::Running,
@@ -99,11 +100,14 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         "failed" => RunStatus::Failed,
         "interrupted" => RunStatus::Interrupted,
         _ => return Err(rusqlite::Error::InvalidQuery),
-    };
+    })
+}
+
+fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
         id: RunId(row.get(0)?),
         ordinal: row.get(1)?,
-        status,
+        status: run_status(&row.get::<_, String>(2)?)?,
         native_turn: row.get::<_, Option<String>>(3)?.map(NativeTurnId),
         error: row.get(4)?,
         queue_held: row.get(5)?,
@@ -126,7 +130,28 @@ fn event(tx: &Transaction<'_>, thread: &ThreadId, change: Change) -> Result<i64>
         "INSERT INTO event(thread_id,change) VALUES(?,?)",
         params![thread.0, serde_json::to_string(&change)?],
     )?;
-    Ok(tx.last_insert_rowid())
+    let sequence = tx.last_insert_rowid();
+    if matches!(
+        change,
+        Change::Launched
+            | Change::Run { .. }
+            | Change::NativeChild { .. }
+            | Change::QuestionRequested { .. }
+            | Change::QuestionClosed { .. }
+            | Change::PermissionRequested { .. }
+            | Change::PermissionClosed { .. }
+    ) {
+        mark_conversation_changed(tx, thread)?;
+    }
+    Ok(sequence)
+}
+
+fn mark_conversation_changed(tx: &Transaction<'_>, thread: &ThreadId) -> Result<()> {
+    tx.execute(
+        "UPDATE thread_order SET activity=(SELECT max(activity)+1 FROM thread_order) WHERE id=?",
+        [&thread.0],
+    )?;
+    Ok(())
 }
 fn run_event(tx: &Transaction<'_>, thread: &ThreadId, id: &RunId) -> Result<i64> {
     event(tx, thread, Change::Run { run: run(tx, id)? })
@@ -1281,6 +1306,57 @@ impl Database {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn conversation_revision(&self) -> Result<i64> {
+        Ok(self
+            .db
+            .prepare_cached("SELECT coalesce(max(activity),0) FROM thread_order")?
+            .query_row([], |row| row.get(0))?)
+    }
+
+    pub fn conversation_list(&self) -> Result<ConversationList> {
+        let mut statement = self.db.prepare_cached(
+            "WITH queued AS (
+                SELECT thread_id, max(queue_held) AS held FROM run
+                WHERE status='queued' GROUP BY thread_id
+             )
+             SELECT t.id, t.name,
+                    coalesce(fg.status, CASE WHEN q.thread_id IS NOT NULL THEN 'queued' END,
+                        (SELECT status FROM run WHERE thread_id=t.id
+                         ORDER BY coalesce(delivery_slot,ordinal) DESC LIMIT 1)),
+                    t.id IN (SELECT r.thread_id FROM permission p JOIN run r ON r.id=p.run_id
+                             WHERE p.expired=0 AND p.decision IS NULL),
+                    t.id IN (SELECT r.thread_id FROM user_question u JOIN run r ON r.id=u.run_id
+                             WHERE u.state IN ('pending','answering')),
+                    coalesce(q.held,0),
+                    t.id IN (SELECT r.thread_id FROM native_child c JOIN run r ON r.id=c.run_id
+                             WHERE c.active)
+             FROM thread_order o JOIN thread t ON t.id=o.id
+             LEFT JOIN run fg ON fg.thread_id=t.id AND fg.status IN ('starting','running','waiting')
+             LEFT JOIN queued q ON q.thread_id=t.id ORDER BY o.activity DESC, o.position DESC",
+        )?;
+        let threads = statement
+            .query_map([], |row| {
+                Ok(ConversationSummary {
+                    id: ThreadId(row.get(0)?),
+                    name: row.get(1)?,
+                    status: row
+                        .get::<_, Option<String>>(2)?
+                        .as_deref()
+                        .map(run_status)
+                        .transpose()?,
+                    needs_approval: row.get(3)?,
+                    needs_answer: row.get(4)?,
+                    queue_held: row.get(5)?,
+                    active_children: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ConversationList {
+            revision: self.conversation_revision()?,
+            threads,
+        })
+    }
+
     pub fn read(&self, id: &ThreadId) -> Result<Thread> {
         let mut thread = self
             .db
@@ -1402,6 +1478,10 @@ mod tests {
         drop(conn);
         let thread = ThreadId("t".into());
         let db = Database::open(dir.path())?;
+        let list = db.conversation_list()?;
+        assert!(list.revision > 0);
+        assert_eq!(list.threads[0].id, thread);
+        assert_eq!(list.threads[0].status, Some(RunStatus::Completed));
         let snapshot = db.read(&thread)?;
         assert!(snapshot.worktree_path.is_none());
         assert_eq!(snapshot.messages[0].text, "legacy answer");
@@ -1598,6 +1678,9 @@ mod tests {
             run,
             Update::Started(Some(NativeTurnId("turn".into()))),
         )?;
+        let running_list = db.conversation_list()?;
+        db.update(&thread, run, Update::Output("partial".into()))?;
+        assert_eq!(db.conversation_list()?, running_list);
         db.update(&thread, run, Update::Finalizing("answer".into()))?;
         let waiting_cursor = db.read(&thread)?.cursor;
         drop(db);

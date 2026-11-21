@@ -27,7 +27,7 @@ def prepare_replay(root):
     )
     (root / "case.json").write_text(json.dumps({
         "fixture": str(fixture), "version": json.loads(metadata)["packages"][0]["version"],
-        "start": 1, "approvals": True, "agentTools": True
+        "start": 1, "approvals": True, "workspaceWrite": True, "agentTools": True
     }))
     peer = root / "codex"
     shutil.copyfile(ROOT / "tests/fixtures/replay-codex.py", peer)

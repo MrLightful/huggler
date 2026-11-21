@@ -73,6 +73,7 @@ impl Database {
         tx.execute("DELETE FROM run WHERE thread_id=?", [&thread.0])?;
         tx.execute("DELETE FROM remote_delivery WHERE run_id IS NULL AND grant_id NOT IN (SELECT id FROM remote_grant)", [])?;
         tx.execute("DELETE FROM thread WHERE id=?", [&thread.0])?;
+        mark_conversation_changed(&tx, thread)?;
         tx.commit()?;
         Ok(())
     }
@@ -246,6 +247,35 @@ impl Database {
         })
     }
 
+    fn streaming_text(&self, thread: &ThreadId, run: &RunId) -> Result<String> {
+        // Walk the run_output_delta index backwards until the preview is full.
+        const LIMIT: usize = 4096;
+        let mut statement = self.db.prepare(
+            "SELECT substr(json_extract(change,'$.text'), -4096)
+             FROM event WHERE thread_id=?
+               AND json_extract(change,'$.type')='output_delta'
+               AND json_extract(change,'$.text')!=''
+               AND json_extract(change,'$.run_id')=?
+             ORDER BY sequence DESC",
+        )?;
+        let chunks =
+            statement.query_map(params![thread.0, run.0], |row| row.get::<_, String>(0))?;
+        let mut parts = Vec::new();
+        let mut remaining = LIMIT;
+        for chunk in chunks {
+            let mut chunk = chunk?;
+            let start = chunk.ceil_char_boundary(chunk.len().saturating_sub(remaining));
+            chunk.drain(..start);
+            remaining -= chunk.len();
+            parts.push(chunk);
+            if start != 0 || remaining == 0 {
+                break;
+            }
+        }
+        parts.reverse();
+        Ok(parts.concat())
+    }
+
     pub fn detail(
         &self,
         thread: &ThreadId,
@@ -254,10 +284,10 @@ impl Database {
         limit: usize,
     ) -> Result<ConversationDetail> {
         let history = self.history(thread, before, query, limit)?;
-        let (name, instance) = self.db.query_row(
-            "SELECT name,provider_instance FROM thread WHERE id=?",
+        let (name, instance, model) = self.db.query_row(
+            "SELECT name,provider_instance,model FROM thread WHERE id=?",
             [&thread.0],
-            |r| Ok((r.get(0)?, r.get::<_, String>(1)?)),
+            |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?)),
         )?;
         let latest_run = self
             .db
@@ -270,6 +300,34 @@ impl Database {
                 run_row,
             )
             .optional()?;
+        let foreground_run = self
+            .db
+            .query_row(
+                &format!(
+                    "SELECT {RUN_FIELDS} FROM run WHERE thread_id=?
+                      AND status IN ('starting','running','waiting')"
+                ),
+                [&thread.0],
+                run_row,
+            )
+            .optional()?;
+        // Outstanding effects are removed on completion. Scan those before
+        // looking up their runs, so painting never scans settled history.
+        let (queued_count, queue_held) = self.db.query_row(
+            "SELECT count(*), coalesce(max(r.queue_held),0)
+             FROM turn_effect e CROSS JOIN run r ON r.id=e.run_id
+             WHERE r.thread_id=? AND r.status='queued'",
+            [&thread.0],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut streaming_text = String::new();
+        let mut command_items = Vec::new();
+        if let Some(run) = foreground_run.as_ref().or(latest_run.as_ref()) {
+            if run.status == RunStatus::Running {
+                streaming_text = self.streaming_text(thread, &run.id)?;
+            }
+            command_items = self.command_items(thread, &run.id)?;
+        }
         let native_children = self
             .db
             .prepare(
@@ -283,7 +341,14 @@ impl Database {
             id: thread.clone(),
             name,
             provider_instance: instance.into(),
+            model,
             latest_run,
+            foreground_run,
+            queued_count,
+            queue_held,
+            streaming_text,
+            command_items,
+            questions: self.open_questions(thread)?,
             history,
             native_children,
             permissions: self.open_permissions(thread)?,

@@ -38,7 +38,10 @@ for line in sys.stdin:
     if "id" not in frame:
         continue
     result = {}
-    if method == "initialize" and acp:
+    if method == "model/list" and not acp:
+        models = [] if Path("empty-model-list").exists() else ["fixture-fast", "fixture-deep"]
+        result = {"data": [{"id": model} for model in models]}
+    elif method == "initialize" and acp:
         result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
     elif method in ("thread/start", "session/new", "thread/resume", "session/load", "thread/fork"):
         session = str(uuid4()) if method in ("thread/fork", "thread/start", "session/new") else params.get("threadId", params.get("sessionId"))
