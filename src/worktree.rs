@@ -35,7 +35,7 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String> {
         .map_err(|_| Error::Invalid("Git worktree output requires UTF-8".into()))
 }
 
-fn common_dir(cwd: &Path) -> Result<String> {
+pub(crate) fn common_dir(cwd: &Path) -> Result<String> {
     git(
         cwd,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
