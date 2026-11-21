@@ -35,6 +35,10 @@ def check(binary):
             {"see": "First message"}, {"right_of": ["Send first message", "Attach files"]}, {"absent": "Conversation options"},
             *launch_thread(checkout, "Implementation"),
             {"see": "Ready/Implementation/New conversation"},
+            {"resize": [1120, 740]},
+            {"center_x": ["Resize conversations", 256]}, {"center_x": ["Resize changes", 820]},
+            {"drag_x": ["Resize conversations", 40]}, {"center_x": ["Resize conversations", 296]},
+            {"drag_x": ["Resize changes", 40]}, {"center_x": ["Resize changes", 860]},
             {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
             {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open project"]},
@@ -54,6 +58,7 @@ def check(binary):
             {"click": "Hide changes"}, {"absent": f"Changed/{name}"},
             {"click": "Show conversations"}, {"see": "thread/Implementation"},
             {"click": "Show changes"},
+            {"center_x": ["Resize conversations", 296]}, {"center_x": ["Resize changes", 860]},
             {"right_of": [f"Changed/{name}", "Message"]}, {"absent": "Publish"}, {"absent": "Checks"},
             *send_message("Use a single line."), {"see": "Codex/Corrected the answer."},
         ], env)

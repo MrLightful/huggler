@@ -3,13 +3,21 @@ use huggler::RunStatus;
 
 use std::time::Instant;
 
-#[derive(Default)]
-pub(super) struct SidebarVisibility {
+pub(super) struct Sidebar {
+    pub(super) width: f32,
     open: Option<bool>,
     transition: Option<(Instant, f32)>,
 }
 
-impl SidebarVisibility {
+impl Sidebar {
+    pub(super) fn new(width: f32) -> Self {
+        Self {
+            width,
+            open: None,
+            transition: None,
+        }
+    }
+
     pub(super) fn is_open(&self, default: bool) -> bool {
         self.open.unwrap_or(default)
     }
@@ -45,7 +53,49 @@ impl SidebarVisibility {
     }
 }
 
-pub(super) const WIDTH: f32 = 184.;
+#[derive(Clone, Copy)]
+pub(super) enum SidebarEdge {
+    Left,
+    Right,
+}
+
+impl SidebarEdge {
+    pub(super) fn max_width(self, viewport: f32, narrow: bool) -> f32 {
+        // The narrow Changes panel overlays the conversation. Wide windows share
+        // the space left after reserving room for the composer between both panels.
+        match (narrow, self) {
+            (true, Self::Right) => viewport - 160.,
+            (true, Self::Left) => viewport - 400.,
+            (false, _) => (viewport - 400.) / 2.,
+        }
+        .max(160.)
+    }
+
+    pub(super) fn handle(self, width: f32, narrow: bool, cx: &Context<Desktop>) -> Div {
+        let name = match self {
+            Self::Left => "Resize conversations",
+            Self::Right => "Resize changes",
+        };
+        let handle = div()
+            .id(name)
+            .size_full()
+            .occlude()
+            .cursor_col_resize()
+            .hover(|style| style.bg(cx.theme().border))
+            .on_drag(self, |_, _, _, cx| cx.new(|_| EmptyView));
+        control!(name, handle)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(8.))
+            .map(|handle| match self {
+                Self::Left => handle.left(px(width - 4.)),
+                Self::Right => handle
+                    .right(px(width - 4.))
+                    .when(narrow, |handle| handle.top_10()),
+            })
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Section {
@@ -91,7 +141,7 @@ fn activity(thread: &ConversationSummary) -> (Section, &'static str) {
 }
 
 impl Desktop {
-    pub(super) fn conversation_sidebar(&self, cx: &Context<Self>) -> Stateful<Div> {
+    pub(super) fn conversation_sidebar(&self, width: f32, cx: &Context<Self>) -> Stateful<Div> {
         let mut list = v_flex()
             .id("threads")
             .flex_1()
@@ -156,16 +206,15 @@ impl Desktop {
                     view.expanded_sections.insert(section, !fully_expanded);
                     cx.notify();
                 }));
-            let group = v_flex()
-                .flex_shrink_0()
-                .pb_3()
-                .gap_1()
-                .child(control!(format!("section/{title}/{count}"), header))
-                .children(
-                    rows.into_iter()
-                        .filter(|(thread, _)| visible(thread))
-                        .map(|(thread, status)| self.sidebar_row(thread, section, status, cx)),
-                );
+            let group =
+                v_flex()
+                    .flex_shrink_0()
+                    .pb_3()
+                    .gap_1()
+                    .child(control!(format!("section/{title}/{count}"), header))
+                    .children(rows.into_iter().filter(|(thread, _)| visible(thread)).map(
+                        |(thread, status)| self.sidebar_row(thread, section, status, width, cx),
+                    ));
             list = list.child(group);
         }
         list
@@ -176,6 +225,7 @@ impl Desktop {
         thread: &ConversationSummary,
         section: Section,
         status: &'static str,
+        width: f32,
         cx: &Context<Self>,
     ) -> Div {
         let id = thread.id.clone();
@@ -184,7 +234,7 @@ impl Desktop {
         // Button measures its custom label at its intrinsic width. Bound it to the
         // space inside the sidebar and row padding so long names get an ellipsis.
         let content = v_flex()
-            .w(px(WIDTH - 76.))
+            .w(px(width - 76.))
             .items_start()
             .child(div().w_full().truncate().child(thread.name.clone()))
             .when(attention, |row| {

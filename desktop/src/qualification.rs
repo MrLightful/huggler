@@ -14,6 +14,8 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum Step {
     Click(String),
+    DragX(String, i16),
+    CenterX(String, i16),
     NextFileSelection(Vec<std::path::PathBuf>),
     Resize([u16; 2]),
     Type(String),
@@ -77,7 +79,10 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
             true
         }
-        Step::Click(key) => {
+        Step::CenterX(key, x) => controls
+            .get(key.as_str())
+            .is_some_and(|bounds| (f32::from(bounds.center().x) - f32::from(*x)).abs() < 2.),
+        Step::Click(key) | Step::DragX(key, _) => {
             let Some(bounds) = controls.get(key.as_str()) else {
                 return false;
             };
@@ -91,11 +96,22 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             else {
                 return false;
             };
-            let location = NSPoint::new(
-                position.x.into(),
-                (window.viewport_size().height - position.y).into(),
-            );
-            for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+            let mut events = vec![(NSEventType::LeftMouseDown, 0.)];
+            let mut dx = 0.;
+            if let Step::DragX(_, delta) = step {
+                dx = f64::from(*delta);
+                events.extend([
+                    (NSEventType::LeftMouseDragged, dx / 2.),
+                    (NSEventType::LeftMouseDragged, dx),
+                ]);
+            }
+            events.push((NSEventType::LeftMouseUp, dx));
+            for (kind, offset) in events {
+                let location = NSPoint::new(
+                    f64::from(position.x) + offset,
+                    (window.viewport_size().height - position.y).into(),
+                );
+
                 let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                     kind, location, NSEventModifierFlags::empty(), 0., native.windowNumber(), None, 0, 1, 1.
                 ).expect("create click event");

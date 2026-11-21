@@ -40,8 +40,8 @@ struct Workspace {
 pub struct Desktop {
     settings: Entity<Settings>,
     show_settings: bool,
-    navigation: sidebar::SidebarVisibility,
-    changes_sidebar: sidebar::SidebarVisibility,
+    navigation: sidebar::Sidebar,
+    changes_sidebar: sidebar::Sidebar,
     focus: FocusHandle,
     workspaces: HashMap<ThreadId, Workspace>,
     runtime: Arc<Huggler>,
@@ -120,8 +120,8 @@ impl Desktop {
         let mut view = Self {
             settings,
             show_settings: false,
-            navigation: Default::default(),
-            changes_sidebar: Default::default(),
+            navigation: sidebar::Sidebar::new(256.),
+            changes_sidebar: sidebar::Sidebar::new(300.),
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
@@ -1511,7 +1511,13 @@ impl Render for Desktop {
             }
         }
 
-        let narrow = window.viewport_size().width < px(900.);
+        use sidebar::SidebarEdge;
+        let viewport = f32::from(window.viewport_size().width);
+        let narrow = viewport < 900.;
+        let left_max = SidebarEdge::Left.max_width(viewport, narrow);
+        let right_max = SidebarEdge::Right.max_width(viewport, narrow);
+        let left_width = self.navigation.width.min(left_max);
+        let right_width = self.changes_sidebar.width.min(right_max);
         let changes_open = self.changes_sidebar.is_open(!narrow);
         let left = self.navigation.fraction(true, window);
         let right = self.changes_sidebar.fraction(!narrow, window);
@@ -1536,14 +1542,14 @@ impl Render for Desktop {
             .when(left > 0., |layout| {
                 layout.child(
                     h_flex()
-                        .w(px(sidebar::WIDTH * left))
+                        .w(px(left_width * left))
                         .flex_shrink_0()
                         .overflow_hidden()
                         .justify_end()
                         .child(
                             v_flex()
                                 .h_full()
-                                .w(px(sidebar::WIDTH))
+                                .w(px(left_width))
                                 .flex_shrink_0()
                                 .bg(cx.theme().sidebar)
                                 .border_r_1()
@@ -1591,7 +1597,7 @@ impl Render for Desktop {
                                         )),
                                 )
                                 .child(div().w_full().h_px().flex_shrink_0().bg(cx.theme().border))
-                                .child(self.conversation_sidebar(cx)),
+                                .child(self.conversation_sidebar(left_width, cx)),
                         ),
                 )
             })
@@ -1623,6 +1629,9 @@ impl Render for Desktop {
                         },
                     ),
             )
+            .when(left == 1., |layout| {
+                layout.child(SidebarEdge::Left.handle(left_width, narrow, cx))
+            })
             .when_some(
                 self.current
                     .as_ref()
@@ -1630,7 +1639,7 @@ impl Render for Desktop {
                 |layout, thread| {
                     layout.child(
                         div()
-                            .w(px(228. * right))
+                            .w(px(right_width * right))
                             .overflow_hidden()
                             .flex_shrink_0()
                             .when(narrow, |panel| {
@@ -1638,7 +1647,7 @@ impl Render for Desktop {
                             })
                             .child(
                                 div()
-                                    .w(px(228.))
+                                    .w(px(right_width))
                                     .h_full()
                                     .border_l_1()
                                     .border_color(cx.theme().border)
@@ -1647,6 +1656,22 @@ impl Render for Desktop {
                             ),
                     )
                 },
+            )
+            .when(
+                self.current.is_some() && !self.show_settings && right == 1.,
+                |layout| layout.child(SidebarEdge::Right.handle(right_width, narrow, cx)),
+            )
+            .on_drag_move(
+                cx.listener(move |view, event: &DragMoveEvent<SidebarEdge>, _, cx| {
+                    let x = f32::from(event.event.position.x - event.bounds.left());
+                    match event.drag(cx) {
+                        SidebarEdge::Left => view.navigation.width = x.clamp(160., left_max),
+                        SidebarEdge::Right => {
+                            view.changes_sidebar.width = (viewport - x).clamp(160., right_max)
+                        }
+                    }
+                    cx.notify();
+                }),
             )
             .children(gpui_component::Root::render_dialog_layer(window, cx))
     }
