@@ -244,7 +244,7 @@ impl RepositoryClient {
                 )
             }
             GitCafe => (
-                format!("/api/repos/{repo}/pulls"),
+                format!("/api/repos/{repo}/pulls?limit=50&sort=newest&state=open"),
                 "/items",
                 "number",
                 "/state",
@@ -263,7 +263,11 @@ impl RepositoryClient {
             ),
         };
         let response = if self.binding.driver == Linear {
-            self.request(Method::POST,&path,Some(json!({"query":"query Issues($team: String!) { issues(first: 50, filter: {team: {key: {eq: $team}}}) { nodes { identifier title state { name } } } }","variables":{"team":repo}}))).await?
+            let body = json!({
+                "query": "query Issues($team: String!) { issues(first: 50, filter: {team: {key: {eq: $team}}}) { nodes { identifier title state { name } } } }",
+                "variables": {"team": repo}
+            });
+            self.request(Method::POST, &path, Some(body)).await?
         } else {
             self.request(Method::GET, &path, None).await?
         };
