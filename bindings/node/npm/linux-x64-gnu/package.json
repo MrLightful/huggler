@@ -1,0 +1,19 @@
+{
+  "name": "@huggler/sdk-linux-x64-gnu",
+  "version": "0.0.1-preview.0",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "main": "huggler.node",
+  "files": [
+    "huggler.node",
+    "notices"
+  ]
+}

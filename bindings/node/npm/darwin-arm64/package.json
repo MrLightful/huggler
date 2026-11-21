@@ -1,0 +1,16 @@
+{
+  "name": "@huggler/sdk-darwin-arm64",
+  "version": "0.0.1-preview.0",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "huggler.node",
+  "files": [
+    "huggler.node",
+    "notices"
+  ]
+}

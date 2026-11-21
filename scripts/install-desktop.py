@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-from desktop_notices import write_notices
+from cargo_notices import write_notices
 
 ROOT = Path(__file__).resolve().parents[1]
 

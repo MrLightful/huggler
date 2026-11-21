@@ -1,0 +1,7 @@
+node_modules/
+dist/
+native/target/
+/npm/*/*.node
+/npm/*/notices/
+/LICENSE
+/packages/

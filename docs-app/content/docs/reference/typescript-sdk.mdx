@@ -1,0 +1,47 @@
+---
+title: TypeScript SDK
+description: Options, methods, and error handling for @huggler/sdk in Node.js.
+---
+
+Import `Huggler` and the ID helpers from `@huggler/sdk`. The package includes TypeScript declarations and supports ESM and CommonJS. Each runtime method returns a promise. [Install the preview and run a turn](/typescript-quickstart/)
+
+## Open and configure
+
+| `Huggler.open(options)` field | Purpose |
+| --- | --- |
+| `stateDir` | Required. Huggler creates its SQLite database here by default. |
+| `instances` | Additional named provider installations. Each needs an `id`, `driver`, and `executable`. Launch accepts the built-in IDs `"codex"` and `"claudeAgent"` or a registered ID made with `providerInstanceId()`. |
+| `storage` | Override `databasePath` or configure the worktree layout. Threads launched through the preview run in the registered project's root checkout. |
+| `output` | Set the host's `name`, `title`, `version`, `instructions`, and provider labels. |
+
+## Run a conversation
+
+| Call | Result |
+| --- | --- |
+| `openProject(path)` | Registers a Git working tree and returns its `id` and canonical `root`. |
+| `listProviderInstances()`, `probeProvider(instance, cwd)` | List configurations or check one provider's transport, login status, models, and capabilities. |
+| `launch({ commandId, threadId, projectId, providerInstanceId, name, model })` | Creates a thread. Omit `model` for the provider default. |
+| `send({ commandId, threadId, text, mode })` | Starts a turn on an idle thread and returns a receipt with `runId` and `messageId`. Omit `mode` for an ordinary send or pass `"plan"` for Codex plan mode. |
+| `wait(threadId, runId, { signal })` | Resolves to a terminal run. Inspect `status` for `completed`, `interrupted`, or `failed`. The options argument is optional. Aborting the wait detaches that observer. |
+| `stopThread({ commandId, threadId })` | Requests interruption and returns a receipt. |
+| `respondToPermission({ threadId, runId, requestId, option })` | Submits an offered option ID for a pending permission. |
+| `respondToQuestion({ threadId, runId, requestId, answers })` | Submits answers keyed by question ID. Each value is a string or an array of strings. |
+| `close()` | Shuts down the runtime and releases database ownership. Await it before reopening the database in Rust or Node.js. |
+
+Use `threadId("…")` and `commandId("…")` for application-owned IDs. Save command IDs with their payloads so a retry can recover the original receipt. Pass IDs returned by the SDK directly to subsequent calls.
+
+## Observe and read
+
+| Call | Result |
+| --- | --- |
+| `subscribe(threadId, { after, signal })` | Returns `{ snapshot, events }`. With no options, the async iterator starts after the snapshot. A supplied cursor replays strictly after that position. Read `event.change.type` to distinguish changes and `event.sequence` to save a replay cursor. |
+| `listThreads()`, `readThread(threadId)` | List thread IDs and names or read one full snapshot, including messages, runs, pending requests, and the event cursor. |
+| `readHistory(threadId, { before, query, limit })` | Returns conversation details with a bounded `history.messages` page. Options are optional. Use `history.older` for the previous page. |
+| `readMessage(threadId, messageId)` | Loads the full message when a history preview is truncated. |
+| `readProviderUsage()` | Returns reported run and token totals grouped by provider instance. |
+
+Keep cursors and 64-bit counts as strings across storage and serialization. See [Manage history and context](/guides/history-and-context/) for paging and [Durability and recovery](/concepts/durability/) for replay after a restart.
+
+## Handle errors
+
+Catch `HugglerError` and check `error.code`. For `busy`, inspect the foreground run before submitting again. For `conflict`, `error.detail.originalThread` and `error.detail.requestedThread` identify where a command ID was reused. For `cursor_expired`, rebuild the view with a fresh subscription. For `history_changed`, restart the history query from its first page.

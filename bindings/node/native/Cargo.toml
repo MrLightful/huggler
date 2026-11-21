@@ -1,0 +1,28 @@
+[package]
+name = "huggler-node"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+huggler = { path = "../../.." }
+napi = { version = "3.16.2", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = "3.7.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "macros"] }
+tokio-util = "0.7"
+
+[build-dependencies]
+napi-build = "2.6.0"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = "debuginfo"

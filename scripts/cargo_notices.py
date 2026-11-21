@@ -1,4 +1,4 @@
-"""Collect license texts for the Cargo target and features used in a desktop bundle."""
+"""Collect license texts for a locked Cargo target included in a binary distribution."""
 from collections import defaultdict
 import json
 from pathlib import Path
@@ -8,14 +8,14 @@ import subprocess
 import tomllib
 
 
-def write_notices(root, resources, target, features):
+def write_notices(root, resources, target, features, *, manifest="desktop/Cargo.toml", component="desktop"):
     resources.mkdir()
     shutil.copyfile(root / "LICENSE", resources / "LICENSE.txt")
     rust_docs = Path(subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip())
     shutil.copyfile(rust_docs / "share/doc/rust/COPYRIGHT-library.html", resources / "Rust-library.html")
     report = json.loads(subprocess.check_output([
         "cargo", "about", "generate", "--frozen", "--fail", "--format", "json",
-        "--manifest-path", root / "desktop/Cargo.toml", "--target", target, *features,
+        "--config", root / "desktop/about.toml", "--manifest-path", root / manifest, "--target", target, *features,
     ], cwd=root))
     # cargo-about selects a license from each SPDX expression. Keep upstream
     # notices as well, including nested notices for vendored native sources.
@@ -52,7 +52,7 @@ def write_notices(root, resources, target, features):
             if label in packages:
                 texts[notice["text"].strip()].add(f"{label} / {url}")
     with (resources / "Third-party notices.txt").open("w", encoding="utf-8") as out:
-        out.write("Locked desktop dependencies, including build tools\n\n"
+        out.write(f"Locked {component} dependencies, including build tools\n\n"
                   "The following URLs provide the corresponding unmodified sources, including "
                   "components licensed under MPL-2.0. License texts and notices follow.\n"
                   "SQLite's bundled amalgamation is public domain (https://www.sqlite.org/copyright.html).\n\n")

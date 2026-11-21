@@ -18,6 +18,8 @@ Stage 7 links each inventory group to a passing Rust or host scenario and its li
 
 The macOS desktop coding workflow covers planning, editing, queueing follow-ups, running checks, reviewing staged and unstaged changes, committing and pushing a branch. The native-window check uses a scripted Codex peer and a local Git remote. [Desktop workflow and reproduction](desktop-coding.md)
 
+The packed TypeScript SDK exercises root-checkout launch, receipt recovery across a Node-to-Rust database handoff, native continuation in a second Node process, scoped replay, history paging and structured questions using recorded Codex 0.156.1 app-server exchanges. A scripted ACP v1 peer exercises probe, approval, observer cancellation and explicit stop over stdio. The preview reads persisted collaboration events and starts threads in the project root. [Workflow prerequisites, results and limits](typescript-sdk.md#verified-workflows)
+
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
 | Thread orchestration commands | 58 wire variants + 15 additional internal variants | [Command and event unions][src-1] · [Command policy][src-2] |

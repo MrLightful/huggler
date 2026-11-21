@@ -1,0 +1,26 @@
+{
+  "name": "@huggler/sdk",
+  "version": "0.0.1-preview.0",
+  "description": "Durable coding-agent conversations for Node.js and TypeScript",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/MrLightful/huggler.git", "directory": "bindings/node" },
+  "engines": { "node": "^22.14.0 || ^24 || ^26" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "platform.cjs", "LICENSE"],
+  "scripts": {
+    "build": "node scripts/build.mjs && tsc",
+    "build:release": "node scripts/build.mjs --release && tsc",
+    "pack:local": "python3 scripts/pack.py",
+    "test": "tsc && node scripts/test-consumer.mjs"
+  },
+  "optionalDependencies": {
+    "@huggler/sdk-darwin-arm64": "0.0.1-preview.0",
+    "@huggler/sdk-linux-x64-gnu": "0.0.1-preview.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.20.5"
+  }
+}
