@@ -1,10 +1,12 @@
 # Working on Huggler
 
-Build `huggler` as a Rust library crate distributed through Cargo. The Tauri backend embeds it directly. Keep the base app free of a Node.js runtime dependency and scope provider-specific runtime requirements to their adapters.
+Build `huggler` as a Rust library crate distributed through Cargo. The native desktop app uses Zed’s GPUI framework and embeds the crate directly. Keep the base app free of a Node.js runtime dependency and scope provider-specific runtime requirements to their adapters.
 
 Use T3 Code as the reference for what Huggler should enable. Aim to cover all of its user-visible orchestration capabilities where feasible. Judge coverage by the workflows users can accomplish. Choose Huggler’s interfaces, storage schema, provider transports and implementation to fit the Rust crate and its hosts.
 
 The local T3 Code reference checkout is `/Users/mrlightful/Projects/Personal/t3code`. Make changes in the current Huggler worktree. Keep the upstream checkout path out of crate code and runtime defaults.
+
+Prefer recorded fixtures or the existing Codex subscription for testing. Before starting a local language-model server or running inference on the user’s computer, ask for explicit permission for that specific run and wait for approval. This includes tests and adapters that call an already-running local model.
 
 ## Continuing extraction
 

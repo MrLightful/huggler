@@ -1,6 +1,6 @@
 # How T3 Code orchestrates agents
 
-This analysis follows the T3 Code server at [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9). Source and test inspection establish the baseline. Live harness behavior, platform support and installability still require execution. File paths, symbols and tool names here identify upstream components. Huggler targets equivalent user-visible workflows through a Rust crate and a Tauri host. [Crate proposal](sdk-proposal.md) · [Capability inventory](parity-inventory.md)
+This analysis follows the T3 Code server at [`338352d`](https://github.com/pingdotgg/t3code/tree/338352dee2f43079482e054e8229a2ba055641d9). Source and test inspection establish the baseline. Live harness behavior, platform support and installability still require execution. File paths, symbols and tool names here identify upstream components. Huggler targets equivalent user-visible workflows through a Rust crate and a GPUI host. [Crate proposal](sdk-proposal.md) · [Capability inventory](parity-inventory.md)
 
 ## The extraction boundary
 

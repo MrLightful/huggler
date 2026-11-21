@@ -1,39 +1,72 @@
+mod questions;
 use crate::{
-    contracts::*,
-    providers::codex::{self, CodexOptions},
-    store::Database,
+    contracts::{
+        agent_commands::{CreateThreads, CreatedPeer, Delegation},
+        *,
+    },
+    providers::{
+        ChildInterrupt, Control,
+        claude_agent::{self, ClaudeAgentOptions},
+        codex::{self, CodexOptions},
+    },
+    store::{Database, RunJob},
 };
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Command as Process,
     sync::{Arc, Mutex},
 };
-use tokio::{runtime::Handle, sync::watch, task::JoinSet};
+use tokio::{
+    runtime::Handle,
+    sync::{mpsc, watch},
+    task::JoinSet,
+};
 
 #[derive(Clone, Debug)]
 pub struct HugglerOptions {
     pub state_dir: PathBuf,
+    /// Enable caller-scoped orchestration tools over loopback HTTP.
+    pub agent_tools: bool,
     pub codex: CodexOptions,
+    pub claude_agent: ClaudeAgentOptions,
 }
 impl HugglerOptions {
     pub fn new(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
+            agent_tools: false,
             codex: CodexOptions::default(),
+            claude_agent: ClaudeAgentOptions::default(),
         }
     }
 }
 
-struct Shared {
+pub(crate) struct Shared {
+    options: HugglerOptions,
+    endpoint: Option<String>,
+    handle: Handle,
+    workers: Mutex<Option<JoinSet<()>>>,
     db: Mutex<Option<Database>>,
+    run_stops: Mutex<HashMap<RunId, watch::Sender<bool>>>,
+    controls: Mutex<HashMap<(ThreadId, RunId), mpsc::UnboundedSender<Control>>>,
+    decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
     stop: watch::Sender<bool>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskWaitResult {
+    #[serde(flatten)]
+    task: DelegatedTask,
+    awaiting_approval: bool,
+    timed_out: bool,
+}
+
 impl Shared {
-    fn access<T>(&self, f: impl FnOnce(&mut Database) -> Result<T>) -> Result<T> {
+    pub(crate) fn access<T>(&self, f: impl FnOnce(&mut Database) -> Result<T>) -> Result<T> {
         let mut db = self.db.lock().unwrap();
         if *self.stop.borrow() {
             return Err(Error::Closed);
@@ -44,56 +77,313 @@ impl Shared {
         f(db.as_mut().ok_or(Error::Closed)?)
     }
 
-    async fn execute(&self, codex: CodexOptions, thread: ThreadId, run: RunId) {
-        let claim = self.access(|db| db.claim(&run));
-        let result = match claim {
-            Ok(turn) => {
-                codex::execute(codex, turn, self.stop.subscribe(), |update| {
-                    self.access(|db| db.update(&thread, &run, update))?;
-                    self.changed.send_replace(());
-                    Ok(())
-                })
-                .await
+    // Hold the intake gate through commit and worker registration. Shutdown
+    // takes this same gate before taking ownership of all registered workers.
+    fn schedule<T, Jobs: IntoIterator<Item = RunJob>>(
+        self: &Arc<Self>,
+        write: impl FnOnce(&mut Database) -> Result<(T, Jobs)>,
+    ) -> Result<T> {
+        let mut gate = self.workers.lock().unwrap();
+        let workers = gate.as_mut().ok_or(Error::Closed)?;
+        while let Some(completed) = workers.try_join_next() {
+            if let Err(e) = completed {
+                return Err(Error::Worker(e.to_string()));
             }
-            Err(e) => Err(e),
-        };
-        // close joins this task before dropping the connection. Persist a terminal
-        // result even when shutdown interrupted a provider call.
-        let mut db = self.db.lock().unwrap();
-        if let Err(e) = db.as_mut().unwrap().finish(&thread, &run, result) {
-            *self.fault.lock().unwrap() = Some(e.to_string());
+        }
+        let (value, jobs) = self.access(write)?;
+        self.changed.send_replace(());
+        for (thread, run) in jobs {
+            self.spawn(workers, thread, run);
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn create_threads(
+        self: &Arc<Self>,
+        token: &str,
+        input: CreateThreads,
+    ) -> Result<Vec<CreatedPeer>> {
+        self.schedule(|db| db.create_threads(token, input))
+    }
+
+    pub(crate) fn send_peer(
+        self: &Arc<Self>,
+        token: &str,
+        target: ThreadId,
+        key: &str,
+        text: &str,
+    ) -> Result<PeerReceipt> {
+        self.schedule(|db| {
+            let (receipt, fresh) = db.send_peer(token, &target, key, text)?;
+            let job = (fresh && receipt.delivery == PeerDelivery::Started)
+                .then(|| (target, receipt.run_id.clone()));
+            Ok((receipt, job))
+        })
+    }
+
+    pub(crate) fn delegate(
+        self: &Arc<Self>,
+        token: &str,
+        input: Delegation,
+    ) -> Result<DelegatedTask> {
+        self.schedule(|db| {
+            let (task, fresh) = db.delegate(token, input)?;
+            let job = fresh.then(|| (task.child_thread_id.clone(), task.child_run_id.clone()));
+            Ok((task, job))
+        })
+    }
+
+    pub(crate) fn task_status(&self, token: &str, id: &TaskId) -> Result<DelegatedTask> {
+        let task = self.access(|db| db.task_status(token, id))?;
+        self.changed.send_replace(());
+        Ok(task)
+    }
+
+    pub(crate) async fn wait_for_task(
+        &self,
+        token: &str,
+        id: &TaskId,
+        limit: std::time::Duration,
+    ) -> Result<TaskWaitResult> {
+        let mut changes = self.changed.subscribe();
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            let (task, awaiting_approval) = self.access(|db| {
+                let task = db.task_status(token, id)?;
+                let approval = !task.status.terminal() && db.task_awaits_approval(id)?;
+                Ok((task, approval))
+            })?;
+            if task.status.terminal() {
+                self.changed.send_replace(());
+            }
+            let ready = task.status.terminal() || awaiting_approval;
+            if ready || tokio::time::Instant::now() >= deadline {
+                return Ok(TaskWaitResult {
+                    task,
+                    awaiting_approval,
+                    timed_out: !ready,
+                });
+            }
+            // Recheck ownership and the latest committed result even on a timeout.
+            if let Ok(closed) = tokio::time::timeout_at(deadline, changes.changed()).await {
+                closed.map_err(|_| Error::Closed)?;
+            }
+        }
+    }
+
+    pub(crate) fn cancel_task(
+        self: &Arc<Self>,
+        token: &str,
+        id: &TaskId,
+        key: Option<&str>,
+    ) -> Result<DelegatedTask> {
+        self.schedule(|db| {
+            let (task, runs) = db.cancel_task(token, id, key)?;
+            let stops = self.run_stops.lock().unwrap();
+            for id in runs {
+                if let Some(stop) = stops.get(&id) {
+                    stop.send_replace(true);
+                }
+            }
+            Ok((task, None))
+        })
+    }
+
+    pub(crate) fn interrupt_run(
+        self: &Arc<Self>,
+        token: &str,
+        thread: &ThreadId,
+        run: &RunId,
+        key: &str,
+        reason: Option<&str>,
+    ) -> Result<Option<RunStatus>> {
+        self.schedule(|db| {
+            let terminal = db.interrupt_run(token, thread, run, key, reason)?;
+            if terminal.is_none()
+                && let Some(stop) = self.run_stops.lock().unwrap().get(run)
+            {
+                stop.send_replace(true);
+            }
+            Ok((terminal, None))
+        })
+    }
+
+    fn spawn(self: &Arc<Self>, workers: &mut JoinSet<()>, thread: ThreadId, run: RunId) {
+        let (stop, stopped) = watch::channel(false);
+        self.run_stops.lock().unwrap().insert(run.clone(), stop);
+        let shared = self.clone();
+        workers.spawn_on(
+            async move { shared.work(thread, run, stopped).await },
+            &self.handle,
+        );
+    }
+
+    async fn work(self: Arc<Self>, thread: ThreadId, run: RunId, stopped: watch::Receiver<bool>) {
+        let result = self.execute(&thread, &run, stopped).await;
+        self.run_stops.lock().unwrap().remove(&run);
+        if let Err(error) = self.advance(|db| db.finish(&thread, &run, result)) {
+            *self.fault.lock().unwrap() = Some(error.to_string());
+            self.changed.send_replace(());
+        }
+    }
+
+    fn advance(self: &Arc<Self>, finish: impl FnOnce(&mut Database) -> Result<()>) -> Result<()> {
+        let mut gate = self.workers.lock().unwrap();
+        let mut guard = self.db.lock().unwrap();
+        let db = guard
+            .as_mut()
+            .expect("close joins workers before releasing storage");
+        finish(db)?;
+        if let Some(workers) = gate.as_mut() {
+            for (thread, run) in db.ready_jobs()? {
+                self.spawn(workers, thread, run);
+            }
         }
         self.changed.send_replace(());
+        Ok(())
+    }
+
+    async fn execute(
+        self: &Arc<Self>,
+        thread: &ThreadId,
+        run: &RunId,
+        stopped: watch::Receiver<bool>,
+    ) -> Result<()> {
+        if let Some(worktree) = self.access(|db| db.worktree(thread))? {
+            let worktree = tokio::task::spawn_blocking(move || {
+                worktree.prepare()?;
+                Ok::<_, Error>(worktree)
+            })
+            .await
+            .map_err(|e| Error::Worker(e.to_string()))??;
+            if !worktree.ready {
+                self.access(|db| db.worktree_ready(&worktree.path))?;
+            }
+        }
+        let turn = self.access(|db| {
+            let mut turn = db.claim(run)?;
+            if let Some(url) = &self.endpoint {
+                turn.agent_tools = Some(crate::providers::AgentTools {
+                    url: url.clone(),
+                    token: db.grant(run)?,
+                });
+            }
+            Ok(turn)
+        })?;
+        let update = |change| {
+            if matches!(change, crate::providers::Update::ForegroundComplete) {
+                return self.advance(|db| db.update(thread, run, change));
+            }
+            self.access(|db| db.update(thread, run, change))?;
+            self.changed.send_replace(());
+            Ok(())
+        };
+        let (tx, decisions) = mpsc::unbounded_channel();
+        self.decisions.lock().unwrap().insert(run.clone(), tx);
+        let permissions = crate::providers::Permissions {
+            run: run.clone(),
+            decisions,
+            publish: |request| {
+                self.access(|db| db.request_permission(thread, request))?;
+                self.changed.send_replace(());
+                Ok(())
+            },
+        };
+        let (tx, controls) = mpsc::unbounded_channel();
+        let owner = (thread.clone(), run.clone());
+        self.controls.lock().unwrap().insert(owner.clone(), tx);
+        let result = match turn.provider {
+            Provider::Codex => {
+                codex::execute(
+                    self.options.codex.clone(),
+                    turn,
+                    stopped,
+                    update,
+                    permissions,
+                    controls,
+                )
+                .await
+            }
+            Provider::ClaudeAgent => {
+                claude_agent::execute(
+                    &self.options.claude_agent,
+                    turn,
+                    stopped,
+                    update,
+                    permissions,
+                    controls,
+                )
+                .await
+            }
+        };
+        self.controls.lock().unwrap().remove(&owner);
+        self.decisions.lock().unwrap().remove(run);
+        result
     }
 }
 
 /// The owner of a state directory. Share this handle via Arc inside the host.
 pub struct Huggler {
     shared: Arc<Shared>,
-    codex: CodexOptions,
-    handle: Handle,
-    workers: Mutex<Option<JoinSet<()>>>,
     closed: watch::Sender<bool>,
 }
 
 impl Huggler {
     /// Requires a Tokio runtime with I/O and time enabled.
     pub async fn open(options: HugglerOptions) -> Result<Self> {
-        let db = tokio::task::spawn_blocking(move || Database::open(&options.state_dir))
+        let dir = options.state_dir.clone();
+        let mut db = tokio::task::spawn_blocking(move || Database::open(&dir))
             .await
             .map_err(|e| Error::Worker(e.to_string()))??;
-        Ok(Self {
-            shared: Arc::new(Shared {
-                db: Mutex::new(Some(db)),
-                fault: Mutex::default(),
-                changed: watch::channel(()).0,
-                stop: watch::channel(false).0,
-            }),
-            codex: options.codex,
+        let listener = if options.agent_tools {
+            Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?)
+        } else {
+            None
+        };
+        let endpoint = listener
+            .as_ref()
+            .map(|l| l.local_addr().map(|addr| format!("http://{addr}/mcp")))
+            .transpose()?;
+        let jobs = db.ready_jobs()?;
+        let shared = Arc::new(Shared {
+            db: Mutex::new(Some(db)),
+            decisions: Mutex::default(),
+            run_stops: Mutex::default(),
+            controls: Mutex::default(),
+            fault: Mutex::default(),
+            changed: watch::channel(()).0,
+            stop: watch::channel(false).0,
+            options,
+            endpoint,
             handle: Handle::current(),
             workers: Mutex::new(Some(JoinSet::new())),
+        });
+        let runtime = Self {
+            shared,
             closed: watch::channel(false).0,
-        })
+        };
+        if let Some(listener) = listener {
+            let shared = &runtime.shared;
+            shared
+                .workers
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .spawn(crate::mcp::serve(
+                    listener,
+                    shared.clone(),
+                    shared.stop.subscribe(),
+                ));
+        }
+        {
+            let shared = &runtime.shared;
+            let mut gate = shared.workers.lock().unwrap();
+            for (thread, run) in jobs {
+                shared.spawn(gate.as_mut().unwrap(), thread, run);
+            }
+        }
+        Ok(runtime)
     }
 
     /// Resolve the enclosing Git checkout and store its absolute working directory.
@@ -115,26 +405,15 @@ impl Huggler {
     /// Commit a launch, model selection or message. Reusing the same command
     /// identity and payload returns the original receipt, including after reopen.
     pub fn dispatch(&self, command: Command) -> Result<Receipt> {
-        let mut gate = self.workers.lock().unwrap();
-        let workers = gate.as_mut().ok_or(Error::Closed)?;
-        while let Some(completed) = workers.try_join_next() {
-            if let Err(e) = completed {
-                return Err(Error::Worker(e.to_string()));
-            }
-        }
-        let (receipt, fresh) = self.shared.access(|db| db.dispatch(&command))?;
-        if fresh {
-            self.shared.changed.send_replace(());
-            if let Some(run) = receipt.run_id.clone() {
-                let shared = self.shared.clone();
-                let codex = self.codex.clone();
-                workers.spawn_on(
-                    async move { shared.execute(codex, command.thread_id, run).await },
-                    &self.handle,
-                );
-            }
-        }
-        Ok(receipt)
+        self.shared.schedule(|db| {
+            let (receipt, fresh) = db.dispatch(&command)?;
+            let job = receipt
+                .run_id
+                .clone()
+                .filter(|_| fresh)
+                .map(|run| (command.thread_id, run));
+            Ok((receipt, job))
+        })
     }
 
     pub fn launch(
@@ -162,8 +441,88 @@ impl Huggler {
             action: Action::Send { text },
         })
     }
+    /// Answer one live provider request on its owning thread and run.
+    pub fn respond_to_permission(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        id: &RequestId,
+        option: String,
+    ) -> Result<()> {
+        let decisions = self.shared.decisions.lock().unwrap();
+        let tx = decisions
+            .get(run)
+            .filter(|t| !t.is_closed())
+            .ok_or_else(|| Error::NotFound("live permission responder".into()))?;
+        self.shared
+            .access(|db| db.decide(thread, run, id, &option))?;
+        self.shared.changed.send_replace(());
+        tx.send((id.clone(), option))
+            .map_err(|_| Error::NotFound("live permission responder".into()))
+    }
+    /// Read the original delivery receipt, including after the sender settles.
+    pub fn peer_receipt(&self, sender: &ThreadId, key: &str) -> Result<Option<PeerReceipt>> {
+        self.shared.access(|db| db.peer_receipt(sender, key))
+    }
+
+    /// Interrupt a live native child in its owning run. Supply the exact turn for
+    /// Codex and `None` for ACP session cancellation. See [`NativeChild::can_interrupt`].
+    /// Observe the child for its outcome after the adapter accepts the request (Codex)
+    /// or the notification is written (ACP).
+    pub async fn interrupt_native_child<'a>(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        child: &NativeThreadId,
+        turn: impl Into<Option<&'a NativeTurnId>>,
+    ) -> Result<()> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.shared
+            .controls
+            .lock()
+            .unwrap()
+            .get(&(thread.clone(), run.clone()))
+            .ok_or_else(|| Error::NotFound("live native child session".into()))?
+            .send(Control::Interrupt(ChildInterrupt {
+                thread: child.clone(),
+                turn: turn.into().cloned(),
+                reply,
+            }))
+            .map_err(|_| Error::Closed)?;
+        response.await.map_err(|_| Error::Closed)?
+    }
+
+    /// Withdraw a live run's ability to call agent tools.
+    pub fn revoke_agent_tools(&self, thread: &ThreadId, run: &RunId) -> Result<bool> {
+        let revoked = self.shared.access(|db| db.revoke(thread, run))?;
+        if revoked {
+            self.shared.changed.send_replace(());
+        }
+        Ok(revoked)
+    }
+
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {
-        self.shared.access(|db| db.threads())
+        self.shared.access(|db| db.threads_after(0))
+    }
+
+    /// Wait for conversations created after the last thread seen in creation order.
+    /// Pass `None` for an empty list. An unknown thread ID returns `Error::NotFound`.
+    pub async fn wait_for_threads_after(
+        &self,
+        last: Option<&ThreadId>,
+    ) -> Result<Vec<ThreadSummary>> {
+        let mut changed = self.shared.changed.subscribe();
+        let position = match last {
+            Some(id) => self.shared.access(|db| db.thread_position(id))?,
+            None => 0,
+        };
+        loop {
+            let threads = self.shared.access(|db| db.threads_after(position))?;
+            if !threads.is_empty() {
+                return Ok(threads);
+            }
+            changed.changed().await.map_err(|_| Error::Closed)?;
+        }
     }
 
     pub fn read(&self, id: &ThreadId) -> Result<Thread> {
@@ -202,15 +561,21 @@ impl Huggler {
     }
 
     fn start_close(&self) {
-        let mut gate = self.workers.lock().unwrap();
+        let mut gate = self.shared.workers.lock().unwrap();
         let Some(mut workers) = gate.take() else {
             return;
         };
-        self.shared.stop.send_replace(true);
+        {
+            let _db = self.shared.db.lock().unwrap();
+            self.shared.stop.send_replace(true);
+            for stop in self.shared.run_stops.lock().unwrap().values() {
+                stop.send_replace(true);
+            }
+        }
         self.shared.changed.send_replace(());
         let shared = self.shared.clone();
         let closed = self.closed.clone();
-        self.handle.spawn(async move {
+        self.shared.handle.spawn(async move {
             while let Some(result) = workers.join_next().await {
                 if let Err(e) = result {
                     *shared.fault.lock().unwrap() = Some(e.to_string());

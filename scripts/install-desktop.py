@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Build and install the embedded Tauri host as an ad-hoc signed macOS .app."""
+"""Build and install the native GPUI host as an ad-hoc signed macOS .app."""
 import argparse
 import json
-import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -12,26 +11,28 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def install(destination, *, identifier="dev.huggler.stage2", ui=None):
+def install(destination, *, identifier="dev.huggler.stage2", qualification=False):
     if sys.platform != "darwin":
         raise SystemExit("This installer targets macOS.")
     if destination.exists():
         raise SystemExit(f"Select an unused install location: {destination}")
     target = ROOT / "target" / "desktop"
-    env = os.environ.copy()
-    config = {"identifier": identifier}
-    if ui:
-        config["build"] = {"frontendDist": str(ui)}
-    env["TAURI_CONFIG"] = json.dumps(config)
-    subprocess.run(["cargo", "build", "--locked", "--release", "--manifest-path",
-                    str(ROOT / "desktop/Cargo.toml"), "--target-dir", str(target)], env=env, check=True)
+    manifest = ROOT / "desktop/Cargo.toml"
+    metadata = json.loads(subprocess.check_output([
+        "cargo", "metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", manifest
+    ]))
+    args = ["cargo", "build", "--locked", "--release", "--manifest-path", manifest, "--target-dir", target]
+    if qualification:
+        args.extend(["--features", "qualification"])
+    subprocess.run(args, check=True)
     contents = destination / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     shutil.copy2(target / "release/huggler-desktop", contents / "MacOS/huggler-desktop")
     info = {
         "CFBundleExecutable": "huggler-desktop", "CFBundleIdentifier": identifier,
         "CFBundleName": "Huggler", "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "1",
+        "CFBundleShortVersionString": metadata["packages"][0]["version"],
+        "CFBundleVersion": "1",
         "NSHighResolutionCapable": True, "LSMinimumSystemVersion": "11.0",
     }
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
