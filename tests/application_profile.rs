@@ -213,12 +213,26 @@ async fn approved_hosts_resume_one_remote_delegation_and_revoke_access() -> Resu
         history.messages[2].origin.as_ref().unwrap().thread_id,
         child.thread
     );
+    #[cfg(feature = "application")]
+    {
+        local.delete_thread(&parent)?;
+        host.delete_thread(&child.thread)?;
+        let Reply::Accepted { address: prior, .. } =
+            operator.request(retry("check result")).await?
+        else {
+            panic!("deleted child must retain its original receipt");
+        };
+        assert_eq!(prior, child);
+        assert_eq!(host.threads()?.len(), 2);
+    }
     assert!(host.revoke_link(&replacement.id)?);
     assert!(matches!(
         operator.request(write).await,
         Err(Error::Forbidden)
     ));
     assert_eq!(host.read(&thread)?.cursor, remote.cursor);
+    #[cfg(feature = "application")]
+    host.delete_thread(&thread)?;
     assert!(host.read(&sibling)?.runs.is_empty());
     server.abort();
     local.close().await?;
@@ -412,6 +426,13 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
     assert_eq!(fire()?.as_ref(), Some(&child));
     completed(&rt, &child.thread, &child.run).await;
     assert_eq!(rt.schedule_history(&hook)?, std::slice::from_ref(&child));
+    let second_body = br#"{"id":"second","event":"opened"}"#;
+    let replay_second = || rt.deliver_webhook(&hook, key, &signed(key, second_body), second_body);
+    let second = replay_second()?.unwrap();
+    completed(&rt, &second.thread, &second.run).await;
+    rt.delete_thread(&second.thread)?;
+    assert_eq!(replay_second()?.as_ref(), Some(&second));
+    assert_eq!(rt.threads()?.len(), 2);
     rt.delete_thread(&thread)?;
     assert!(rt.schedule_history(&hook)?.is_empty());
     assert!(matches!(fire(), Err(Error::Forbidden)));
