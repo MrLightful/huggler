@@ -3,12 +3,12 @@ use gpui_component::{
     ActiveTheme, Disableable, Selectable,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     v_flex,
 };
 use huggler::{
-    Action, Command, CommandId, Huggler, PermissionRequest, Provider, Role, Thread, ThreadId,
-    ThreadSummary,
+    Action, Command, CommandId, Huggler, PermissionRequest, ProviderInstanceId, Role, Thread,
+    ThreadId, ThreadSummary,
 };
 use std::{fs, path::PathBuf, sync::Arc};
 use uuid::Uuid;
@@ -24,8 +24,14 @@ pub struct Desktop {
     checkout: Entity<InputState>,
     name: Entity<InputState>,
     prompt: Entity<InputState>,
-    provider: Provider,
+    instance: ProviderInstanceId,
+    provider_check: Option<ProviderCheck>,
     error: Option<String>,
+}
+
+struct ProviderCheck {
+    id: Uuid,
+    result: Option<String>,
 }
 
 // Only the installed qualification build needs names for the painted controls.
@@ -47,10 +53,11 @@ fn field(label: &'static str, state: &Entity<InputState>) -> Div {
         .child(control!(label, Input::new(state)))
 }
 
-fn provider_name(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Codex => "Codex",
-        Provider::ClaudeAgent => "Claude Agent",
+fn provider_name(instance: &str) -> &str {
+    match instance {
+        "codex" => "Codex",
+        "claudeAgent" => "Claude Agent",
+        id => id,
     }
 }
 
@@ -72,9 +79,17 @@ impl Desktop {
             checkout: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/project")),
             name: cx.new(|cx| InputState::new(window, cx)),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
-            provider: Provider::Codex,
+            instance: "codex".into(),
+            provider_check: None,
             error: None,
         };
+        cx.subscribe(&view.checkout, |view, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                view.provider_check = None;
+                cx.notify();
+            }
+        })
+        .detach();
         let restored = view.restore(window, cx);
         if restored.is_ok() {
             let runtime = view.runtime.clone();
@@ -204,9 +219,9 @@ impl Desktop {
         self.runtime.dispatch(Command {
             id: CommandId(Uuid::new_v4().to_string()),
             thread_id: id.clone(),
-            action: Action::LaunchProvider {
+            action: Action::LaunchInstance {
                 project: project.id,
-                provider: self.provider,
+                instance: self.instance.clone(),
                 name,
                 model: None,
             },
@@ -232,7 +247,42 @@ impl Desktop {
         self.refresh()
     }
 
+    fn check_provider(&mut self, cx: &mut Context<Self>) {
+        let runtime = self.runtime.clone();
+        let instance = self.instance.clone();
+        let checkout = self.checkout.read(cx).value().to_string();
+        let id = Uuid::new_v4();
+        self.provider_check = Some(ProviderCheck { id, result: None });
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let status = match runtime.probe_provider(instance.as_str(), &checkout).await {
+                Ok(report) => format!(
+                    "{} · {} · {} · {} models",
+                    report.transport,
+                    report.version.as_deref().unwrap_or("version unknown"),
+                    if report.authenticated == Some(true) {
+                        "signed in"
+                    } else {
+                        "login unverified"
+                    },
+                    report.models.len(),
+                ),
+                Err(error) => error.to_string(),
+            };
+            let _ = view.update(cx, |view, cx| {
+                if let Some(check) = &mut view.provider_check
+                    && check.id == id
+                {
+                    check.result = Some(status);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn launch_form(&self, cx: &Context<Self>) -> Div {
+        let check = self.provider_check.as_ref();
         v_flex()
             .p_6()
             .gap_4()
@@ -242,21 +292,48 @@ impl Desktop {
                 v_flex()
                     .gap_1()
                     .child(div().text_sm().child("Provider"))
-                    .child(h_flex().gap_2().children(
-                        [Provider::Codex, Provider::ClaudeAgent].map(|provider| {
-                            let label = provider_name(provider);
+                    .child(h_flex().flex_wrap().gap_2().children(
+                        self.runtime.provider_instances().map(|instance| {
+                            let id = instance.id.clone();
+                            let label = SharedString::from(provider_name(id.as_str()).to_owned());
                             control!(
-                                label,
-                                Button::new(label)
+                                label.clone(),
+                                Button::new(SharedString::from(format!("provider-{id}")))
                                     .label(label)
-                                    .selected(provider == self.provider)
+                                    .selected(id == self.instance)
                                     .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.provider = provider;
+                                        view.provider_check = None;
+                                        view.instance.clone_from(&id);
                                         cx.notify();
                                     })),
                             )
                         }),
                     )),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(control!(
+                        "Check provider",
+                        Button::new("check-provider")
+                            .label("Check provider")
+                            .disabled(
+                                self.checkout.read(cx).value().trim().is_empty()
+                                    || check.is_some_and(|c| c.result.is_none())
+                            )
+                            .on_click(cx.listener(|view, _, _, cx| view.check_provider(cx)))
+                    ))
+                    .when_some(check, |row, check| {
+                        let status = check
+                            .result
+                            .as_deref()
+                            .unwrap_or("Checking provider…")
+                            .to_owned();
+                        row.child(control!(
+                            format!("provider-status/{status}"),
+                            div().text_sm().child(status)
+                        ))
+                    }),
             )
             .child(field("Conversation name", &self.name))
             .child(control!(
@@ -334,7 +411,7 @@ impl Desktop {
     }
 
     fn conversation(&self, thread: &Thread, cx: &Context<Self>) -> Div {
-        let provider = provider_name(thread.provider);
+        let provider = provider_name(thread.provider_instance.as_str()).to_owned();
         let last_run = thread.runs.last();
         let status = last_run.map_or_else(|| "Ready".to_owned(), |run| format!("{:?}", run.status));
         v_flex()
@@ -350,7 +427,7 @@ impl Desktop {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(provider),
+                            .child(provider.clone()),
                     ),
             )
             .child(
@@ -369,7 +446,7 @@ impl Desktop {
                                 .find(|t| t.id == sender.thread_id)
                                 .map_or(sender.thread_id.0.as_str(), |t| t.name.as_str()),
                             (None, Role::User) => "You",
-                            (None, Role::Assistant) => provider,
+                            (None, Role::Assistant) => provider.as_str(),
                         };
                         v_flex()
                             .py_3()

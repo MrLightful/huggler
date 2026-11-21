@@ -33,6 +33,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/010.sql"),
     include_str!("../migrations/011.sql"),
     include_str!("../migrations/012.sql"),
+    include_str!("../migrations/013.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
@@ -172,7 +173,18 @@ pub(crate) struct Database {
 }
 
 impl Database {
+    #[cfg(test)]
     pub fn open(dir: &Path) -> Result<Self> {
+        Self::open_with_registry(
+            dir,
+            &crate::providers::registry::registry(&Default::default(), &Default::default(), &[])?,
+        )
+    }
+
+    pub fn open_with_registry(
+        dir: &Path,
+        registry: &crate::providers::registry::Registry,
+    ) -> Result<Self> {
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -193,7 +205,7 @@ impl Database {
         let lock = StateLock(lock);
         let mut db = Connection::open(dir.join("huggler.sqlite3"))?;
         db.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA temp_store=MEMORY;",
+            "PRAGMA foreign_keys=OFF; PRAGMA journal_mode=WAL; PRAGMA temp_store=MEMORY;",
         )?;
         let tx = db.transaction()?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -202,6 +214,26 @@ impl Database {
         }
         for migration in &MIGRATIONS[version as usize..] {
             tx.execute_batch(migration)?;
+        }
+        if version < MIGRATIONS.len() as i64 && tx.prepare("PRAGMA foreign_key_check")?.exists([])?
+        {
+            return Err(Error::Invalid(
+                "invalid foreign key after state migration".into(),
+            ));
+        }
+        tx.commit()?;
+        db.execute_batch("PRAGMA foreign_keys=ON")?;
+        let tx = db.transaction()?;
+        tx.execute_batch("CREATE TEMP TABLE configured_provider(id TEXT PRIMARY KEY, driver TEXT NOT NULL, scope TEXT NOT NULL)")?;
+        for instance in registry.values() {
+            tx.execute(
+                "INSERT INTO configured_provider VALUES(?,?,?)",
+                params![
+                    instance.id.as_str(),
+                    instance.driver.key(),
+                    instance.continuation_key()?
+                ],
+            )?;
         }
         tx.execute_batch(
             "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
@@ -293,7 +325,9 @@ impl Database {
         if selection.is_none()
             && !matches!(
                 cmd.action,
-                Action::Launch { .. } | Action::LaunchProvider { .. }
+                Action::Launch { .. }
+                    | Action::LaunchProvider { .. }
+                    | Action::LaunchInstance { .. }
             )
         {
             return Err(Error::NotFound(thread.to_string()));
@@ -304,15 +338,22 @@ impl Database {
                 name,
                 model,
             }
+            | Action::LaunchInstance {
+                project,
+                name,
+                model,
+                ..
+            }
             | Action::LaunchProvider {
                 project,
                 name,
                 model,
                 ..
             } => {
-                let provider = match cmd.action {
-                    Action::LaunchProvider { provider, .. } => provider,
-                    _ => Provider::Codex,
+                let instance = match &cmd.action {
+                    Action::LaunchInstance { instance, .. } => instance.as_str(),
+                    Action::LaunchProvider { provider, .. } => provider.key(),
+                    _ => Provider::Codex.key(),
                 };
                 if name.trim().is_empty() {
                     return Err(Error::Invalid("empty thread name".into()));
@@ -320,8 +361,9 @@ impl Database {
                 if selection.is_some() {
                     return Err(Error::Invalid("thread already exists".into()));
                 }
-                let n = tx.execute("INSERT INTO thread(id,name,model,provider,project) SELECT ?,?,?,?,id FROM project WHERE id=?",
-                    params![thread.0,name,model,provider.key(),project.0])?;
+                let driver = creation::instance_driver(&tx, instance)?;
+                let n = tx.execute("INSERT INTO thread(id,name,model,provider,provider_instance,project) SELECT ?,?,?,?,?,id FROM project WHERE id=?",
+                    params![thread.0,name,model,driver,instance,project.0])?;
                 if n == 0 {
                     return Err(Error::NotFound(project.to_string()));
                 }
@@ -397,7 +439,7 @@ impl Database {
     pub fn claim(&mut self, id: &RunId) -> Result<Turn> {
         let tx = self.db.transaction()?;
         let turn = tx.query_row(
-            "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode FROM run r
+            "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode,t.provider_instance FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
              JOIN message m ON m.run_id=r.id WHERE r.id=? AND m.role='user'",
@@ -405,6 +447,7 @@ impl Database {
             |r| {
                 Ok(Turn {
                     plan_mode: r.get(7)?,
+                    instance: ProviderInstanceId(r.get(8)?),
                     provider: Provider::from_key(&r.get::<_, String>(5)?)?,
                     agent_tools: None,
                     cwd: r.get::<_, String>(0)?.into(),
@@ -421,6 +464,31 @@ impl Database {
                 })
             },
         )?;
+        let scope: String = tx
+            .query_row(
+                "SELECT scope FROM configured_provider WHERE id=? AND driver=?",
+                params![turn.instance.as_str(), turn.provider.key()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "restore the configured {} instance {}",
+                    turn.provider.key(),
+                    turn.instance
+                ))
+            })?;
+        if tx.execute(
+            "UPDATE thread SET continuation_key=?1 WHERE id=(SELECT thread_id FROM run WHERE id=?2)
+            AND (continuation_key IS NULL OR native_thread IS NULL OR continuation_key=?1)",
+            params![scope, id.0],
+        )? != 1
+        {
+            return Err(Error::Invalid(format!(
+                "restore the original configuration of provider instance {} to resume this session",
+                turn.instance
+            )));
+        }
         if tx.execute(
             "UPDATE turn_effect SET state='claimed' WHERE run_id=? AND state='pending'",
             [&id.0],
@@ -432,9 +500,38 @@ impl Database {
         Ok(turn)
     }
 
+    pub fn usage(&self) -> Result<Vec<crate::ProviderUsage>> {
+        let mut statement = self.db.prepare(
+            "SELECT t.provider_instance, count(*), sum(u.input_tokens), sum(u.output_tokens)
+             FROM provider_usage u JOIN run r ON r.id=u.run_id JOIN thread t ON t.id=r.thread_id
+             GROUP BY t.provider_instance ORDER BY t.provider_instance",
+        )?;
+        Ok(statement
+            .query_map([], |r| {
+                Ok(crate::ProviderUsage {
+                    instance: ProviderInstanceId(r.get(0)?),
+                    reported_runs: r.get(1)?,
+                    input_tokens: r.get(2)?,
+                    output_tokens: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::Output(text) => {
+                event(&tx, thread, Change::OutputDelta { run_id: id.clone(), text })?;
+            }
+            Update::Usage { input, output } => {
+                tx.execute(
+                    "INSERT INTO provider_usage(run_id,input_tokens,output_tokens) VALUES(?,?,?)
+                     ON CONFLICT(run_id) DO UPDATE SET input_tokens=excluded.input_tokens,
+                                                       output_tokens=excluded.output_tokens",
+                    params![id.0, input, output],
+                )?;
+            }
             Update::PermissionWithdrawn(request) => {
                 if tx.execute("UPDATE permission SET expired=1 WHERE id=? AND run_id=? AND expired=0 AND decision IS NULL",
                     params![request.0, id.0])? != 0 {
@@ -789,10 +886,11 @@ impl Database {
         let mut thread = self
             .db
             .query_row(
-                "SELECT project,name,model,native_thread,provider,worktree_path FROM thread WHERE id=?",
+                "SELECT project,name,model,native_thread,provider,worktree_path,provider_instance FROM thread WHERE id=?",
                 [&id.0],
                 |r| {
                     Ok(Thread {
+                        provider_instance:ProviderInstanceId(r.get(6)?),
                         questions: vec![],
                         native_children: vec![],
                         tasks: vec![],
@@ -919,6 +1017,86 @@ mod tests {
         assert!(
             matches!(&db.events(&thread,0)?[0].change, Change::Message {message} if message == &snapshot.messages[0])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn v12_native_threads_keep_history_and_bind_to_their_original_driver() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let conn = Connection::open(dir.path().join("huggler.sqlite3"))?;
+        for migration in &MIGRATIONS[..12] {
+            conn.execute_batch(migration)?;
+        }
+        conn.execute_batch(r#"INSERT INTO project VALUES('p','/old');
+            INSERT INTO thread(rowid,id,project,name,native_thread,provider) VALUES
+                (3,'a','p','first','native-a','codex'),(9,'b','p','second','native-b','claudeAgent');
+            INSERT INTO run(id,thread_id,ordinal,status) VALUES('r','a',1,'completed');
+            INSERT INTO message(id,run_id,role,text) VALUES('m','r','user','original');
+            INSERT INTO event(sequence,thread_id,change) VALUES(42,'a','{"type":"message","message":{"id":"m","run_id":"r","role":"user","text":"original"}}');
+            INSERT INTO receipt VALUES('send','{"type":"send","text":"original"}',
+                '{"command_id":"send","thread_id":"a","message_id":"m","run_id":"r","event_sequences":[42]}');"#)?;
+        drop(conn);
+
+        let mut db = Database::open(dir.path())?;
+        for (id, rowid, native, driver) in [
+            ("a", 3, "native-a", Provider::Codex),
+            ("b", 9, "native-b", Provider::ClaudeAgent),
+        ] {
+            let thread = ThreadId(id.into());
+            assert_eq!(db.thread_position(&thread)?, rowid);
+            let snapshot = db.read(&thread)?;
+            assert_eq!(snapshot.native_thread, Some(NativeThreadId(native.into())));
+            assert_eq!(snapshot.provider, driver);
+            assert_eq!(snapshot.provider_instance.as_str(), driver.key());
+            let mut wire = serde_json::to_value(&snapshot)?;
+            wire.as_object_mut().unwrap().remove("provider_instance");
+            assert_eq!(
+                serde_json::from_value::<Thread>(wire.clone())?
+                    .provider_instance
+                    .as_str(),
+                driver.key()
+            );
+            wire["provider_instance"] = "another-instance".into();
+            assert_eq!(
+                serde_json::from_value::<Thread>(wire)?
+                    .provider_instance
+                    .as_str(),
+                "another-instance"
+            );
+        }
+        let thread = ThreadId("a".into());
+        let snapshot = db.read(&thread)?;
+        assert_eq!(snapshot.messages[0].text, "original");
+        assert_eq!(snapshot.runs[0].status, RunStatus::Completed);
+        assert!(matches!(&db.events(&thread, 41)?[..],
+            [Event { sequence: 42, change: Change::Message { message }, .. }] if message == &snapshot.messages[0]));
+        let send = |id: &str, text: &str| Command {
+            id: CommandId(id.into()),
+            thread_id: thread.clone(),
+            action: Action::Send { text: text.into() },
+        };
+        let (prior, fresh) = db.dispatch(&send("send", "original"))?;
+        assert!(!fresh);
+        assert_eq!(prior.run_id.as_ref(), Some(&snapshot.runs[0].id));
+        assert_eq!(prior.message_id.as_ref(), Some(&snapshot.messages[0].id));
+        assert_eq!(prior.event_sequences, [42]);
+        let (next, _) = db.dispatch(&send("continue", "follow up"))?;
+        let turn = db.claim(next.run_id.as_ref().unwrap())?;
+        assert_eq!(turn.resume, snapshot.native_thread);
+        assert!(
+            db.db
+                .prepare(
+                    "SELECT 1 FROM thread t JOIN configured_provider c
+            ON t.provider_instance=c.id AND t.continuation_key=c.scope WHERE t.id='a'"
+                )?
+                .exists([])?
+        );
+        assert!(
+            db.db
+                .prepare("SELECT 1 FROM thread WHERE id='b' AND continuation_key IS NULL")?
+                .exists([])?
+        );
+        assert!(!db.db.prepare("PRAGMA foreign_key_check")?.exists([])?);
         Ok(())
     }
 

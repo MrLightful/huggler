@@ -56,6 +56,7 @@ pub fn requested_huggler_tool(request: &PermissionRequest, provider: Provider) -
                 .strip_prefix("mcp__huggler__")
                 .unwrap()
         }
+        other => panic!("unexpected reviewer {}", other.key()),
     }
 }
 

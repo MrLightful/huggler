@@ -11,7 +11,7 @@ gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 gpui-component = "0.5.1"
 huggler = { path = ".." }
 serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
 
@@ -20,4 +20,4 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppl
 objc2-foundation = { version = "0.3", default-features = false, optional = true }
 
 [features]
-qualification = ["dep:serde", "dep:serde_json", "dep:objc2-app-kit", "dep:objc2-foundation"]
+qualification = ["dep:serde", "dep:objc2-app-kit", "dep:objc2-foundation"]

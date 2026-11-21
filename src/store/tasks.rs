@@ -129,7 +129,10 @@ impl Database {
         }
         let intent = serde_json::to_string(&input)?;
         let id = TaskId(new_id());
-        let provider = input.target.map(|t| t.provider_instance_id);
+        let provider = input
+            .target
+            .as_ref()
+            .map(|t| t.provider_instance_id.as_str());
         let name = input.title.as_deref().unwrap_or("Delegated task");
         let child = creation::create_agent_thread(&tx, &parent, name, provider)?;
         if matches!(input.isolation, Isolation::Worktree) {

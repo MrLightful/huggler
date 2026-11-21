@@ -1,7 +1,14 @@
 pub mod claude_agent;
 pub mod codex;
+pub(crate) mod muse;
+pub(crate) mod opencode;
+pub(crate) mod pi;
+pub mod probe;
+pub mod registry;
 mod rpc;
-use crate::{NativeThreadId, NativeTurnId, Provider, RequestId, Result, UserAnswers};
+use crate::{
+    NativeThreadId, NativeTurnId, Provider, ProviderInstanceId, RequestId, Result, UserAnswers,
+};
 use std::path::PathBuf;
 use tokio::sync::oneshot;
 
@@ -29,6 +36,7 @@ pub(crate) struct Turn {
     pub plan_mode: bool,
     pub agent_tools: Option<AgentTools>,
     pub provider: Provider,
+    pub instance: ProviderInstanceId,
     pub cwd: PathBuf,
     pub name: String,
     pub text: String,
@@ -37,6 +45,11 @@ pub(crate) struct Turn {
 }
 
 pub(crate) enum Update {
+    Output(String),
+    Usage {
+        input: i64,
+        output: i64,
+    },
     PermissionWithdrawn(RequestId),
     Question(crate::UserInputRequest),
     QuestionClosed {
@@ -55,4 +68,12 @@ pub(crate) struct Permissions<F> {
     pub run: crate::RunId,
     pub publish: F,
     pub decisions: tokio::sync::mpsc::UnboundedReceiver<(crate::RequestId, String)>,
+}
+
+/// Latest reported input and output token totals for this run.
+pub(super) fn usage(value: &serde_json::Value) -> Option<Update> {
+    Some(Update::Usage {
+        input: value["inputTokens"].as_u64()?.try_into().ok()?,
+        output: value["outputTokens"].as_u64()?.try_into().ok()?,
+    })
 }
