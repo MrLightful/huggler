@@ -275,11 +275,10 @@ impl RepositoryClient {
             ),
         };
         let response = if self.binding.driver == Linear {
-            let body = json!({
-                "query": "query Issues($team: String!) { issues(first: 50, filter: {team: {key: {eq: $team}}}) { nodes { identifier title state { name } } } }",
-                "variables": {"team": repo}
-            });
-            self.request(Method::POST, &path, Some(body)).await?
+            self.linear_query(
+                "query Issues($team: String!) { issues(first: 50, filter: {team: {key: {eq: $team}}}) { nodes { identifier title state { name } } } }",
+                json!({"team": repo}),
+            ).await?
         } else {
             self.request(Method::GET, &path, None).await?
         };
@@ -318,7 +317,9 @@ impl RepositoryClient {
 
     /// Read GitHub check runs for a commit in this repository.
     pub async fn checks(&self, sha: &str) -> Result<Vec<Value>> {
-        self.github()?;
+        if self.binding.driver != Driver::GitHub {
+            return Err(Error::Unsupported("check runs require GitHub".into()));
+        }
         if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::Invalid("expected full commit SHA".into()));
         }
@@ -331,26 +332,98 @@ impl RepositoryClient {
             .cloned()
             .ok_or_else(malformed)
     }
-    /// Post one GitHub conversation comment. A transport error can leave delivery uncertain.
+    /// Post a conversation comment to a GitHub, GitLab, Bitbucket or Forgejo pull request.
+    /// A transport error can leave delivery uncertain.
     pub async fn comment(&self, number: u64, body: &str) -> Result<u64> {
-        self.github()?;
+        use Driver::*;
+        let repo = &self.binding.repository;
+        let (path, payload) = match self.binding.driver {
+            GitHub => (
+                format!("/repos/{repo}/issues/{number}/comments"),
+                json!({"body":body}),
+            ),
+            Forgejo => (
+                format!("/api/v1/repos/{repo}/issues/{number}/comments"),
+                json!({"body":body}),
+            ),
+            GitLab => (
+                format!(
+                    "/api/v4/projects/{}/merge_requests/{number}/notes",
+                    repo.replace('/', "%2F")
+                ),
+                json!({"body":body}),
+            ),
+            Bitbucket => (
+                format!("/2.0/repositories/{repo}/pullrequests/{number}/comments"),
+                json!({"content":{"raw":body}}),
+            ),
+            _ => {
+                return Err(Error::Unsupported(
+                    "pull request comments unavailable for this service".into(),
+                ));
+            }
+        };
         if number == 0 || body.trim().is_empty() {
             return Err(Error::Invalid("expected an item number and comment".into()));
         }
-        let path = format!(
-            "/repos/{}/issues/{number}/comments",
-            self.binding.repository
-        );
-        self.request(Method::POST, &path, Some(json!({"body":body})))
-            .await?["id"]
+        self.request(Method::POST, &path, Some(payload)).await?["id"]
             .as_u64()
             .ok_or_else(malformed)
     }
-    fn github(&self) -> Result<()> {
-        if self.binding.driver == Driver::GitHub {
-            Ok(())
-        } else {
-            Err(Error::Unsupported("operation requires GitHub".into()))
+    async fn linear_query(&self, query: &str, variables: Value) -> Result<Value> {
+        let response = self
+            .request(
+                Method::POST,
+                "/graphql",
+                Some(json!({ "query":query, "variables":variables })),
+            )
+            .await?;
+        if response.get("errors").is_some() {
+            return Err(Error::Integration("Linear rejected the request".into()));
+        }
+        Ok(response)
+    }
+
+    /// Resolve a Linear issue, check its current team, and post one comment.
+    /// A transport error during the mutation can leave delivery uncertain.
+    pub async fn comment_on_issue(&self, identifier: &str, body: &str) -> Result<()> {
+        if self.binding.driver != Driver::Linear {
+            return Err(Error::Unsupported("issue comments require Linear".into()));
+        }
+        if identifier.trim().is_empty() || body.trim().is_empty() {
+            return Err(Error::Invalid(
+                "expected an issue identifier and comment".into(),
+            ));
+        }
+        let response = self
+            .linear_query(
+                "query CommentTarget($id: String!) { issue(id: $id) { id team { key } } }",
+                json!({"id":identifier}),
+            )
+            .await?;
+        let issue = response.pointer("/data/issue").ok_or_else(malformed)?;
+        if issue.is_null() {
+            return Err(Error::NotFound(identifier.into()));
+        }
+        let team = issue
+            .pointer("/team/key")
+            .and_then(Value::as_str)
+            .ok_or_else(malformed)?;
+        if !team.eq_ignore_ascii_case(&self.binding.repository) {
+            return Err(Error::Forbidden);
+        }
+        let id = issue["id"].as_str().ok_or_else(malformed)?;
+        let response = self.linear_query(
+            "mutation CommentOnIssue($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
+            json!({"input":{"issueId":id,"body":body}}),
+        ).await?;
+        match response
+            .pointer("/data/commentCreate/success")
+            .and_then(Value::as_bool)
+        {
+            Some(true) => Ok(()),
+            Some(false) => Err(Error::Integration("Linear declined the comment".into())),
+            None => Err(malformed()),
         }
     }
 }

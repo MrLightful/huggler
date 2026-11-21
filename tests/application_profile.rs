@@ -929,37 +929,43 @@ async fn project_services_and_ordered_watch_delivery() -> Result<()> {
         http::{HeaderMap, Method, StatusCode, Uri},
     };
     use repository::Driver::*;
-    use serde_json::{Value, json};
+    use serde_json::Value;
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("fixtures/repository-services.json"))?;
-    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let count = calls.clone();
+    let pending = std::sync::Arc::new(std::sync::Mutex::new(cases));
+    let requests = pending.clone();
     let router = Router::new().fallback(
         move |uri: Uri, method: Method, headers: HeaderMap, body: Bytes| {
-            let case = cases.iter().find(|c| c["path"] == uri.to_string()).cloned();
-            let count = count.clone();
+            let requests = requests.clone();
             async move {
                 if headers["authorization"] != "Bearer recorded" {
                     return (StatusCode::UNAUTHORIZED, Json(Value::Null));
                 }
-                let case = case.expect("unrecorded request");
-                assert_eq!(method.as_str(), case["method"].as_str().unwrap_or("GET"));
-                if uri.path() == "/graphql" {
-                    let gql: Value = serde_json::from_slice(&body).unwrap();
-                    assert_eq!(gql["variables"], json!({"team":"SDK"}));
-                    assert!(
-                        gql["query"]
-                            .as_str()
-                            .unwrap()
-                            .contains("team: {key: {eq: $team}}")
-                    );
-                } else if method == Method::POST {
-                    assert_eq!(
-                        serde_json::from_slice::<Value>(&body).unwrap(),
-                        json!({"body":"Approved by fixture"})
-                    );
+                let payload: Value = if body.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap()
+                };
+                let query = payload["query"].as_str().unwrap_or_default();
+                let path = uri.to_string();
+                let mut remaining = requests.lock().unwrap();
+                let index = remaining
+                    .iter()
+                    .position(|case| {
+                        case["path"] == path
+                            && method.as_str() == case["method"].as_str().unwrap_or("GET")
+                            && case["operation"].as_str().is_none_or(|operation| {
+                                query.starts_with(operation)
+                                    && payload["variables"] == case["variables"]
+                            })
+                    })
+                    .expect("unexpected or repeated fixture request");
+                let case = remaining.swap_remove(index);
+                if let Some(fields) = case["fields"].as_str() {
+                    assert!(query.contains(fields));
+                } else {
+                    assert_eq!(payload, case["body"]);
                 }
-                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 (StatusCode::OK, Json(case["response"].clone()))
             }
         },
@@ -1011,6 +1017,26 @@ async fn project_services_and_ordered_watch_delivery() -> Result<()> {
             rt.link_repository_item(&outsider, &b.id, key),
             Err(Error::Forbidden)
         ));
+        if matches!(driver, GitHub | GitLab | Bitbucket | Forgejo) {
+            assert_eq!(client.comment(7, "Approved by fixture").await?, 809);
+        } else {
+            assert!(matches!(
+                client.comment(7, "denied").await,
+                Err(Error::Unsupported(_))
+            ));
+        }
+        if driver == Linear {
+            client.comment_on_issue(key, "Approved by fixture").await?;
+            assert!(matches!(
+                client.comment_on_issue("SDK-8", "moved issue").await,
+                Err(Error::Forbidden)
+            ));
+        } else {
+            assert!(matches!(
+                client.comment_on_issue(key, "denied").await,
+                Err(Error::Unsupported(_))
+            ));
+        }
         if driver == GitHub {
             assert!(matches!(
                 rt.repository_client(&other.id, &b.id, Some("Bearer recorded")),
@@ -1026,20 +1052,19 @@ async fn project_services_and_ordered_watch_delivery() -> Result<()> {
                 client.checks(&"a".repeat(40)).await?[0]["conclusion"],
                 "success"
             );
-            assert_eq!(client.comment(7, "Approved by fixture").await?, 809);
             let w = rt.watch_repository_item(&owner, &link)?;
             assert_eq!(rt.sync_repository_watch(&w, 1, "open")?, None);
             watch = Some(w);
             chosen_link = Some(link);
         } else {
             assert!(matches!(
-                client.comment(7, "denied").await,
+                client.checks(&"a".repeat(40)).await,
                 Err(Error::Unsupported(_))
             ));
             assert!(rt.unlink_repository_item(&owner, &link)?);
         }
     }
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 10);
+    assert!(pending.lock().unwrap().is_empty());
     rt.close().await?;
     let rt = Huggler::open(config).await?;
     let w = watch.unwrap();

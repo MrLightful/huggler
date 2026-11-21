@@ -6,7 +6,13 @@
   {"path":"/api/v1/repos/acme/sdk/pulls","response":[{"number":7,"title":"Review","state":"open"}]},
   {"path":"/api/repos/acme/sdk/pulls?limit=50&sort=newest&state=open","response":{"items":[{"number":7,"title":"Review","state":"open"}],"next":null}},
   {"path":"/v1/origin/repos/acme/sdk/pulls?state=open&pageSize=50&sortBy=updated","response":{"pullRequests":[{"number":"7","title":"Review","state":"open"}]}},
-  {"path":"/graphql","method":"POST","response":{"data":{"issues":{"nodes":[{"identifier":"SDK-7","title":"Review","state":{"name":"In Progress"}}]}}}},
+  {"path":"/graphql","method":"POST","response":{"data":{"issues":{"nodes":[{"identifier":"SDK-7","title":"Review","state":{"name":"In Progress"}}]}}},"operation":"query Issues(","variables":{"team":"SDK"},"fields":"team: {key: {eq: $team}}"},
   {"path":"/repos/acme/sdk/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs","response":{"check_runs":[{"name":"build","conclusion":"success"}]}},
-  {"path":"/repos/acme/sdk/issues/7/comments","method":"POST","response":{"id":809}}
+  {"path":"/repos/acme/sdk/issues/7/comments","method":"POST","response":{"id":809},"body":{"body":"Approved by fixture"}},
+  {"path":"/api/v4/projects/acme%2Fsdk/merge_requests/7/notes","method":"POST","body":{"body":"Approved by fixture"},"response":{"id":809}},
+  {"path":"/2.0/repositories/acme/sdk/pullrequests/7/comments","method":"POST","body":{"content":{"raw":"Approved by fixture"}},"response":{"id":809}},
+  {"path":"/api/v1/repos/acme/sdk/issues/7/comments","method":"POST","body":{"body":"Approved by fixture"},"response":{"id":809}},
+  {"path":"/graphql","method":"POST","operation":"query CommentTarget(","fields":"issue(id: $id) { id team { key } }","variables":{"id":"SDK-7"},"response":{"data":{"issue":{"id":"issue-SDK-7","team":{"key":"SDK"}}}}},
+  {"path":"/graphql","method":"POST","operation":"query CommentTarget(","fields":"issue(id: $id) { id team { key } }","variables":{"id":"SDK-8"},"response":{"data":{"issue":{"id":"issue-SDK-8","team":{"key":"OPS"}}}}},
+  {"path":"/graphql","method":"POST","operation":"mutation CommentOnIssue(","fields":"commentCreate(input: $input) { success }","variables":{"input":{"issueId":"issue-SDK-7","body":"Approved by fixture"}},"response":{"data":{"commentCreate":{"success":true}}}}
 ]
