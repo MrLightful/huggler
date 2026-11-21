@@ -187,6 +187,7 @@ impl crate::Huggler {
             }
             tx.execute("DELETE FROM automation WHERE owner=?", [&thread.0])?;
             tx.execute("DELETE FROM guest_share WHERE thread=?", [&thread.0])?;
+            tx.execute("DELETE FROM remote_grant WHERE thread=?", [&thread.0])?;
             for table in ["pending_upload","context_fork","imported_history","usage_recovery","event"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE thread_id=?"), [&thread.0])?;
             }

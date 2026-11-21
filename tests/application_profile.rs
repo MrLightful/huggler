@@ -139,6 +139,8 @@ async fn approved_hosts_resume_one_remote_delegation_and_revoke_access() -> Resu
     assert_eq!(host.address(&thread)?, address);
     let (endpoint, server) = serve(&host).await;
     let operator = Peer::loopback(endpoint, rw.bearer)?;
+    assert!(host.revoke_link(&rw.id)?);
+    // The sender already saved this receipt and can recover it without another write.
     assert_eq!(
         local
             .delegate_remote(
@@ -152,6 +154,47 @@ async fn approved_hosts_resume_one_remote_delegation_and_revoke_access() -> Resu
             .await?,
         child
     );
+    assert!(matches!(
+        operator.request(write.clone()).await,
+        Err(Error::Forbidden)
+    ));
+    let replacement = host.approve_link(&thread, &sender, Access::Operate)?;
+    let operator = Peer::loopback(endpoint, replacement.bearer)?;
+    // The receiver must also replay the receipt when the sender lost the response.
+    let retry = |task: &str| Request::Write {
+        target: address.clone(),
+        sender_run: run.clone(),
+        key: "review".into(),
+        action: Write::Delegate {
+            task: task.into(),
+            worktree: false,
+        },
+    };
+    let Reply::Accepted {
+        address: replay,
+        receipt,
+    } = operator.request(retry("check result")).await?
+    else {
+        panic!("expected the original receipt");
+    };
+    assert_eq!(replay, child);
+    assert_eq!(receipt.run_id, child_run);
+    assert!(operator.request(retry("different task")).await.is_err());
+    assert_eq!(host.threads()?.len(), 3);
+    let unrelated = Address {
+        thread: ThreadId("unrelated".into()),
+        ..sender.clone()
+    };
+    for grant in [
+        host.approve_link(&thread, &unrelated, Access::Operate)?,
+        host.approve_link(&thread, &sender, Access::Read)?,
+    ] {
+        let peer = Peer::loopback(endpoint, grant.bearer)?;
+        assert!(matches!(
+            peer.request(read(&child)).await,
+            Err(Error::Forbidden)
+        ));
+    }
     let wake = local
         .follow_remote(&operator, &parent, &run, "review")
         .await?
@@ -170,7 +213,7 @@ async fn approved_hosts_resume_one_remote_delegation_and_revoke_access() -> Resu
         history.messages[2].origin.as_ref().unwrap().thread_id,
         child.thread
     );
-    assert!(host.revoke_link(&rw.id)?);
+    assert!(host.revoke_link(&replacement.id)?);
     assert!(matches!(
         operator.request(write).await,
         Err(Error::Forbidden)

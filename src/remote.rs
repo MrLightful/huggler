@@ -182,7 +182,8 @@ impl Huggler {
         self.shared.access(|db| db.revoke_link(grant_id))
     }
 
-    /// Reissue the same request after a lost response. The peer binds the receipt to the sender run and intent.
+    /// Return the recorded child, or retry a missing receipt. An operating grant for the
+    /// same sender and target can recover the original receipt after bearer rotation.
     pub async fn delegate_remote(
         &self,
         peer: &Peer,
@@ -192,8 +193,12 @@ impl Huggler {
         key: &str,
         task: String,
     ) -> Result<Address> {
-        self.shared
-            .access(|db| db.reserve_remote_task(parent, run, key, &target, &task))?;
+        if let Some(child) = self
+            .shared
+            .access(|db| db.reserve_remote_task(parent, run, key, &target, &task))?
+        {
+            return Ok(child);
+        }
         let Reply::Accepted { address, receipt } = peer
             .request(Request::Write {
                 target: target.clone(),

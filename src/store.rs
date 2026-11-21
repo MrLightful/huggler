@@ -79,6 +79,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/029.sql"),
     include_str!("../migrations/030.sql"),
     include_str!("../migrations/031.sql"),
+    include_str!("../migrations/032.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";

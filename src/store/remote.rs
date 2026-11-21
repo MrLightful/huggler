@@ -44,7 +44,7 @@ impl Database {
         let id = new_id();
         let bearer = new_id();
         self.db.execute(
-            "INSERT INTO remote_grant VALUES(?,?,?,?,?,?)",
+            "INSERT INTO remote_grant(id,digest,thread,sender_env,sender_thread,operate) VALUES(?,?,?,?,?,?)",
             params![
                 id,
                 digest(&bearer),
@@ -61,19 +61,37 @@ impl Database {
         })
     }
     pub fn revoke_link(&self, id: &str) -> Result<bool> {
-        Ok(self
-            .db
-            .execute("DELETE FROM remote_grant WHERE id=?", [id])?
-            > 0)
+        Ok(self.db.execute(
+            "UPDATE remote_grant SET revoked=1 WHERE id=? AND revoked=0",
+            [id],
+        )? > 0)
     }
     fn authority(&self, token: &str, target: &Address, child_read: bool) -> Result<Authority> {
         if target.environment != self.environment()? {
             return Err(Error::Forbidden);
         }
-        self.db.query_row("SELECT id,sender_env,sender_thread,operate FROM remote_grant g WHERE digest=?1 AND
-            (thread=?2 OR (?3 AND EXISTS (SELECT 1 FROM remote_delivery d JOIN run r ON r.id=d.run_id WHERE d.grant_id=g.id AND r.thread_id=?2)))",
-            params![digest(token),target.thread.0,child_read],|r| Ok(Authority{id:r.get(0)?,sender:Address{environment:EnvironmentId(r.get(1)?),thread:ThreadId(r.get(2)?)},operate:r.get(3)?}))
-            .optional()?.ok_or(Error::Forbidden)
+        self.db
+            .query_row(
+                "SELECT id,sender_env,sender_thread,operate FROM remote_grant g
+             WHERE digest=?1 AND revoked=0 AND (thread=?2 OR (?3 AND operate AND EXISTS (
+                 SELECT 1 FROM remote_grant origin
+                 JOIN remote_delivery d ON d.grant_id=origin.id JOIN run r ON r.id=d.run_id
+                 WHERE origin.thread=g.thread AND origin.sender_env=g.sender_env
+                 AND origin.sender_thread=g.sender_thread AND r.thread_id=?2)))",
+                params![digest(token), target.thread.0, child_read],
+                |r| {
+                    Ok(Authority {
+                        id: r.get(0)?,
+                        sender: Address {
+                            environment: EnvironmentId(r.get(1)?),
+                            thread: ThreadId(r.get(2)?),
+                        },
+                        operate: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or(Error::Forbidden)
     }
     pub fn permits_agent_tools(&self, run: &RunId) -> Result<bool> {
         Ok(!self
@@ -121,8 +139,10 @@ impl Database {
         let tx = self.db.transaction()?;
         if let Some((prior, receipt)) = tx
             .query_row(
-                "SELECT intent,receipt FROM remote_delivery WHERE grant_id=? AND sender_run=? AND request_key=?",
-                params![auth.id, sender_run.0, key],
+                "SELECT d.intent,d.receipt FROM remote_delivery d JOIN remote_grant g ON g.id=d.grant_id
+                 WHERE g.thread=? AND g.sender_env=? AND g.sender_thread=? AND d.sender_run=? AND d.request_key=?
+                 ORDER BY (g.id=?) DESC, d.rowid LIMIT 1",
+                params![target.thread.0, auth.sender.environment.0, auth.sender.thread.0, sender_run.0, key, auth.id],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()?
@@ -192,17 +212,26 @@ impl Database {
         key: &str,
         target: &Address,
         task: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<Address>> {
         self.find_run(parent, run)?;
         if key.trim().is_empty() || task.trim().is_empty() {
             return Err(Error::Invalid("empty delegation key or task".into()));
         }
         let destination = serde_json::to_string(target)?;
-        let inserted=self.db.execute("INSERT INTO remote_task(parent_run,request_key,destination,task) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",params![run.0,key,destination,task])?;
-        if inserted==0 && !self.db.prepare("SELECT 1 FROM remote_task WHERE parent_run=? AND request_key=? AND destination=? AND task=?")?.exists(params![run.0,key,destination,task])? {
-            return Err(Error::Conflict{command:CommandId(key.into()),original_thread:parent.clone(),requested_thread:parent.clone()})
+        let inserted = self.db.execute(
+            "INSERT INTO remote_task(parent_run,request_key,destination,task) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
+            params![run.0, key, destination, task],
+        )?;
+        if inserted > 0 {
+            return Ok(None);
         }
-        Ok(())
+        let child: Option<String> = self.db.query_row(
+            "SELECT child FROM remote_task WHERE parent_run=? AND request_key=? AND destination=? AND task=?",
+            params![run.0, key, destination, task], |r| r.get(0),
+        ).optional()?.ok_or_else(|| Error::Conflict {
+            command: CommandId(key.into()), original_thread: parent.clone(), requested_thread: parent.clone(),
+        })?;
+        Ok(child.as_deref().map(serde_json::from_str).transpose()?)
     }
     pub fn record_remote_child(
         &self,
