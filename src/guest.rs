@@ -38,16 +38,16 @@ pub enum Reply {
         older: Option<HistoryCursor>,
     },
     Submitted {
-        id: String,
+        id: SubmissionId,
     },
 }
 pub struct Invitation {
-    pub id: String,
+    pub id: ShareId,
     pub bearer: String,
 }
 #[derive(Debug)]
 pub struct Submission {
-    pub id: String,
+    pub id: SubmissionId,
     pub name: String,
     pub text: String,
 }
@@ -77,13 +77,13 @@ impl Huggler {
     pub fn moderate_guest(
         &self,
         thread: &ThreadId,
-        id: &str,
+        id: &SubmissionId,
         accept: bool,
     ) -> Result<Option<RunId>> {
         self.shared
             .schedule(|db| db.moderate_guest(thread, id, accept))
     }
-    pub fn close_share(&self, id: &str) -> Result<bool> {
+    pub fn close_share(&self, id: &ShareId) -> Result<bool> {
         self.shared.access(|db| db.close_share(id))
     }
 }

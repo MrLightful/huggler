@@ -55,15 +55,15 @@ impl Database {
             ],
         )?;
         Ok(Grant {
-            id,
+            id: GrantId(id),
             address,
             bearer,
         })
     }
-    pub fn revoke_link(&self, id: &str) -> Result<bool> {
+    pub fn revoke_link(&self, id: &GrantId) -> Result<bool> {
         Ok(self.db.execute(
             "UPDATE remote_grant SET revoked=1 WHERE id=? AND revoked=0",
-            [id],
+            [&id.0],
         )? > 0)
     }
     fn authority(&self, token: &str, target: &Address, child_read: bool) -> Result<Authority> {

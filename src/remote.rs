@@ -22,7 +22,7 @@ pub enum Access {
 
 /// Transfer the bearer to the approved host through a private channel.
 pub struct Grant {
-    pub id: String,
+    pub id: GrantId,
     pub address: Address,
     pub bearer: String,
 }
@@ -178,7 +178,7 @@ impl Huggler {
         self.shared
             .access(|db| db.approve_link(thread, sender, access))
     }
-    pub fn revoke_link(&self, grant_id: &str) -> Result<bool> {
+    pub fn revoke_link(&self, grant_id: &GrantId) -> Result<bool> {
         self.shared.access(|db| db.revoke_link(grant_id))
     }
 

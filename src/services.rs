@@ -119,7 +119,7 @@ struct Active {
 #[derive(Default)]
 pub(crate) struct Registry {
     hosts: HashMap<Kind, Box<dyn ServiceHost>>,
-    resources: HashMap<String, Active>,
+    resources: HashMap<ServiceHandleId, Active>,
 }
 impl Registry {
     pub(crate) fn close_thread(&mut self, thread: &ThreadId) {
@@ -134,7 +134,7 @@ impl Registry {
             .get_mut(&kind)
             .ok_or_else(|| Error::Unsupported(format!("{kind:?} host unavailable")))
     }
-    fn active(&mut self, thread: &ThreadId, id: &str) -> Result<&mut Active> {
+    fn active(&mut self, thread: &ThreadId, id: &ServiceHandleId) -> Result<&mut Active> {
         self.resources
             .get_mut(id)
             .filter(|r| &r.thread == thread)
@@ -158,12 +158,12 @@ impl Huggler {
         self.shared.access(|db| db.thread_position(thread))?;
         registry.host(Kind::Device)?.devices()
     }
-    pub fn open_service(&self, thread: &ThreadId, request: Open) -> Result<String> {
+    pub fn open_service(&self, thread: &ThreadId, request: Open) -> Result<ServiceHandleId> {
         let mut registry = self.shared.services.lock().unwrap();
         let checkout = self.shared.access(|db| db.service_checkout(thread))?;
         let kind = request.kind();
         let resource = registry.host(kind)?.open(thread, &checkout, request)?;
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = ServiceHandleId(uuid::Uuid::new_v4().to_string());
         registry.resources.insert(
             id.clone(),
             Active {
@@ -174,7 +174,7 @@ impl Huggler {
         );
         Ok(id)
     }
-    pub fn service_handles(&self, thread: &ThreadId, kind: Kind) -> Result<Vec<String>> {
+    pub fn service_handles(&self, thread: &ThreadId, kind: Kind) -> Result<Vec<ServiceHandleId>> {
         let registry = self.shared.services.lock().unwrap();
         self.shared.access(|db| db.thread_position(thread))?;
         let mut ids: Vec<_> = registry
@@ -183,10 +183,15 @@ impl Huggler {
             .filter(|(_, r)| r.kind == kind && &r.thread == thread)
             .map(|(id, _)| id.clone())
             .collect();
-        ids.sort();
+        ids.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(ids)
     }
-    pub fn service_call(&self, thread: &ThreadId, id: &str, action: Action) -> Result<Output> {
+    pub fn service_call(
+        &self,
+        thread: &ThreadId,
+        id: &ServiceHandleId,
+        action: Action,
+    ) -> Result<Output> {
         let mut registry = self.shared.services.lock().unwrap();
         self.shared.access(|_| Ok(()))?;
         let r = registry.active(thread, id)?;
@@ -200,7 +205,12 @@ impl Huggler {
     }
     /// A trusted host explicitly approves JSON data from a live app for this thread's next
     /// provider turn. Replaces the previous pending context. Raw tool/resource results stay local.
-    pub fn approve_app_context(&self, thread: &ThreadId, id: &str, context: &Value) -> Result<()> {
+    pub fn approve_app_context(
+        &self,
+        thread: &ThreadId,
+        id: &ServiceHandleId,
+        context: &Value,
+    ) -> Result<()> {
         let mut registry = self.shared.services.lock().unwrap();
         if registry.active(thread, id)?.kind != Kind::McpApp {
             return Err(Error::Forbidden);
@@ -211,7 +221,7 @@ impl Huggler {
         }
         self.shared.access(|db| db.set_app_context(thread, &text))
     }
-    pub fn close_service(&self, thread: &ThreadId, id: &str) -> Result<()> {
+    pub fn close_service(&self, thread: &ThreadId, id: &ServiceHandleId) -> Result<()> {
         let mut registry = self.shared.services.lock().unwrap();
         self.shared.access(|_| Ok(()))?;
         registry.active(thread, id)?;

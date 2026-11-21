@@ -23,6 +23,14 @@ id!(MessageId);
 id!(UploadId);
 id!(TaskId);
 id!(ProjectId);
+id!(GrantId);
+id!(ShareId);
+id!(SubmissionId);
+id!(SecretRequestId);
+#[cfg(feature = "application")]
+id!(ScheduleId);
+#[cfg(feature = "application")]
+id!(ServiceHandleId);
 #[cfg(feature = "application")]
 id!(RepositoryBindingId);
 #[cfg(feature = "application")]

@@ -100,17 +100,17 @@ impl Huggler {
         spec: Schedule,
         now: i64,
         signing_key: Option<&[u8]>,
-    ) -> Result<String> {
+    ) -> Result<ScheduleId> {
         self.shared
             .access(|db| db.create_schedule(owner, &spec, now, signing_key))
     }
 
-    pub fn schedules(&self, thread: &ThreadId) -> Result<Vec<(String, Schedule, Option<i64>)>> {
+    pub fn schedules(&self, thread: &ThreadId) -> Result<Vec<(ScheduleId, Schedule, Option<i64>)>> {
         self.shared.access(|db| db.schedules(thread))
     }
 
     /// Release one due occurrence, coalescing missed intervals. Safe to call concurrently.
-    pub fn tick_schedule(&self, id: &str, now: i64) -> Result<Option<Occurrence>> {
+    pub fn tick_schedule(&self, id: &ScheduleId, now: i64) -> Result<Option<Occurrence>> {
         self.shared.schedule(|db| db.tick_schedule(id, now))
     }
 
@@ -118,7 +118,7 @@ impl Huggler {
     /// The host supplies its configured key. The signature is hex HMAC-SHA256.
     pub fn deliver_webhook(
         &self,
-        id: &str,
+        id: &ScheduleId,
         signing_key: &[u8],
         signature: &str,
         body: &[u8],
@@ -134,10 +134,10 @@ impl Huggler {
         self.shared
             .schedule(|db| db.deliver_webhook(id, signing_key, delivery))
     }
-    pub fn schedule_history(&self, id: &str) -> Result<Vec<Occurrence>> {
+    pub fn schedule_history(&self, id: &ScheduleId) -> Result<Vec<Occurrence>> {
         self.shared.access(|db| db.schedule_history(id))
     }
-    pub fn delete_schedule(&self, id: &str) -> Result<bool> {
+    pub fn delete_schedule(&self, id: &ScheduleId) -> Result<bool> {
         self.shared.access(|db| db.delete_schedule(id))
     }
 }

@@ -32,7 +32,7 @@ pub struct Preferences {
 
 #[derive(Debug, Serialize)]
 pub struct SecretRequest {
-    pub id: String,
+    pub id: SecretRequestId,
     pub run: RunId,
     pub label: String,
     pub state: String,
@@ -52,14 +52,19 @@ impl Huggler {
         self.shared.access(|db| db.secret_requests(thread))
     }
     /// Approve with exact bytes, or deny with None. Values live only in process memory.
-    pub fn answer_secret(&self, thread: &ThreadId, id: &str, value: Option<Vec<u8>>) -> Result<()> {
+    pub fn answer_secret(
+        &self,
+        thread: &ThreadId,
+        id: &SecretRequestId,
+        value: Option<Vec<u8>>,
+    ) -> Result<()> {
         self.shared.access(|db| db.answer_secret(thread, id, value))
     }
     /// Read a host-selected 1Password reference using an already authenticated CLI.
     pub fn approve_onepassword(
         &self,
         thread: &ThreadId,
-        id: &str,
+        id: &SecretRequestId,
         executable: &Path,
         reference: &str,
     ) -> Result<()> {
@@ -71,7 +76,7 @@ impl Huggler {
         if !self
             .secret_requests(thread)?
             .iter()
-            .any(|r| r.id == id && r.state == "requested")
+            .any(|r| &r.id == id && r.state == "requested")
         {
             return Err(Error::Forbidden);
         }

@@ -12,7 +12,7 @@ fn occurrence(row: &Row<'_>) -> rusqlite::Result<Occurrence> {
 
 fn release(
     tx: &Transaction,
-    id: &str,
+    id: &ScheduleId,
     owner: ThreadId,
     spec: &Schedule,
     key: String,
@@ -20,7 +20,7 @@ fn release(
     let prior = tx
         .query_row(
             "SELECT occurrence,thread,run FROM automation_run WHERE automation=? AND occurrence=?",
-            params![id, key],
+            params![id.0, key],
             occurrence,
         )
         .optional()?;
@@ -43,7 +43,7 @@ fn release(
     )?;
     tx.execute(
         "INSERT INTO automation_run VALUES(?,?,?,?)",
-        params![id, key, thread.0, run.0],
+        params![id.0, key, thread.0, run.0],
     )?;
     let job = (delivery == PeerDelivery::Started).then(|| (thread.clone(), run.clone()));
     Ok((Some(Occurrence { key, thread, run }), job))
@@ -56,7 +56,7 @@ impl Database {
         spec: &Schedule,
         now: i64,
         signing_key: Option<&[u8]>,
-    ) -> Result<String> {
+    ) -> Result<ScheduleId> {
         self.thread_position(owner)?;
         let webhook = matches!(spec.trigger, Trigger::Webhook { .. });
         if spec.prompt.trim().is_empty()
@@ -77,11 +77,11 @@ impl Database {
             } => Some(first),
             _ => spec.trigger.next(now)?,
         };
-        let id = new_id();
+        let id = ScheduleId(new_id());
         self.db.execute(
             "INSERT INTO automation VALUES(?,?,?,?,?)",
             params![
-                id,
+                id.0,
                 owner.0,
                 serde_json::to_string(spec)?,
                 next,
@@ -90,7 +90,7 @@ impl Database {
         )?;
         Ok(id)
     }
-    pub fn schedules(&self, thread: &ThreadId) -> Result<Vec<(String, Schedule, Option<i64>)>> {
+    pub fn schedules(&self, thread: &ThreadId) -> Result<Vec<(ScheduleId, Schedule, Option<i64>)>> {
         let mut stmt = self
             .db
             .prepare("SELECT id,spec,next_at FROM automation WHERE owner=? ORDER BY rowid")?;
@@ -98,7 +98,7 @@ impl Database {
         let mut result = vec![];
         while let Some(r) = rows.next()? {
             result.push((
-                r.get(0)?,
+                ScheduleId(r.get(0)?),
                 serde_json::from_str(&r.get::<_, String>(1)?)?,
                 r.get(2)?,
             ));
@@ -107,14 +107,14 @@ impl Database {
     }
     pub fn tick_schedule(
         &mut self,
-        id: &str,
+        id: &ScheduleId,
         now: i64,
     ) -> Result<(Option<Occurrence>, Option<RunJob>)> {
         let tx = self.db.transaction()?;
         let (owner, spec, due) = tx
             .query_row(
                 "SELECT owner,spec,next_at FROM automation WHERE id=?",
-                [id],
+                [&id.0],
                 |r| {
                     Ok((
                         ThreadId(r.get(0)?),
@@ -124,7 +124,7 @@ impl Database {
                 },
             )
             .optional()?
-            .ok_or_else(|| Error::NotFound(id.into()))?;
+            .ok_or_else(|| Error::NotFound(id.to_string()))?;
         let Some(due) = due.filter(|t| *t <= now) else {
             return Ok((None, None));
         };
@@ -132,7 +132,7 @@ impl Database {
         let released = release(&tx, id, owner, &spec, due.to_string())?;
         tx.execute(
             "UPDATE automation SET next_at=? WHERE id=?",
-            params![spec.trigger.next(now)?, id],
+            params![spec.trigger.next(now)?, id.0],
         )?;
         tx.commit()?;
         Ok(released)
@@ -140,7 +140,7 @@ impl Database {
 
     pub fn deliver_webhook(
         &mut self,
-        id: &str,
+        id: &ScheduleId,
         key: &[u8],
         delivery: Delivery,
     ) -> Result<(Option<Occurrence>, Option<RunJob>)> {
@@ -148,7 +148,7 @@ impl Database {
         let (owner, spec) = tx
             .query_row(
                 "SELECT owner,spec FROM automation WHERE id=? AND signing_key_digest=?",
-                params![id, Sha256::digest(key).to_vec()],
+                params![id.0, Sha256::digest(key).to_vec()],
                 |r| Ok((ThreadId(r.get(0)?), r.get::<_, String>(1)?)),
             )
             .optional()?
@@ -164,12 +164,15 @@ impl Database {
         tx.commit()?;
         Ok(released)
     }
-    pub fn schedule_history(&self, id: &str) -> Result<Vec<Occurrence>> {
+    pub fn schedule_history(&self, id: &ScheduleId) -> Result<Vec<Occurrence>> {
         Ok(self.db.prepare("SELECT occurrence,thread,run FROM automation_run WHERE automation=? ORDER BY rowid")?
-            .query_map([id], occurrence)?.collect::<rusqlite::Result<_>>()?)
+            .query_map([&id.0], occurrence)?.collect::<rusqlite::Result<_>>()?)
     }
-    pub fn delete_schedule(&self, id: &str) -> Result<bool> {
-        Ok(self.db.execute("DELETE FROM automation WHERE id=?", [id])? != 0)
+    pub fn delete_schedule(&self, id: &ScheduleId) -> Result<bool> {
+        Ok(self
+            .db
+            .execute("DELETE FROM automation WHERE id=?", [&id.0])?
+            != 0)
     }
 }
 

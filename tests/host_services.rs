@@ -21,7 +21,12 @@ fn options(dir: &Path) -> HugglerOptions {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-provider.py");
     config
 }
-async fn output(rt: &Huggler, t: &ThreadId, id: &str, after: Option<u64>) -> (u64, Vec<u8>) {
+async fn output(
+    rt: &Huggler,
+    t: &ThreadId,
+    id: &ServiceHandleId,
+    after: Option<u64>,
+) -> (u64, Vec<u8>) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Output::Terminal { next, data, eof } =
@@ -226,7 +231,7 @@ async fn display_lifecycle(chrome: Option<PathBuf>) -> Result<()> {
             chrome: chrome.clone(),
         }) as Box<dyn ServiceHost>)
     };
-    let capture = |id: &str| -> Result<Vec<u8>> {
+    let capture = |id: &ServiceHandleId| -> Result<Vec<u8>> {
         let Output::Bytes { mime, data } = rt.service_call(&owner, id, Action::Capture)? else {
             panic!("missing capture")
         };

@@ -95,12 +95,12 @@ impl Database {
         }
         self.expire_secrets()?;
         self.db.execute("INSERT INTO secret_request VALUES(?,?,?,?,'requested',?) ON CONFLICT(run,request_key) DO NOTHING",params![new_id(),run.0,key,label,now()+i64::from(ttl)])?;
-        let (id, state): (String, String) = self
+        let (id, state): (SecretRequestId, String) = self
             .db
             .query_row(
                 "SELECT id,state FROM secret_request WHERE run=? AND request_key=? AND label=?",
                 params![run.0, key, label],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((SecretRequestId(r.get(0)?), r.get(1)?)),
             )
             .optional()?
             .ok_or_else(|| Error::Invalid("secret request key already used".into()))?;
@@ -110,19 +110,19 @@ impl Database {
     pub fn secret_requests(&mut self, thread: &ThreadId) -> Result<Vec<SecretRequest>> {
         self.thread_position(thread)?;
         self.expire_secrets()?;
-        Ok(self.db.prepare("SELECT s.id,s.run,s.label,s.state,s.expires FROM secret_request s JOIN run r ON r.id=s.run WHERE r.thread_id=? ORDER BY s.rowid")?.query_map([&thread.0],|r|Ok(SecretRequest{id:r.get(0)?,run:RunId(r.get(1)?),label:r.get(2)?,state:r.get(3)?,expires:r.get(4)?}))?.collect::<rusqlite::Result<_>>()?)
+        Ok(self.db.prepare("SELECT s.id,s.run,s.label,s.state,s.expires FROM secret_request s JOIN run r ON r.id=s.run WHERE r.thread_id=? ORDER BY s.rowid")?.query_map([&thread.0],|r|Ok(SecretRequest{id:SecretRequestId(r.get(0)?),run:RunId(r.get(1)?),label:r.get(2)?,state:r.get(3)?,expires:r.get(4)?}))?.collect::<rusqlite::Result<_>>()?)
     }
     pub fn answer_secret(
         &mut self,
         thread: &ThreadId,
-        id: &str,
+        id: &SecretRequestId,
         value: Option<Vec<u8>>,
     ) -> Result<()> {
         self.expire_secrets()?;
-        let expires=self.db.query_row("UPDATE secret_request SET state=? WHERE id=? AND state='requested' AND expires>? AND run IN (SELECT r.id FROM agent_grant g JOIN run r ON r.id=g.run_id WHERE r.thread_id=?) RETURNING expires",params![if value.is_some(){"approved"}else{"denied"},id,now(),thread.0],|r|r.get(0)).optional()?.ok_or(Error::Forbidden)?;
+        let expires=self.db.query_row("UPDATE secret_request SET state=? WHERE id=? AND state='requested' AND expires>? AND run IN (SELECT r.id FROM agent_grant g JOIN run r ON r.id=g.run_id WHERE r.thread_id=?) RETURNING expires",params![if value.is_some(){"approved"}else{"denied"},id.0,now(),thread.0],|r|r.get(0)).optional()?.ok_or(Error::Forbidden)?;
         if let Some(value) = value {
             self.secrets.insert(
-                id.into(),
+                id.clone(),
                 Secret {
                     value,
                     expires,
@@ -140,7 +140,7 @@ impl Database {
             .find(|(_, s)| s.reference == reference)
             .map(|(k, _)| k.clone())
             .ok_or(Error::Forbidden)?;
-        if self.db.execute("UPDATE secret_request SET state='consumed' WHERE id=? AND state='approved' AND expires>? AND run IN (SELECT r.id FROM run r JOIN thread t ON t.id=r.thread_id WHERE t.project=?)",params![id,now(),project.0])? !=1 {return Err(Error::Forbidden);}
+        if self.db.execute("UPDATE secret_request SET state='consumed' WHERE id=? AND state='approved' AND expires>? AND run IN (SELECT r.id FROM run r JOIN thread t ON t.id=r.thread_id WHERE t.project=?)",params![id.0,now(),project.0])? !=1 {return Err(Error::Forbidden);}
         Ok(self.secrets.remove(&id).unwrap().value)
     }
 }

@@ -6,19 +6,19 @@ impl Database {
     pub fn invite_guest(&self, thread: &ThreadId) -> Result<Invitation> {
         self.thread_position(thread)?;
         let invite = Invitation {
-            id: new_id(),
+            id: ShareId(new_id()),
             bearer: new_id(),
         };
         self.db.execute(
             "INSERT INTO guest_share(id,thread,invite) VALUES(?,?,?)",
-            params![invite.id, thread.0, digest(&invite.bearer)],
+            params![invite.id.0, thread.0, digest(&invite.bearer)],
         )?;
         Ok(invite)
     }
-    pub fn close_share(&self, id: &str) -> Result<bool> {
+    pub fn close_share(&self, id: &ShareId) -> Result<bool> {
         Ok(self
             .db
-            .execute("DELETE FROM guest_share WHERE id=?", [id])?
+            .execute("DELETE FROM guest_share WHERE id=?", [&id.0])?
             != 0)
     }
     fn guest_session(&self, token: &str, thread: &ThreadId) -> Result<String> {
@@ -68,7 +68,7 @@ impl Database {
                     .query_row(
                         "SELECT id,text FROM guest_submission WHERE share=? AND request_key=?",
                         params![share, key],
-                        |r| Ok((r.get(0)?, r.get::<_, String>(1)?)),
+                        |r| Ok((SubmissionId(r.get(0)?), r.get::<_, String>(1)?)),
                     )
                     .optional()?
                 {
@@ -81,26 +81,26 @@ impl Database {
                     }
                     return Ok(Reply::Submitted { id });
                 }
-                let id = new_id();
+                let id = SubmissionId(new_id());
                 self.db.execute(
                     "INSERT INTO guest_submission(id,share,request_key,text) VALUES(?,?,?,?)",
-                    params![id, share, key, text],
+                    params![id.0, share, key, text],
                 )?;
                 Ok(Reply::Submitted { id })
             }
         }
     }
     pub fn guest_inbox(&self, thread: &ThreadId) -> Result<Vec<Submission>> {
-        Ok(self.db.prepare("SELECT s.id,g.name,s.text FROM guest_submission s JOIN guest_share g ON s.share=g.id WHERE g.thread=? AND decision IS NULL ORDER BY s.rowid")?.query_map([&thread.0],|r|Ok(Submission{id:r.get(0)?,name:r.get(1)?,text:r.get(2)?}))?.collect::<rusqlite::Result<_>>()?)
+        Ok(self.db.prepare("SELECT s.id,g.name,s.text FROM guest_submission s JOIN guest_share g ON s.share=g.id WHERE g.thread=? AND decision IS NULL ORDER BY s.rowid")?.query_map([&thread.0],|r|Ok(Submission{id:SubmissionId(r.get(0)?),name:r.get(1)?,text:r.get(2)?}))?.collect::<rusqlite::Result<_>>()?)
     }
     pub fn moderate_guest(
         &mut self,
         thread: &ThreadId,
-        id: &str,
+        id: &SubmissionId,
         accept: bool,
     ) -> Result<(Option<RunId>, Option<RunJob>)> {
         let tx = self.db.transaction()?;
-        let (prior,run,name,text,model)=tx.query_row("SELECT s.decision,s.run,g.name,s.text,t.model FROM guest_submission s JOIN guest_share g ON g.id=s.share JOIN thread t ON t.id=g.thread WHERE s.id=? AND t.id=?",params![id,thread.0],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?.map(RunId),r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get(4)?))).optional()?.ok_or(Error::Forbidden)?;
+        let (prior,run,name,text,model)=tx.query_row("SELECT s.decision,s.run,g.name,s.text,t.model FROM guest_submission s JOIN guest_share g ON g.id=s.share JOIN thread t ON t.id=g.thread WHERE s.id=? AND t.id=?",params![id.0,thread.0],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?.map(RunId),r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get(4)?))).optional()?.ok_or(Error::Forbidden)?;
         let decision = if accept { "accepted" } else { "dismissed" };
         if let Some(prior) = prior {
             if prior != decision {
@@ -130,7 +130,7 @@ impl Database {
         };
         tx.execute(
             "UPDATE guest_submission SET decision=?,run=? WHERE id=?",
-            params![decision, run.as_ref().map(|r| &r.0), id],
+            params![decision, run.as_ref().map(|r| &r.0), id.0],
         )?;
         tx.commit()?;
         Ok((run, job))

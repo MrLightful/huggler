@@ -229,7 +229,7 @@ impl Drop for StateLock {
 pub(crate) struct Database {
     db: Connection,
     worktree_dir: PathBuf,
-    secrets: std::collections::HashMap<String, application::Secret>,
+    secrets: std::collections::HashMap<SecretRequestId, application::Secret>,
     // Drop after SQLite closes.
     _lock: StateLock,
 }
