@@ -1,29 +1,29 @@
-# Stage 7 qualification · Huggler 0.0.2
+# Stage 7 qualification · Huggler 0.0.1
 
-**Ready to merge.** The independent Cargo consumer resumed a recorded conversation from the packaged crate. On an Apple Silicon development Mac, the unzipped production app opened a fresh database and quit. An installed GPUI qualification build then continued a live Codex conversation created by 0.0.1. The maintainer accepted this Mac for the desktop check. A separate clean machine, older macOS versions and a quarantined Gatekeeper launch remain untested. These results cover local release artifacts. [Acceptance criteria](extraction-plan.md#7-validate-cargo-and-desktop-releases)
+**Ready to merge.** The independent Cargo consumer resumed a recorded conversation from the packaged crate. On an Apple Silicon development Mac, the unzipped production app opened a fresh database and quit. An installed GPUI qualification build then continued a live Codex conversation created with build 1. The maintainer accepted this Mac for the desktop check. A separate clean machine, older macOS versions and a quarantined Gatekeeper launch remain untested. These results cover local release artifacts. [Acceptance criteria](extraction-plan.md#7-validate-cargo-and-desktop-releases)
 
 ## What ships
 
-Sizes are bytes. The unpacked column sums regular file lengths and excludes filesystem allocation. Cargo records the Git revision in the archive. The crate measurement below comes from clean commit `81a299e`.
+Sizes are bytes. The unpacked column sums regular file lengths and excludes filesystem allocation. Cargo records the Git revision in the archive. The crate measurement below comes from clean commit `253ab45`.
 
 | Artifact | Archive | Unpacked | Verified contents |
 | --- | ---: | ---: | --- |
-| `huggler-0.0.2.crate` | 222,322 | 1,064,173 | 140 files including Cargo.lock, Rust source, all 35 SQL migrations, tests, fixtures and licenses. [Complete file list](reference/stage-7/huggler-0.0.2.contents.txt) |
-| `huggler-0.0.2-macos-arm64.zip` | 10,509,329 | 28,778,277 | Six files in Huggler.app. The executable links 18 libraries and frameworks under macOS system paths. [Packaging and launch check](../scripts/check-desktop-release.py) |
-| `huggler-0.0.2-pi.zip` | 1,752 | 3,074 | `huggler.mjs` and LICENSE. The check extracted and compared the bytes of both entries. The Pi adapter accepts the installed extension’s absolute path. [Pi adapter qualification](stage-4.md#controls-and-fallbacks) |
+| `huggler-0.0.1.crate` | 222,299 | 1,064,173 | 140 files including Cargo.lock, Rust source, all 35 SQL migrations, tests, fixtures and licenses. [Complete file list](reference/stage-7/huggler-0.0.1.contents.txt) |
+| `huggler-0.0.1-macos-arm64.zip` | 10,509,300 | 28,778,293 | Six files in Huggler.app. The executable links 18 libraries and frameworks under macOS system paths. [Packaging and launch check](../scripts/check-desktop-release.py) |
+| `huggler-0.0.1-pi.zip` | 1,752 | 3,074 | `huggler.mjs` and LICENSE. The check extracted and compared the bytes of both entries. The Pi adapter accepts the installed extension’s absolute path. [Pi adapter qualification](stage-4.md#controls-and-fallbacks) |
 
-The production bundle contains the executable (27,331,760), Info.plist (641), CodeResources (2,936), Huggler’s LICENSE.txt (1,077), Rust-library.html (425,661) and Third-party notices.txt (1,016,202). The app embeds the default Rust library. The optional `application` feature is available to other Cargo hosts. The app and the crate ship independently of Node, external provider executables and the Pi extension. [Desktop manifest](../desktop/Cargo.toml) · [Crate manifest](../Cargo.toml)
+The production bundle contains the executable (27,331,776), Info.plist (641), CodeResources (2,936), Huggler’s LICENSE.txt (1,077), Rust-library.html (425,661) and Third-party notices.txt (1,016,202). The app embeds the default Rust library. The optional `application` feature is available to other Cargo hosts. The app and the crate ship independently of Node, external provider executables and the Pi extension. [Desktop manifest](../desktop/Cargo.toml) · [Crate manifest](../Cargo.toml)
 
 Huggler’s own code and Pi extension carry MIT terms. The crate preserves T3 Code’s MIT notice with the Codex resume, questions, subagent and provider recordings. For the desktop bundle, cargo-about used the locked macOS target and selected features. The notices list 538 registry packages including build dependencies, with source archive URLs, selected license texts and notices found in the package trees. When a package omits a text, the generator identifies SPDX standard text where used and adds version-specific upstream supplements. It includes source links for MPL components, the SQLite public-domain attribution and the Rust toolchain’s standard library notice. The installer signs after adding resources. [Huggler license](../LICENSE) · [Original fixture notice](reference/codex-resume/LICENSE) · [Notice generator](../scripts/desktop_notices.py) · [Supplement sources](../desktop/upstream-notices.toml)
 
 ## Compatibility and installed results
 
-The Cargo API and desktop version are 0.0.2, macOS bundle build 2. The crate declares Rust 1.94.1, the compiler used for both builds. The persisted SQLite version is 35 in both desktop installations. The upgrade exercises preservation across app replacement at that schema. Earlier database fixtures exercise migration separately. Hosts can mount the authenticated JSON endpoints at `/v1/peer` and `/v1/guest`. Agents negotiate MCP during initialization on the streamable HTTP endpoint at `/mcp`. GPUI calls Rust directly. [Migration coverage](stage-5.md#existing-data) · [Peer interface](../src/remote.rs) · [Guest interface](../src/guest.rs) · [Agent endpoint](../src/mcp.rs)
+The Cargo API and desktop version are 0.0.1, macOS bundle build 2. The crate declares Rust 1.94.1, the compiler used for both builds. The persisted SQLite version is 35 in both desktop installations. The upgrade exercises preservation across app replacement at that schema. Earlier database fixtures exercise migration separately. Hosts can mount the authenticated JSON endpoints at `/v1/peer` and `/v1/guest`. Agents negotiate MCP during initialization on the streamable HTTP endpoint at `/mcp`. GPUI calls Rust directly. [Migration coverage](stage-5.md#existing-data) · [Peer interface](../src/remote.rs) · [Guest interface](../src/guest.rs) · [Agent endpoint](../src/mcp.rs)
 
 | Run | Evidence |
 | --- | --- |
 | Production startup | On macOS 27.0.1 (26A434), arm64, the checker extracted the ad-hoc signed ZIP into a path with spaces, verified its signature with `codesign --verify --strict`, and launched the installed executable from `/` in a GUI session. With a fresh home and only system directories on PATH, it created `~/Library/Application Support/dev.huggler.stage2/huggler.sqlite3` at the default location. AppKit Quit exited successfully. The Mach-O deployment target is 11.0. Compatibility at that floor, Developer ID signing and notarization are unqualified. |
-| Upgrade with a live provider | With the existing signed-in Codex CLI 0.170.0 over app-server stdio, launch 1 created a conversation on the Stage 6 app (0.0.1, build 1). Launch 2 replaced the bundle at the same path, displayed the prior answer and resumed the same application and native thread with a distinct native turn. Launch 3 created an isolated sibling. Launch 4 restored the selected sibling and switched back to the two-turn history. Each launch exited. The scripted GPUI build explicitly used the fresh home’s expected Application Support path. PATH contained the native Codex executable and system tools. [Upgrade runner](../scripts/check-desktop.py) |
+| Upgrade with a live provider | With the existing signed-in Codex CLI 0.170.0 over app-server stdio, launch 1 created a conversation on the Stage 6 app (0.0.1, build 1). Launch 2 replaced it with 0.0.1 build 2 at the same path, displayed the prior answer and resumed the same application and native thread with a distinct native turn. Launch 3 created an isolated sibling. Launch 4 restored the selected sibling and switched back to the two-turn history. Each launch exited. The scripted GPUI build explicitly used the fresh home’s expected Application Support path. PATH contained the native Codex executable and system tools. [Upgrade runner](../scripts/check-desktop.py) |
 | Permissions | The live cloud Codex 0.170.0 run recorded the denial, interrupted the requesting run and left the proposed file absent. Separately, the Codex app-server 0.156.1 recording showed the native grandchild `/root/relay/writer` in the window. Approving once completed both children with `Written.`. [Permission checks](../scripts/check-permission.py) |
 | Provider discovery | In the installed scripted window, selecting a missing Cursor executable produced a diagnostic with its path. A registry replay peer reported ACP v1 and two models, with login unverified. [Discovery check](../scripts/check-provider-desktop.py) |
 
@@ -53,7 +53,7 @@ rustup component add rust-docs
 cargo install cargo-about --version 0.9.1 --locked
 cargo fetch --locked --manifest-path desktop/Cargo.toml
 python3 scripts/check-package.py
-diff -u docs/reference/stage-7/huggler-0.0.2.contents.txt target/package/huggler-0.0.2.contents.txt
+diff -u docs/reference/stage-7/huggler-0.0.1.contents.txt target/package/huggler-0.0.1.contents.txt
 python3 scripts/check-desktop-release.py target/distribution
 ```
 

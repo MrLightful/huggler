@@ -6,7 +6,7 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Extraction complete.** Stage 7 qualified the MIT-licensed Huggler 0.0.2 crate, the Apple Silicon GPUI app and the optional Pi extension. A consumer built from the Cargo archive verified native continuation, receipt retry and sibling isolation. The installed app upgraded a live Codex conversation from 0.0.1 across four launches. [Release evidence and reproduction](stage-7.md) · [Archive contents](reference/stage-7/huggler-0.0.2.contents.txt)
+**Extraction complete.** Stage 7 qualified the MIT-licensed Huggler 0.0.1 crate, the Apple Silicon GPUI app and the optional Pi extension. A consumer built from the Cargo archive verified native continuation, receipt retry and sibling isolation. Across four launches, the installed app preserved a live Codex conversation when upgrading from build 1 to build 2. [Release evidence and reproduction](stage-7.md) · [Archive contents](reference/stage-7/huggler-0.0.1.contents.txt)
 
 **Qualification scope.** The desktop checks used the development Mac with a fresh home and a Node-free PATH. Testing on a separate clean Mac, testing the macOS deployment floor and Gatekeeper assessment of a notarized download remain open. The release review accounts for 31 upstream commits and records each deferred workflow with its next check. [Installed results](stage-7.md#compatibility-and-installed-results) · [Upstream comparison](stage-7.md#upstream-comparison)
 
