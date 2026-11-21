@@ -74,6 +74,44 @@ def main():
             {"see": "Codex/reply Continue"}, {"see": "Ready/" + first + "/Completed"},
             {"absent": "section/Settled/1"},
         ], env)
+        attachment = checkout / "notes.txt"
+        attachment.write_text("attachment fixture")
+        other = checkout / "other" / "notes.txt"
+        other.parent.mkdir()
+        other.write_text("second file")
+        attachment_state = checkout / "attachment-state"
+        select_file = [{"next_file_selection": [str(attachment)]}, {"click": "Attach files"}]
+        run_window(executable, attachment_state, [
+            *select_file, {"click": "Remove notes.txt"}, {"absent": "Remove notes.txt"},
+            *select_file, {"see": "Remove notes.txt"}, {"click": "Send first message"},
+            {"see": "Ready/notes.txt/Completed"}, {"absent": "Remove notes.txt"},
+            *select_file, {"see": "Remove notes.txt"}, {"click": "Create"},
+            {"absent": "Remove notes.txt"}, {"click": "thread/notes.txt"}, {"see": "Remove notes.txt"},
+            {"next_file_selection": [str(other)]}, {"click": "Attach files"},
+            *send_message("Review"), {"absent": "Remove notes.txt"},
+            {"see": "Ready/notes.txt/Completed"},
+        ], env)
+        with sqlite3.connect(attachment_state / "huggler.sqlite3") as db:
+            messages = db.execute("SELECT id,text FROM message WHERE role='user' ORDER BY rowid").fetchall()
+            expected = 'Text attachment "notes.txt"\nattachment fixture'
+            assert [text.strip() for _, text in messages] == [
+                expected, "Review\n\n" + expected + '\n\nText attachment "notes.txt"\nsecond file',
+            ]
+        attachment.unlink()
+        other.unlink()
+        first_file = f"attachment/{messages[0][0]}/0/notes.txt"
+        second_message = f"attachment/{messages[1][0]}"
+        plain = 'Text attachment "ordinary.txt"'
+        run_window(executable, attachment_state, [
+            {"see": first_file}, {"see": "You/Review"}, {"absent": "You/"},
+            {"absent": "file preview/attachment fixture"}, {"click": first_file},
+            {"see": "file preview/attachment fixture"}, {"click": first_file},
+            {"absent": "file preview/attachment fixture"},
+            {"click": second_message + "/1/notes.txt"}, {"see": "file preview/second file"},
+            {"click": second_message + "/0/notes.txt"}, {"see": "file preview/attachment fixture"},
+            {"absent": "file preview/second file"}, *send_message(plain), {"see": "You/" + plain},
+        ], env)
+
         run_window(executable, checkout / "suggestion-state", [
             *launch_thread(checkout, "Follow-up"), *send_message("First question"),
             {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/Explain the result."},

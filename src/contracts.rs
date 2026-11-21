@@ -286,6 +286,11 @@ pub enum Action {
         text: String,
         uploads: Vec<UploadId>,
     },
+    /// Enqueue a message with captured UTF-8 files, starting immediately when idle.
+    EnqueueAttachments {
+        text: String,
+        files: Vec<TextAttachment>,
+    },
     /// Send one message in Codex plan mode.
     SendPlan {
         text: String,
@@ -451,10 +456,26 @@ pub struct HistoryCursor {
     pub before: MessageId,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextAttachment {
+    pub name: String,
+    pub content: String,
+}
+
+/// Bounded caption and filenames in selection order. Read file bodies on demand.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MessageFiles {
+    pub truncated: bool,
+    pub caption: String,
+    pub names: Vec<String>,
+}
+
 /// A bounded message preview. Fetch the original with `Huggler::read_message`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryItem {
     pub message: Message,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<MessageFiles>,
     pub truncated: bool,
 }
 

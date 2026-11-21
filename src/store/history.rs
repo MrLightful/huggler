@@ -25,6 +25,21 @@ pub(super) fn decode_message(r: &Row<'_>, text: String) -> rusqlite::Result<Mess
     })
 }
 
+const HISTORY_PREVIEW_BYTES: usize = 4096;
+
+fn history_preview(bytes: &[u8], column: usize) -> rusqlite::Result<(&str, bool)> {
+    let truncated = bytes.len() > HISTORY_PREVIEW_BYTES;
+    let bytes = &bytes[..bytes.len().min(HISTORY_PREVIEW_BYTES)];
+    let preview = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) if truncated && e.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap()
+        }
+        Err(e) => return Err(rusqlite::Error::Utf8Error(column, e)),
+    };
+    Ok((preview, truncated))
+}
+
 impl Database {
     #[cfg(feature = "application")]
     pub fn delete_thread(&mut self, thread: &ThreadId) -> Result<()> {
@@ -157,6 +172,29 @@ impl Database {
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
 
+    pub fn read_message_body(&self, thread: &ThreadId, id: &MessageId) -> Result<String> {
+        self.db.query_row("SELECT coalesce(m.attachment_caption,m.text) FROM message m JOIN run r ON r.id=m.run_id
+            WHERE r.thread_id=? AND m.id=?", params![thread.0,id.0], |row| row.get(0))
+            .optional()?.ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    pub fn read_attachment(
+        &self,
+        thread: &ThreadId,
+        message: &MessageId,
+        position: usize,
+    ) -> Result<String> {
+        self.db
+            .query_row(
+                "SELECT a.content FROM message_attachment a JOIN message m ON m.id=a.message_id
+             JOIN run r ON r.id=m.run_id WHERE r.thread_id=? AND m.id=? AND a.position=?",
+                params![thread.0, message.0, position as i64],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(message.to_string()))
+    }
+
     pub fn history(
         &self,
         thread: &ThreadId,
@@ -191,9 +229,14 @@ impl Database {
         } else {
             (i64::MAX, i64::MAX)
         };
-        const PREVIEW_BYTES: usize = 4096;
         let mut stmt = self.db.prepare(
-            "SELECT m.id,m.run_id,m.role,substr(CAST(m.text AS BLOB),1,?6),m.origin
+            "SELECT m.id,m.run_id,m.role,coalesce(substr(CAST(m.text AS BLOB),1,?6),x''),m.origin,
+             CASE WHEN m.attachment_caption IS NOT NULL THEN
+                coalesce(substr(CAST(m.attachment_caption AS BLOB),1,?6),x'')
+             END,
+             CASE WHEN m.attachment_caption IS NOT NULL THEN
+                (SELECT json_group_array(name ORDER BY position) FROM message_attachment WHERE message_id=m.id)
+             END
              FROM run r CROSS JOIN message m ON m.run_id=r.id WHERE r.thread_id=?1
              AND coalesce(r.delivery_slot,r.ordinal)<=?2
              AND (coalesce(r.delivery_slot,r.ordinal),m.rowid)<(?2,?3)
@@ -208,21 +251,31 @@ impl Database {
                     row,
                     query,
                     limit as i64 + 1,
-                    PREVIEW_BYTES as i64 + 1
+                    HISTORY_PREVIEW_BYTES as i64 + 1
                 ],
                 |r| {
-                    let bytes = r.get_ref(3)?.as_blob()?;
-                    let truncated = bytes.len() > PREVIEW_BYTES;
-                    let bytes = &bytes[..bytes.len().min(PREVIEW_BYTES)];
-                    let preview = match std::str::from_utf8(bytes) {
-                        Ok(text) => text,
-                        Err(e) if truncated && e.error_len().is_none() => {
-                            std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap()
-                        }
-                        Err(e) => return Err(rusqlite::Error::Utf8Error(3, e)),
-                    };
+                    let (preview, truncated) = history_preview(r.get_ref(3)?.as_blob()?, 3)?;
                     Ok(HistoryItem {
                         message: decode_message(r, preview.into())?,
+                        files: match r.get_ref(5)?.as_blob_or_null()? {
+                            Some(bytes) => {
+                                let (caption, truncated) = history_preview(bytes, 5)?;
+                                Some(MessageFiles {
+                                    caption: caption.to_owned(),
+                                    truncated,
+                                    names: serde_json::from_str(r.get_ref(6)?.as_str()?).map_err(
+                                        |e| {
+                                            rusqlite::Error::FromSqlConversionFailure(
+                                                6,
+                                                rusqlite::types::Type::Text,
+                                                Box::new(e),
+                                            )
+                                        },
+                                    )?,
+                                })
+                            }
+                            None => None,
+                        },
                         truncated,
                     })
                 },

@@ -15,11 +15,7 @@ impl Database {
                 "only text/plain uploads are supported".into(),
             ));
         }
-        if name.trim().is_empty() || name.len() > 255 || bytes.len() > 64 * 1024 {
-            return Err(Error::Invalid(
-                "expected a name up to 255 bytes and at most 64 KiB of text".into(),
-            ));
-        }
+        validate(name, bytes.len())?;
         let content = std::str::from_utf8(bytes)
             .map_err(|_| Error::Invalid("text attachment requires UTF-8".into()))?;
         let id = UploadId(new_id());
@@ -39,12 +35,20 @@ impl Database {
     }
 }
 
+pub(super) fn validate(name: &str, size: usize) -> Result<()> {
+    if name.trim().is_empty() || name.len() > 255 || size > 64 * 1024 {
+        return Err(Error::Invalid(
+            "expected a name up to 255 bytes and at most 64 KiB of text".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn claim(
-    formatter: &dyn crate::AgentText,
     tx: &Transaction,
     thread: &ThreadId,
     ids: &[UploadId],
-) -> Result<Vec<String>> {
+) -> Result<Vec<TextAttachment>> {
     let mut attachments = vec![];
     for id in ids {
         let (name, content): (String, String) = tx
@@ -55,7 +59,7 @@ pub(super) fn claim(
             )
             .optional()?
             .ok_or_else(|| Error::Invalid("upload is unavailable for this thread".into()))?;
-        attachments.push(formatter.attachment(&name, &content));
+        attachments.push(TextAttachment { name, content });
     }
     Ok(attachments)
 }

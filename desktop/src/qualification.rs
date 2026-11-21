@@ -14,6 +14,7 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum Step {
     Click(String),
+    NextFileSelection(Vec<std::path::PathBuf>),
     Resize([u16; 2]),
     Type(String),
     Key(String),
@@ -41,6 +42,15 @@ pub fn load() -> Result<Option<Vec<Step>>> {
 struct Controls(HashMap<SharedString, Bounds<Pixels>>);
 impl Global for Controls {}
 
+// Script the OS picker boundary while exercising the real composer and filesystem.
+#[derive(Default)]
+struct FileSelection(Option<Vec<std::path::PathBuf>>);
+impl Global for FileSelection {}
+
+pub fn take_file_selection(cx: &mut App) -> Option<Vec<std::path::PathBuf>> {
+    cx.default_global::<FileSelection>().0.take()
+}
+
 pub fn begin_frame(cx: &mut App) {
     cx.default_global::<Controls>().0.clear();
 }
@@ -59,6 +69,10 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
     window.draw(cx).clear();
     let controls = &cx.default_global::<Controls>().0;
     match step {
+        Step::NextFileSelection(paths) => {
+            cx.default_global::<FileSelection>().0 = Some(paths.clone());
+            true
+        }
         Step::Resize([width, height]) => {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
             true

@@ -836,6 +836,22 @@ impl Huggler {
         self.shared.access(|db| db.fork_history(thread))
     }
 
+    /// Expand the original message body, excluding separately attached files.
+    pub fn read_message_body(&self, thread: &ThreadId, id: &MessageId) -> Result<String> {
+        self.shared.access(|db| db.read_message_body(thread, id))
+    }
+
+    /// Read one captured text file by its zero-based position in history.
+    pub fn read_attachment(
+        &self,
+        thread: &ThreadId,
+        message: &MessageId,
+        position: usize,
+    ) -> Result<String> {
+        self.shared
+            .access(|db| db.read_attachment(thread, message, position))
+    }
+
     /// Expand a message preview to its complete stored text.
     pub fn read_message(&self, thread: &ThreadId, id: &MessageId) -> Result<Message> {
         self.shared.access(|db| db.read_message(thread, id))

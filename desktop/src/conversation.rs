@@ -1,6 +1,8 @@
+mod attachments;
 mod models;
 mod sidebar;
 
+use attachments::Attachments;
 use gpui_component::list::ListState;
 use models::{Models, ProviderCatalog};
 
@@ -30,6 +32,7 @@ struct Workspace {
     root: PathBuf,
     changes: Entity<Changes>,
     draft: Entity<InputState>,
+    attachments: Attachments,
     questions: HashMap<huggler::RequestId, Entity<Questions>>,
 }
 
@@ -50,6 +53,7 @@ pub struct Desktop {
     before: Option<HistoryCursor>,
     subscription: Option<Task<()>>,
     command_log: Option<CommandLog>,
+    file_preview: Option<((huggler::MessageId, usize), String)>,
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
     checkout: Entity<InputState>,
@@ -57,6 +61,7 @@ pub struct Desktop {
     launching: Option<ThreadId>,
     name: Entity<InputState>,
     starter: Entity<InputState>,
+    starter_attachments: Attachments,
     launch_setup: bool,
     prompt: Entity<InputState>,
     instance: ProviderInstanceId,
@@ -127,6 +132,7 @@ impl Desktop {
             before: None,
             subscription: None,
             command_log: None,
+            file_preview: None,
             thread_updates: None,
             history_scroll: ScrollHandle::new(),
             checkout: cx.new(|cx| {
@@ -146,6 +152,7 @@ impl Desktop {
             launching: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Name this conversation…")),
             launch_setup: false,
+            starter_attachments: Attachments::default(),
             starter: cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(3, 7)
@@ -247,6 +254,7 @@ impl Desktop {
         }
         let snapshot = self.runtime.detail(&id, None, "", 32)?;
         let mut cursor = snapshot.history.sequence;
+        self.file_preview = None;
         self.command_log = None;
         self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
         self.prompt = self.workspaces[&id].draft.clone();
@@ -324,6 +332,7 @@ impl Desktop {
                     root,
                     changes,
                     draft,
+                    attachments: Attachments::default(),
                     questions: HashMap::new(),
                 },
             );
@@ -445,7 +454,7 @@ impl Desktop {
     }
 
     fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.launching.is_some() {
+        if self.launching.is_some() || self.starter_attachments.loading {
             return;
         }
         let message = self.starter.read(cx).value().to_string();
@@ -456,7 +465,14 @@ impl Desktop {
             if chars.next().is_some() {
                 title.push('…');
             }
-            title
+            if title.is_empty() {
+                self.starter_attachments
+                    .first_name()
+                    .unwrap_or("")
+                    .to_owned()
+            } else {
+                title
+            }
         } else {
             explicit_name.trim().to_owned()
         };
@@ -477,7 +493,9 @@ impl Desktop {
         let thread = id.clone();
         self.starter
             .update(cx, |input, cx| input.set_value("", window, cx));
-        let first_message = message.clone();
+        let attachments = std::mem::take(&mut self.starter_attachments);
+        let first_message = (!message.trim().is_empty() || !attachments.is_empty())
+            .then(|| attachments.action(message.clone()));
         let launch_name = name.clone();
         let launch = cx.background_spawn(async move {
             let scratch = checkout.trim().is_empty();
@@ -514,18 +532,16 @@ impl Desktop {
                 }
                 return Err(error.into());
             }
-            let sent = if first_message.trim().is_empty() {
-                Ok(())
-            } else {
+            let sent = if let Some(action) = first_message {
                 runtime
                     .dispatch(Command {
                         id: CommandId(Uuid::new_v4().to_string()),
                         thread_id: thread,
-                        action: Action::Enqueue {
-                            text: first_message,
-                        },
+                        action,
                     })
                     .map(|_| ())
+            } else {
+                Ok(())
             };
             anyhow::Ok(sent)
         });
@@ -541,6 +557,7 @@ impl Desktop {
                         let result = (|| {
                             if sent.is_err() {
                                 v.ensure_workspace(&id, w, cx)?;
+                                v.workspaces.get_mut(&id).unwrap().attachments = attachments;
                                 v.workspaces[&id]
                                     .draft
                                     .update(cx, |input, cx| input.set_value(message, w, cx));
@@ -553,7 +570,9 @@ impl Desktop {
                         v.report(result, cx);
                     }
                     Err(error) => {
-                        if v.starter.read(cx).value().is_empty() {
+                        if v.starter.read(cx).value().is_empty() && v.starter_attachments.is_empty()
+                        {
+                            v.starter_attachments = attachments;
                             v.starter
                                 .update(cx, |input, cx| input.set_value(message, w, cx));
                         }
@@ -574,7 +593,11 @@ impl Desktop {
             return Ok(());
         };
         let text = self.prompt.read(cx).value().to_string();
-        if text.trim().is_empty() {
+        let attachments = &self.workspaces[&thread.id].attachments;
+        if attachments.loading {
+            return Ok(());
+        }
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(huggler::Error::Invalid("enter a message".into()));
         }
         if thread.foreground_run.is_none() && thread.queued_count == 0 {
@@ -589,8 +612,9 @@ impl Desktop {
         self.runtime.dispatch(Command {
             id: CommandId(Uuid::new_v4().to_string()),
             thread_id: thread.id.clone(),
-            action: Action::Enqueue { text },
+            action: attachments.action(text),
         })?;
+        self.workspaces.get_mut(&thread.id).unwrap().attachments = Attachments::default();
         self.prompt
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.refresh()
@@ -694,6 +718,8 @@ impl Desktop {
         }
         let check = self.provider_check.as_ref().map(|check| check.read(cx));
         let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
+        let empty_message =
+            self.starter.read(cx).value().trim().is_empty() && self.starter_attachments.is_empty();
         if !self.launch_setup {
             let checkout = self.checkout.read(cx).value();
             let project = std::path::Path::new(checkout.trim())
@@ -707,7 +733,9 @@ impl Desktop {
                 .capture_action(cx.listener(|view, action: &Enter, window, cx| {
                     if action.secondary {
                         cx.stop_propagation();
-                        if !view.starter.read(cx).value().trim().is_empty() {
+                        if !view.starter.read(cx).value().trim().is_empty()
+                            || !view.starter_attachments.is_empty()
+                        {
                             view.launch(window, cx);
                         }
                     }
@@ -719,6 +747,7 @@ impl Desktop {
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted.opacity(0.55))
+                .children(self.attachment_list(&self.starter_attachments, cx))
                 .child(control!(
                     "First message",
                     Input::new(&self.starter).appearance(false)
@@ -727,6 +756,7 @@ impl Desktop {
                     h_flex()
                         .justify_end()
                         .gap_2()
+                        .child(self.attach_button(&self.starter_attachments, cx))
                         .child(self.model_control(cx))
                         .child(control!(
                             "Send first message",
@@ -736,7 +766,7 @@ impl Desktop {
                                 .small()
                                 .icon(IconName::ArrowUp)
                                 .tooltip("Send first message (⌘Enter)")
-                                .disabled(self.starter.read(cx).value().trim().is_empty())
+                                .disabled(empty_message || self.starter_attachments.loading)
                                 .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
                         )),
                 );
@@ -795,6 +825,7 @@ impl Desktop {
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().muted.opacity(0.55))
+            .children(self.attachment_list(&self.starter_attachments, cx))
             .child(control!(
                 "Conversation name",
                 Input::new(&self.name).appearance(false)
@@ -804,21 +835,23 @@ impl Desktop {
                     .gap_2()
                     .justify_between()
                     .flex_wrap()
+                    .child(self.attach_button(&self.starter_attachments, cx))
                     .child(self.model_control(cx))
                     .child(control!(
                         "Open conversation",
                         Button::new("launch")
                             .small()
                             .primary()
-                            .label(if self.starter.read(cx).value().trim().is_empty() {
+                            .label(if empty_message {
                                 "Open conversation"
                             } else {
                                 "Send first message"
                             })
                             .icon(IconName::ArrowRight)
                             .disabled(
-                                self.starter.read(cx).value().trim().is_empty()
-                                    && self.name.read(cx).value().trim().is_empty()
+                                self.starter_attachments.loading
+                                    || (empty_message
+                                        && self.name.read(cx).value().trim().is_empty())
                             )
                             .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
                     )),
@@ -1116,7 +1149,9 @@ impl Desktop {
             .as_ref()
             .or(thread.latest_run.as_ref());
         let busy = thread.foreground_run.is_some() || thread.queued_count > 0;
-        let empty_draft = self.prompt.read(cx).value().trim().is_empty();
+        let attachments = &self.workspaces[&thread.id].attachments;
+        let empty_draft = attachments.loading
+            || (self.prompt.read(cx).value().trim().is_empty() && attachments.is_empty());
         let status = match last_run.map(|run| run.status) {
             Some(huggler::RunStatus::Completed) => None,
             Some(status) => Some(format!("{status:?}")),
@@ -1198,6 +1233,7 @@ impl Desktop {
                         (None, Role::User) => "You",
                         (None, Role::Assistant) => provider.as_str(),
                     };
+                    let caption = item.files.as_ref().map_or(message.text.as_str(), |files| &files.caption);
                     v_flex()
                         .py_3()
                         .gap_1()
@@ -1207,11 +1243,13 @@ impl Desktop {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(role.to_owned()),
                         )
-                        .child(control!(
-                            format!("{role}/{}", message.text),
-                            message.text.clone(),
+                        .when(!caption.is_empty(), |row| row.child(control!(
+                            format!("{role}/{caption}"), caption.to_owned(),
+                        )))
+                        .when_some(item.files.as_ref(), |row, files| row.children(
+                            files.names.iter().enumerate().map(|(index, name)| self.sent_file(&thread.id, &message.id, index, name, cx))
                         ))
-                        .when(item.truncated, |row| {
+                        .when(item.files.as_ref().map_or(item.truncated, |files| files.truncated), |row| {
                             let id = message.id.clone();
                             row.child(control!(
                                 format!("expand/{id}"),
@@ -1219,7 +1257,7 @@ impl Desktop {
                                     .label("Show full message")
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         if let Some(detail) = &mut view.current {
-                                            match view.runtime.read_message(&detail.id, &id) {
+                                            match view.runtime.read_message_body(&detail.id, &id) {
                                                 Ok(message) => {
                                                     if let Some(item) = detail
                                                         .history
@@ -1227,8 +1265,13 @@ impl Desktop {
                                                         .iter_mut()
                                                         .find(|item| item.message.id == id)
                                                     {
-                                                        item.message = message;
-                                                        item.truncated = false;
+                                                        if let Some(files) = &mut item.files {
+                                                            files.caption = message;
+                                                            files.truncated = false;
+                                                        } else {
+                                                            item.message.text = message;
+                                                            item.truncated = false;
+                                                        }
                                                     }
                                                 }
                                                 Err(error) => view.error = Some(error.to_string()),
@@ -1317,6 +1360,7 @@ impl Desktop {
                 .when_some(last_run.filter(|_| !self.checkout_unavailable).and_then(|r| r.error.clone()), |area, error| {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
+                .children(self.attachment_list(attachments, cx))
                 .child(control!("Message", Input::new(&self.prompt).appearance(false)))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
@@ -1353,6 +1397,7 @@ impl Desktop {
                 .child(
                     h_flex()
                         .flex_wrap().gap_2()
+                        .child(self.attach_button(attachments, cx))
                         .child(self.model_control(cx))
                         .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
                             format!("status/{status}"), label(status)

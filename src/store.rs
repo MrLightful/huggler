@@ -87,6 +87,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/037.sql"),
     include_str!("../migrations/038.sql"),
     include_str!("../migrations/039.sql"),
+    include_str!("../migrations/040.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -643,28 +644,64 @@ impl Database {
             | Action::SendAuto { text }
             | Action::SendPlan { text }
             | Action::Enqueue { text }
-            | Action::SendAttachments { text, .. } => {
-                let combined;
-                let text = if let Action::SendAttachments { uploads, .. } = &cmd.action {
-                    if !(1..=8).contains(&uploads.len()) {
-                        return Err(Error::Invalid("send between one and eight uploads".into()));
+            | Action::SendAttachments { text, .. }
+            | Action::EnqueueAttachments { text, .. } => {
+                let claimed;
+                let files = match &cmd.action {
+                    Action::SendAttachments { uploads, .. } => {
+                        if !(1..=8).contains(&uploads.len()) {
+                            return Err(Error::Invalid(
+                                "send between one and eight uploads".into(),
+                            ));
+                        }
+                        claimed = uploads::claim(&tx, thread, uploads)?;
+                        claimed.as_slice()
                     }
-                    combined = self.output.text.with_attachments(
-                        text,
-                        &uploads::claim(&*self.output.text, &tx, thread, uploads)?,
-                    );
-                    &combined
-                } else {
+                    Action::EnqueueAttachments { files, .. } => {
+                        if !(1..=8).contains(&files.len()) {
+                            return Err(Error::Invalid("send between one and eight files".into()));
+                        }
+                        for file in files {
+                            uploads::validate(&file.name, file.content.len())?;
+                        }
+                        files.as_slice()
+                    }
+                    _ => &[],
+                };
+                let combined;
+                let prompt = if files.is_empty() {
                     text
+                } else {
+                    let parts = files
+                        .iter()
+                        .map(|f| self.output.text.attachment(&f.name, &f.content))
+                        .collect::<Vec<_>>();
+                    combined = self.output.text.with_attachments(text, &parts);
+                    &combined
                 };
                 let (id, msg, events, delivery) = start_message(
                     &tx,
                     thread,
-                    text,
+                    prompt,
                     selection.flatten(),
                     None,
-                    matches!(cmd.action, Action::Enqueue { .. } | Action::SendAuto { .. }),
+                    matches!(
+                        cmd.action,
+                        Action::Enqueue { .. }
+                            | Action::SendAuto { .. }
+                            | Action::EnqueueAttachments { .. }
+                    ),
                 )?;
+                if !files.is_empty() {
+                    tx.execute(
+                        "UPDATE message SET attachment_caption=? WHERE id=?",
+                        params![text, msg.0],
+                    )?;
+                    for (position, file) in files.iter().enumerate() {
+                        tx.execute("INSERT INTO message_attachment(message_id,position,name,content) VALUES(?,?,?,?)",
+                            params![msg.0, position as i64, file.name, file.content])?;
+                    }
+                }
                 if matches!(cmd.action, Action::SendPlan { .. })
                     && tx.execute(
                         "UPDATE turn_effect SET plan_mode=1 WHERE run_id=? AND

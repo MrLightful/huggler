@@ -360,7 +360,7 @@ async fn bounded_history_and_retained_replay_match_the_reopened_snapshot() -> Re
     };
     // Place a multibyte scalar at the preview boundary and a literal search hit after NUL.
     let huge = format!("{}🦀\0{}_% HIT", "a".repeat(4095), "b".repeat(300_000));
-    for i in 0..70 {
+    for i in 0..69 {
         rt.dispatch(command(
             format!("q-{i}"),
             Action::Enqueue {
@@ -372,6 +372,28 @@ async fn bounded_history_and_retained_replay_match_the_reopened_snapshot() -> Re
             },
         ))?;
     }
+    let with_file = rt.dispatch(command(
+        "q-69".into(),
+        Action::EnqueueAttachments {
+            text: huge.clone(),
+            files: vec![TextAttachment {
+                name: "empty.txt".into(),
+                content: String::new(),
+            }],
+        },
+    ))?;
+    let attached = rt
+        .detail(thread, None, "", 1)?
+        .history
+        .messages
+        .pop()
+        .unwrap();
+    let files = attached.files.unwrap();
+    assert!(files.truncated);
+    assert_eq!(files.caption.len(), 4095);
+    let file_message = with_file.message_id.as_ref().unwrap();
+    assert_eq!(rt.read_message_body(thread, file_message)?, huge);
+    assert_eq!(rt.read_attachment(thread, file_message, 0)?, "");
     rt.stop_thread(CommandId("stop".into()), thread.clone())?;
     rt.wait(thread, first.run_id.as_ref().unwrap()).await?;
     let page = rt.detail(thread, None, "", 3)?.history;
@@ -389,6 +411,15 @@ async fn bounded_history_and_retained_replay_match_the_reopened_snapshot() -> Re
         },
     );
     let receipt = rt.dispatch(edited.clone())?;
+    assert!(
+        rt.detail(thread, None, "", 1)?.history.messages[0]
+            .files
+            .is_none()
+    );
+    assert!(matches!(
+        rt.read_attachment(thread, file_message, 0),
+        Err(Error::NotFound(_))
+    ));
     assert!(matches!(
         rt.detail(thread, Some(&old), "", 3),
         Err(Error::HistoryChanged)

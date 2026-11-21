@@ -267,6 +267,23 @@ async fn attachments_are_claimed_once_and_answers_reach_the_owning_callback() ->
     rt.close().await?;
     let rt = Huggler::open(opts).await?;
     assert_eq!(rt.dispatch(cmd)?, receipt);
+    let id = receipt.message_id.as_ref().unwrap();
+    let history = rt.detail(&owner, None, "", 32)?.history;
+    let files = history
+        .messages
+        .iter()
+        .find(|item| &item.message.id == id)
+        .unwrap()
+        .files
+        .as_ref()
+        .unwrap();
+    assert_eq!(files.caption, "read");
+    assert_eq!(files.names, ["project.txt"]);
+    assert_eq!(rt.read_attachment(&owner, id, 0)?, "project.txt");
+    assert!(matches!(
+        rt.read_attachment(&peer, id, 0),
+        Err(Error::NotFound(_))
+    ));
     assert_eq!(frames(&repo, "turn/start").len(), 3);
     let replies = fs::read_to_string(repo.join("frames.ndjson"))?
         .lines()
