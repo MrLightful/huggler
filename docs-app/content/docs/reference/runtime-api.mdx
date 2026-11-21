@@ -21,6 +21,15 @@ The current manifest declares Huggler `0.0.1`, Rust `1.94.1`, and edition 2024. 
 
 Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_dir`. Use `WorktreeRoot::ProjectRelative` for a directory relative to each registered project. The `worktree_name` is a single path component containing the literal placeholder `{id}`, which is replaced with a generated UUID.
 
+```rust
+let mut options = HugglerOptions::new(state_dir);
+options.storage.database_path = "sessions/history.db".into();
+options.storage.worktree_root = WorktreeRoot::ProjectRelative(".myapp/worktrees".into());
+options.storage.worktree_name = "checkout-{id}".into();
+```
+
+This places the database and its owner lock, `history.db.runtime.lock`, under `state_dir/sessions/`. It creates new checkouts under `.myapp/worktrees/` in the registered project. Ignore that directory in Git if it should stay out of checkpoint diffs. Existing reservations keep their recorded checkout paths.
+
 ## Read and control
 
 | API | Return or effect |
@@ -42,5 +51,7 @@ Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_d
 ## Customize agent output
 
 Set `AgentOutput.name`, `title`, `version`, and optional `instructions` to identify your host to supported providers and MCP clients. Map instance IDs to display names with `provider_labels`. Use `ToolPresentation` to rename a tool or override its title and description. Policies use the original built-in tool keys.
+
+The MCP server name and advertised tool names accept 1–128 ASCII letters, digits, underscores, or hyphens. Give each advertised tool a unique name. Keep the server name stable across restarts for providers that store permissions under it. Resolve a display label with `runtime.output().provider_label(id)`, which falls back to the instance ID.
 
 Implement `AgentText` to change the host-generated text for history, attachments, peer messages, and other prompts or diagnostics. Store the implementation in an `Arc` and assign it to `options.output.text`. Callbacks are synchronous and can run inside a database transaction. Keep them fast and avoid callbacks into the runtime.
