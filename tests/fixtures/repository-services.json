@@ -1,0 +1,12 @@
+[
+  {"path":"/repos/acme/sdk/pulls","response":[{"number":7,"title":"Review","state":"open"}]},
+  {"path":"/api/v4/projects/acme%2Fsdk/merge_requests","response":[{"iid":7,"title":"Review","state":"opened"}]},
+  {"path":"/2.0/repositories/acme/sdk/pullrequests","response":{"values":[{"id":7,"title":"Review","state":"OPEN"}]}},
+  {"path":"/org/acme/_apis/git/repositories/sdk/pullrequests?api-version=7.1","response":{"value":[{"pullRequestId":7,"title":"Review","status":"active"}]}},
+  {"path":"/api/v1/repos/acme/sdk/pulls","response":[{"number":7,"title":"Review","state":"open"}]},
+  {"path":"/api/repos/acme/sdk/pulls","response":{"items":[{"number":7,"title":"Review","state":"open"}],"next":null}},
+  {"path":"/v1/origin/repos/acme/sdk/pulls?state=open&pageSize=50&sortBy=updated","response":{"pullRequests":[{"number":"7","title":"Review","state":"open"}]}},
+  {"path":"/graphql","method":"POST","response":{"data":{"issues":{"nodes":[{"identifier":"SDK-7","title":"Review","state":{"name":"In Progress"}}]}}}},
+  {"path":"/repos/acme/sdk/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs","response":{"check_runs":[{"name":"build","conclusion":"success"}]}},
+  {"path":"/repos/acme/sdk/issues/7/comments","method":"POST","response":{"id":809}}
+]

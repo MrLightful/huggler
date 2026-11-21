@@ -738,6 +738,8 @@ pub enum Error {
     Busy,
     #[error("invalid request: {0}")]
     Invalid(String),
+    #[error("host integration: {0}")]
+    Integration(String),
     #[error("unsupported operation: {0}")]
     Unsupported(String),
     #[error("unsupported state schema version {0}")]

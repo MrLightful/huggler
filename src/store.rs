@@ -15,6 +15,8 @@ mod native_children;
 mod questions;
 mod queue;
 mod remote;
+#[cfg(feature = "application")]
+mod repository;
 mod steering;
 mod tasks;
 mod uploads;
@@ -75,6 +77,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/027.sql"),
     include_str!("../migrations/028.sql"),
     include_str!("../migrations/029.sql"),
+    include_str!("../migrations/030.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";

@@ -8,7 +8,7 @@ description = "Orchestrate durable coding-agent conversations in Rust applicatio
 include = ["src/**", "migrations/**", "Cargo.toml", "Cargo.lock", "tests/**", "!**/__pycache__/**", "!**/*.pyc", "docs/reference/codex-resume/{LICENSE,codex_transcript.ndjson,cursors.json,expected.txt}"]
 
 [features]
-application = ["dep:chrono", "dep:chrono-tz", "dep:hmac", "dep:hex"]
+application = ["dep:chrono", "dep:chrono-tz", "dep:hmac", "dep:hex", "reqwest/rustls-tls"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }

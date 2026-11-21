@@ -19,3 +19,6 @@ pub use runtime::{Huggler, HugglerOptions, Subscription};
 
 #[cfg(feature = "application")]
 pub mod workspace;
+
+#[cfg(feature = "application")]
+pub mod repository;

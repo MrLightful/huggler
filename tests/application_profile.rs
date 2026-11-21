@@ -354,7 +354,7 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
     assert_ne!(child.thread, thread);
     assert_eq!(fire()?.as_ref(), Some(&child));
     completed(&rt, &child.thread, &child.run).await;
-    assert_eq!(rt.schedule_history(&hook)?, [child.clone()]);
+    assert_eq!(rt.schedule_history(&hook)?, std::slice::from_ref(&child));
     rt.delete_thread(&thread)?;
     assert!(rt.schedule_history(&hook)?.is_empty());
     assert!(matches!(fire(), Err(Error::Forbidden)));
@@ -541,5 +541,147 @@ async fn managed_agent_requests_and_one_use_secret_references() -> Result<()> {
             );
         }
     }
+    rt.close().await
+}
+
+#[cfg(feature = "application")]
+#[tokio::test]
+async fn project_services_and_ordered_watch_delivery() -> Result<()> {
+    use axum::{
+        Json, Router,
+        body::Bytes,
+        http::{HeaderMap, Method, StatusCode, Uri},
+    };
+    use repository::Driver::*;
+    use serde_json::{Value, json};
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/repository-services.json"))?;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let router = Router::new().fallback(
+        move |uri: Uri, method: Method, headers: HeaderMap, body: Bytes| {
+            let case = cases.iter().find(|c| c["path"] == uri.to_string()).cloned();
+            let count = count.clone();
+            async move {
+                if headers["authorization"] != "Bearer recorded" {
+                    return (StatusCode::UNAUTHORIZED, Json(Value::Null));
+                }
+                let case = case.expect("unrecorded request");
+                assert_eq!(method.as_str(), case["method"].as_str().unwrap_or("GET"));
+                if uri.path() == "/graphql" {
+                    let gql: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(gql["variables"], json!({"team":"SDK"}));
+                    assert!(
+                        gql["query"]
+                            .as_str()
+                            .unwrap()
+                            .contains("team: {key: {eq: $team}}")
+                    );
+                } else if method == Method::POST {
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&body).unwrap(),
+                        json!({"body":"Approved by fixture"})
+                    );
+                }
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (StatusCode::OK, Json(case["response"].clone()))
+            }
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let dir = tempfile::tempdir()?;
+    let config = options(&dir.path().join("state"));
+    let rt = Huggler::open(config.clone()).await?;
+    let root = dir.path().join("repo");
+    checkout(&root);
+    let project = rt.open_project(&root)?;
+    let owner = launch(&rt, &project, "owner", Provider::Codex);
+    let other = rt.create_scratch(&dir.path().join("other"))?;
+    let outsider = launch(&rt, &other, "outsider", Provider::Codex);
+    let mut watch = None;
+    let mut chosen_link = None;
+    for driver in [
+        GitHub,
+        GitLab,
+        Bitbucket,
+        AzureDevOps,
+        Forgejo,
+        GitCafe,
+        CursorOrigin,
+        Linear,
+    ] {
+        let repo = match driver {
+            AzureDevOps => "org/acme/sdk",
+            Linear => "SDK",
+            _ => "acme/sdk",
+        };
+        let b = rt.bind_repository(&project.id, driver, &origin, repo)?;
+        assert_eq!(b, rt.bind_repository(&project.id, driver, &origin, repo)?);
+        assert!(matches!(
+            rt.repository_client(&project.id, &b.id, None),
+            Err(Error::LoginRequired)
+        ));
+        let client = rt.repository_client(&project.id, &b.id, Some("Bearer recorded"))?;
+        let list = client.list().await?;
+        assert_eq!(list.len(), 1);
+        let key = if driver == Linear { "SDK-7" } else { "7" };
+        assert_eq!(list[0].key, key);
+        assert_eq!(list[0].title, "Review");
+        assert!(!list[0].state.is_empty());
+        let link = rt.link_repository_item(&owner, &b.id, key)?;
+        assert!(matches!(
+            rt.link_repository_item(&outsider, &b.id, key),
+            Err(Error::Forbidden)
+        ));
+        if driver == GitHub {
+            assert!(matches!(
+                rt.repository_client(&other.id, &b.id, Some("Bearer recorded")),
+                Err(Error::Forbidden)
+            ));
+            assert!(matches!(
+                rt.repository_client(&project.id, &b.id, Some("expired"))?
+                    .list()
+                    .await,
+                Err(Error::LoginRequired)
+            ));
+            assert_eq!(
+                client.checks(&"a".repeat(40)).await?[0]["conclusion"],
+                "success"
+            );
+            assert_eq!(client.comment(7, "Approved by fixture").await?, 809);
+            let w = rt.watch_repository_item(&owner, &link)?;
+            assert_eq!(rt.sync_repository_watch(&w, 1, "open")?, None);
+            watch = Some(w);
+            chosen_link = Some(link);
+        } else {
+            assert!(matches!(
+                client.comment(7, "denied").await,
+                Err(Error::Unsupported(_))
+            ));
+            assert!(rt.unlink_repository_item(&owner, &link)?);
+        }
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 10);
+    rt.close().await?;
+    let rt = Huggler::open(config).await?;
+    let w = watch.unwrap();
+    let link = chosen_link.unwrap();
+    assert_eq!(rt.repository_links(&owner)?[0].link, link);
+    assert_eq!(rt.sync_repository_watch(&w, 2, "open")?, None);
+    let run = rt.sync_repository_watch(&w, 3, "merged")?.unwrap();
+    completed(&rt, &owner, &run).await;
+    assert_eq!(rt.sync_repository_watch(&w, 2, "closed")?, None);
+    assert_eq!(rt.sync_repository_watch(&w, 3, "merged")?, None);
+    assert_eq!(rt.read(&owner)?.runs.len(), 1);
+    assert!(!rt.unwatch_repository_item(&outsider, &w)?);
+    assert!(rt.unlink_repository_item(&owner, &link)?);
+    assert!(rt.repository_links(&owner)?.is_empty());
+    assert!(matches!(
+        rt.sync_repository_watch(&w, 4, "closed"),
+        Err(Error::Forbidden)
+    ));
+    server.abort();
     rt.close().await
 }
