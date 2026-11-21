@@ -52,6 +52,17 @@ struct Client {
     early: VecDeque<Value>,
 }
 
+/// Every exhausted window must have reset before the next prompt is eligible.
+fn quota_reset_at(limits: &Value) -> Option<i64> {
+    let mut resets = Vec::new();
+    for window in [&limits["primary"], &limits["secondary"]] {
+        if window["usedPercent"].as_f64().is_some_and(|v| v >= 100.0) {
+            resets.push(window["resetsAt"].as_i64()?);
+        }
+    }
+    resets.into_iter().max()
+}
+
 impl Client {
     async fn read(&mut self) -> Result<Value> {
         loop {
@@ -95,7 +106,8 @@ impl Client {
                     .cloned()
                     .ok_or_else(|| protocol(format!("missing {method} result")));
             }
-            if frame["method"] == "thread/tokenUsage/updated"
+            if frame["method"] == "account/rateLimits/updated"
+                || frame["method"] == "thread/tokenUsage/updated"
                 || method == "turn/start"
                     && matches!(
                         frame["method"].as_str(),
@@ -285,6 +297,7 @@ impl Client {
         let mut questions = HashMap::<RequestId, Value>::new();
         let mut children = Children::default();
         let mut foreground_complete = false;
+        let mut reset_at = None;
         let mut steers = HashMap::new();
         let mut interrupt_replies = HashMap::<u64, oneshot::Sender<Result<()>>>::new();
         loop {
@@ -493,6 +506,13 @@ impl Client {
                     })
                 });
             }
+            if frame["method"] == "account/rateLimits/updated" {
+                let limits = &p["rateLimits"];
+                if limits["limitId"].is_null() || limits["limitId"] == "codex" {
+                    reset_at = quota_reset_at(limits);
+                }
+                continue;
+            }
             if foreground_complete || p["threadId"] != thread {
                 continue;
             }
@@ -525,6 +545,17 @@ impl Client {
                 Some("turn/completed") if p["turn"]["id"] == id => {
                     if p["turn"]["status"] == "interrupted" {
                         return Err(Error::Interrupted);
+                    }
+                    if p["turn"]["status"] == "failed"
+                        && p["turn"]["error"]["codexErrorInfo"] == "usageLimitExceeded"
+                    {
+                        return Err(Error::UsageLimit {
+                            message: p["turn"]["error"]["message"]
+                                .as_str()
+                                .unwrap_or("usage limit exceeded")
+                                .into(),
+                            reset_at,
+                        });
                     }
                     if p["turn"]["status"] != "completed" {
                         return Err(protocol(format!(

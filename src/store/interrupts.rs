@@ -17,6 +17,7 @@ pub(super) fn set_queue_hold(tx: &Transaction, thread: &ThreadId, hold: bool) ->
 pub(super) fn stop_thread(tx: &Transaction, root: &ThreadId) -> Result<Vec<RunId>> {
     let mut stops = Vec::new();
     for thread in tasks::subtree(tx, root)? {
+        tx.execute("DELETE FROM usage_recovery WHERE thread_id=?", [&thread.0])?;
         set_queue_hold(tx, &thread, true)?;
         if &thread != root {
             tasks::dispose(tx, &thread, None)?;

@@ -833,3 +833,112 @@ async fn steering_settles_only_acknowledged_input_on_the_expected_turn() -> Resu
     assert_eq!(frames(&repo, "turn/steer").len(), 4);
     rt.close().await
 }
+
+#[tokio::test]
+async fn usage_reset_continues_once_and_respects_stop_and_newer_messages() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let mut opts = options(&dir.path().join("state"));
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&repo)?;
+    let mut limited = Vec::new();
+    for (name, window) in [
+        ("stopped", "soon"),
+        ("manual", "soon"),
+        ("stale", "stale"),
+        ("unknown", "unknown"),
+        ("resume", "soon"),
+    ] {
+        let thread = launch(&rt, &project, name, Provider::Codex);
+        let run = rt
+            .send(
+                CommandId(format!("send-{name}")),
+                thread.clone(),
+                format!("quota {window}"),
+            )?
+            .run_id
+            .unwrap();
+        let failed = rt.wait(&thread, &run).await?;
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert!(failed.error.unwrap().contains("Quota exhausted"));
+        assert_eq!(failed.usage_limit_reset_at.is_some(), window != "unknown");
+        if name == "stopped" {
+            rt.stop_thread(CommandId("stop".into()), thread.clone())?;
+        }
+        if name == "manual" {
+            let cmd = command(
+                "manual-followup",
+                &thread,
+                Action::Send {
+                    text: "manual continuation".into(),
+                },
+            );
+            let receipt = rt.dispatch(cmd.clone())?;
+            completed(&rt, &thread, receipt.run_id.as_ref().unwrap()).await;
+            assert_eq!(rt.dispatch(cmd)?, receipt);
+        }
+        limited.push((thread, run));
+    }
+    rt.close().await?;
+    opts.auto_resume_usage_limits = true;
+    let rt = Huggler::open(opts.clone()).await?;
+    let (thread, failed) = limited.last().unwrap();
+    wait_for_limit_continuation(&rt, thread, failed).await?;
+    let session = rt.read(thread)?.native_thread.unwrap();
+    let starts = frames(&repo, "turn/start");
+    assert_eq!(starts.len(), 7);
+    assert_eq!(starts.last().unwrap()["threadId"], session.0);
+    assert_eq!(
+        starts.last().unwrap()["input"][0]["text"],
+        "Continue where you left off."
+    );
+    rt.close().await?;
+    let rt = Huggler::open(opts).await?;
+    for (thread, _) in limited {
+        let expected = if ["manual", "resume"].contains(&thread.0.as_str()) {
+            2
+        } else {
+            1
+        };
+        assert_eq!(rt.read(&thread)?.runs.len(), expected);
+    }
+    assert_eq!(frames(&repo, "turn/start").len(), 7);
+    let live = launch(&rt, &project, "live", Provider::Codex);
+    let failed = rt
+        .send(
+            CommandId("live-limit".into()),
+            live.clone(),
+            "quota soon".into(),
+        )?
+        .run_id
+        .unwrap();
+    assert_eq!(rt.wait(&live, &failed).await?.status, RunStatus::Failed);
+    wait_for_limit_continuation(&rt, &live, &failed).await?;
+    assert_eq!(rt.read(&live)?.runs.len(), 2);
+    rt.close().await
+}
+
+async fn wait_for_limit_continuation(
+    rt: &Huggler,
+    thread: &ThreadId,
+    failed: &RunId,
+) -> Result<()> {
+    let mut stream = rt.subscribe(thread, Some(0))?.1;
+    let next = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Change::UsageLimitContinuation {
+                failed: previous,
+                run_id,
+            } = stream.next().await?.change
+            {
+                assert_eq!(&previous, failed);
+                return Ok::<_, Error>(run_id);
+            }
+        }
+    })
+    .await
+    .expect("recovery at the provider reset")?;
+    completed(rt, thread, &next).await;
+    Ok(())
+}

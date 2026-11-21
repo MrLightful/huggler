@@ -358,6 +358,9 @@ pub struct Run {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_slot: Option<i64>,
     pub native_turn: Option<NativeTurnId>,
+    /// Unix seconds reported for an exhausted Codex quota window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit_reset_at: Option<i64>,
     pub error: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -586,6 +589,10 @@ impl From<ThreadSnapshot> for Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    UsageLimitContinuation {
+        failed: RunId,
+        run_id: RunId,
+    },
     Steer {
         run_id: RunId,
         command_id: CommandId,
@@ -722,6 +729,11 @@ pub enum Error {
         #[serde(serialize_with = "display_error")]
         std::io::Error,
     ),
+    #[error("provider usage limit exceeded: {message}")]
+    UsageLimit {
+        message: String,
+        reset_at: Option<i64>,
+    },
     #[error("provider: {0}")]
     Provider(String),
     #[error("worker: {0}")]

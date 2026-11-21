@@ -12,6 +12,7 @@ mod queue;
 mod steering;
 mod tasks;
 mod uploads;
+mod usage_limits;
 use crate::{
     contracts::*,
     providers::{Turn, Update},
@@ -58,9 +59,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/019.sql"),
     include_str!("../migrations/020.sql"),
     include_str!("../migrations/021.sql"),
+    include_str!("../migrations/022.sql"),
 ];
 
-const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
+const RUN_FIELDS: &str =
+    "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at";
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
     let status: String = row.get(2)?;
@@ -82,6 +85,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         error: row.get(4)?,
         queue_held: row.get(5)?,
         delivery_slot: row.get(6)?,
+        usage_limit_reset_at: row.get(7)?,
     })
 }
 
@@ -167,6 +171,7 @@ fn start_message(
     } else {
         ("starting", PeerDelivery::Started)
     };
+    tx.execute("DELETE FROM usage_recovery WHERE thread_id=?", [&thread.0])?;
     let id = RunId(new_id());
     tx.execute(
         "INSERT INTO run(id,thread_id,status,queue_held,ordinal,task_id)
@@ -906,6 +911,9 @@ impl Database {
         steering::disconnect(tx, thread, id)?;
         // Waiting and the final answer commit together. A cleanup error or a
         // process exit after this point cannot undo provider completion.
+        if let Err(Error::UsageLimit { reset_at, .. }) = &result {
+            usage_limits::record(tx, thread, id, *reset_at)?;
+        }
         let interrupted = matches!(result, Err(Error::Interrupted));
         let error = result.err().map(|e| e.to_string());
         tx.execute(

@@ -28,6 +28,8 @@ pub struct HugglerOptions {
     pub state_dir: PathBuf,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
+    /// Continue an idle independent Codex thread after a provider-reported quota reset.
+    pub auto_resume_usage_limits: bool,
     pub instances: Vec<crate::providers::registry::ProviderInstance>,
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,
@@ -37,6 +39,7 @@ impl HugglerOptions {
         Self {
             state_dir: state_dir.into(),
             agent_tools: false,
+            auto_resume_usage_limits: false,
             instances: vec![],
             codex: CodexOptions::default(),
             claude_agent: ClaudeAgentOptions::default(),
@@ -55,6 +58,7 @@ pub(crate) struct Shared {
     decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
+    limit_reset: tokio::sync::Notify,
     stop: watch::Sender<bool>,
 }
 
@@ -227,9 +231,32 @@ impl Shared {
     async fn work(self: Arc<Self>, thread: ThreadId, run: RunId, stopped: watch::Receiver<bool>) {
         let result = self.execute(&thread, &run, stopped).await;
         self.run_stops.lock().unwrap().remove(&run);
+        let limited = matches!(result, Err(Error::UsageLimit { .. }));
         if let Err(error) = self.advance(|db| db.finish(&thread, &run, result)) {
             *self.fault.lock().unwrap() = Some(error.to_string());
             self.changed.send_replace(());
+        } else if limited {
+            self.limit_reset.notify_one();
+        }
+    }
+
+    async fn recover_limits(self: Arc<Self>, mut stop: watch::Receiver<bool>) {
+        loop {
+            let delay = match self.schedule(Database::resume_limited) {
+                Ok(seconds) => seconds,
+                Err(Error::Closed) => return,
+                Err(error) => {
+                    *self.fault.lock().unwrap() = Some(error.to_string());
+                    self.changed.send_replace(());
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = stop.wait_for(|stopped| *stopped) => return,
+                _ = self.limit_reset.notified() => (),
+                // Recheck wall time periodically while a recovery is armed.
+                _ = tokio::time::sleep(std::time::Duration::from_secs(delay.unwrap_or(0).min(3600))), if delay.is_some() => (),
+            }
         }
     }
 
@@ -360,6 +387,7 @@ impl Huggler {
             controls: Mutex::default(),
             fault: Mutex::default(),
             changed: watch::channel(()).0,
+            limit_reset: tokio::sync::Notify::new(),
             stop: watch::channel(false).0,
             registry,
             endpoint,
@@ -387,6 +415,11 @@ impl Huggler {
         {
             let shared = &runtime.shared;
             let mut gate = shared.workers.lock().unwrap();
+            if options.auto_resume_usage_limits {
+                gate.as_mut()
+                    .unwrap()
+                    .spawn(shared.clone().recover_limits(shared.stop.subscribe()));
+            }
             for (thread, run) in jobs {
                 shared.spawn(gate.as_mut().unwrap(), thread, run);
             }

@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import sys
+import time
 from uuid import uuid4
 
 
@@ -79,7 +80,15 @@ for line in sys.stdin:
         if prompt == "callbacks":
             emit(id="approve", method="item/commandExecution/requestApproval", params={
                 "threadId": session, "turnId": turn, "availableDecisions": ["accept", "decline"]})
-        if prompt in ("ask", "callbacks"):
+        if prompt.startswith("quota "):
+            window = prompt.split()[1]
+            if window != "unknown":
+                reset = int(time.time()) + (2 if window == "soon" else -30)
+                emit(method="account/rateLimits/updated", params={"rateLimits": {"limitId": "codex",
+                     "primary": {"usedPercent": 100, "resetsAt": reset}}})
+            emit(method="turn/completed", params={"threadId": session, "turn": {"id": turn, "status": "failed",
+                 "error": {"message": "Quota exhausted", "codexErrorInfo": "usageLimitExceeded"}}})
+        elif prompt in ("ask", "callbacks"):
             emit(id="ask", method="item/tool/requestUserInput", params={"threadId": session, "turnId": turn,
                  "questions": [{"id": "one"}, {"id": "two"}]})
         else:
