@@ -173,7 +173,7 @@ impl Database {
         )?;
         let mut result = (None, None);
         if previous.is_some_and(|s| s != state) {
-            let text = format!("Repository update for {repo} item {item}\n{state}");
+            let text = self.output.text.repository_update(&repo, &item, state);
             let (run, job) = start_durable_message(&tx, &thread, &text, model, false)?;
             result = (Some(run), job);
         }

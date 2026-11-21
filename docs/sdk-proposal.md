@@ -10,10 +10,82 @@ T3 Code supplies reference scenarios for user-visible behavior. Huggler can defi
 | --- | --- |
 | Cargo and Rust | Name the library crate `huggler`. Use paths such as `src/providers/claude_agent.rs`, types such as `HugglerOptions` and methods such as `Huggler::open`. Use newtypes for distinct IDs. |
 | Driver configuration | Keep stable serialized IDs such as `codex` and `claudeAgent`. Use Rust paths such as `huggler::providers::codex` and `huggler::providers::claude_agent`. |
-| Agent tools | Register the MCP server as `huggler`. Use operation names such as `thread_send` and `delegate_task`. A harness that qualifies tool names can expose `mcp__huggler__thread_send`. Use the same catalog for discovery, dispatch and model instructions. |
+| Agent tools | The default MCP server name is `huggler`. Use canonical operation keys such as `thread_send` and `delegate_task`. A harness that qualifies tool names can expose `mcp__huggler__thread_send`. Use the same catalog for discovery, dispatch and model instructions. |
 | Assets and settings | Use `HUGGLER_*` for Huggler-owned environment variables and filenames such as `pi-huggler-mcp-extension.ts` for provider-specific assets. Preserve vendor spellings in provider protocols, historical data readers and source references. |
 
 Preserve applicable license notices when reusing code or fixtures. [Agent tool mapping](parity-inventory.md#agent-facing-tools)
+
+## Configure filesystem outputs
+
+An embedding application chooses the state directory when it opens Huggler. With default options, that directory contains `huggler.sqlite3`, its owner lock `runtime.lock`, and a `worktrees/<id>` checkout for each isolated delegation, checkpoint fork or explicit workspace allocation. The worktree directory is created on first use.
+
+```rust
+use huggler::{Huggler, HugglerOptions, WorktreeRoot};
+use std::path::Path;
+
+async fn open_for_host(state: &Path) -> huggler::Result<Huggler> {
+    let mut options = HugglerOptions::new(state);
+    options.storage.database_path = "sessions/history.db".into();
+    options.storage.worktree_root = WorktreeRoot::ProjectRelative(".myapp/worktrees".into());
+    options.storage.worktree_name = "checkout-{id}".into();
+    Huggler::open(options).await
+}
+```
+
+This host keeps conversation state in `<state>/sessions/history.db` and places checkouts in `<project>/.myapp/worktrees/checkout-<id>`. The name template must include `{id}` within a single directory name. Nested delegations use the registered project for placement and the caller’s current checkout for the base commit. For a project-local directory, add its path to the repository’s Git ignores if checkpoints should continue to see a clean project.
+
+For a shared checkout pool, use `WorktreeRoot::Shared(path)`. Both a shared pool and the database accept absolute paths or paths relative to the state directory. Set the new layout before opening the runtime. Existing checkouts keep their recorded absolute paths across restarts. Opening a different database selects a separate conversation history.
+
+The owner lock follows the database so every host opening it uses the same lock. A custom database such as `history.db` uses the adjacent `history.db.runtime.lock`. SQLite derives its own `-wal`, `-shm` and journal filenames. Use private, host-controlled directories for state and checkouts.
+
+Scratch projects and clones take explicit destination paths. Attachments live in the database. To redirect a provider’s own files, set the absolute `ProviderInstance::home` for Codex, Claude Agent or Pi. The bundled GPUI host also saves its selected thread in its app data directory, which it accepts through `HUGGLER_STATE_DIR`. [Storage options](../src/layout.rs) · [Provider configuration](../src/providers/registry.rs)
+
+## Configure what agents see
+
+Set `HugglerOptions::output` before opening the runtime. The host chooses its protocol name, display title, version and optional MCP instructions. It can also set tool names, titles and descriptions, label provider instances for its UI, and override individual methods on `AgentText`.
+
+```rust
+use huggler::{AgentText, HugglerOptions, ToolPresentation, WorktreeRoot};
+use std::{path::Path, sync::Arc};
+
+#[derive(Debug)]
+struct StudioText;
+
+impl AgentText for StudioText {
+    fn peer_message(&self, host: &str, origin: &str, message: &str) -> String {
+        format!("{host} collaborator {origin}\n\n{message}")
+    }
+
+    fn delegated_title(&self) -> &str {
+        "Studio assignment"
+    }
+}
+
+fn studio_options(state: &Path) -> HugglerOptions {
+    let mut opts = HugglerOptions::new(state);
+    opts.storage.worktree_root = WorktreeRoot::ProjectRelative(".claude/worktrees".into());
+    opts.storage.database_path = "studio.sqlite3".into();
+    opts.agent_tools = true;
+    opts.output.name = "studio".into();
+    opts.output.title = "Studio".into();
+    opts.output.version = "1.0".into();
+    opts.output.instructions = Some("Use the directory to find collaborators.".into());
+    opts.output.tools.insert("thread_list".into(), ToolPresentation {
+        name: Some("directory".into()),
+        title: Some("Find collaborators".into()),
+        description: Some("List other conversations in this project.".into()),
+    });
+    opts.output.provider_labels.insert("codex".into(), "Studio engineer".into());
+    opts.output.text = Arc::new(StudioText);
+    opts
+}
+```
+
+The example advertises `directory` on the `studio` MCP server. A provider that qualifies names can display it as `mcp__studio__directory`. Agent discovery and calls use the advertised name. Configure `agent_policy.allowed_tools` and tool overrides with canonical keys such as `thread_list`. Server and tool names accept 1–128 ASCII letters, digits, underscores or hyphens. Tool names must be unique. For native sessions, keep the server name stable across restarts when the provider stores permissions under that name, as OpenCode does.
+
+Use `runtime.output().provider_label(id)` for picker entries and conversation headers. This resolves the current label for an existing provider instance and falls back to its ID. Stored receipts, bindings and tool policy continue to address the same IDs. A presentation change applies to newly generated text. Saved titles and messages retain their content.
+
+`AgentText` has defaults for peer, delegated, scheduled and remote thread titles, prompts containing history, attachments or application context, completion messages, and Codex follow-up suggestions. Its `label` method receives crate-authored captions, protocol diagnostics and schema annotations. Use `interrupted_by_agent` for interruption messages, `run_error` for recorded failures and `tool_error` for structured agent tool errors. Provider-authored replies, model names, approval messages and protocol field names belong to the provider or protocol. [Output API](../src/output.rs) · [End-to-end customization test](../tests/peers.rs)
 
 ## Crate and host boundaries
 
@@ -99,7 +171,7 @@ A send returns message and run IDs plus actual delivery. Delegation returns a ta
 
 | Operation | Proposed behavior |
 | --- | --- |
-| `Huggler::open`, `close` | Open one runtime per private state directory. Recover before accepting commands. Close releases subscriptions, workers, storage and managed provider processes. |
+| `Huggler::open`, `close` | Open one runtime per private database. Recover before accepting commands. Close releases subscriptions, workers, storage and managed provider processes. |
 | `projects().open`, `providers().resolve_selection` | Resolve workspace roots, then validate the selected instance and its workspace-specific model and options. |
 | `threads().launch`, `send` | Return typed thread, message and run IDs and the actual delivery outcome. Reuse a caller-scoped request key for retry and expose conflicts across distinct intents. Distinguish committed intent from provider acceptance and final completion. |
 | `threads().status`, `wait`, `subscribe` | Report active and latest terminal work, queued or held work and pending requests. Wait for a particular run or for a delegated family. Send snapshot and cursor-based delta frames. Dropping the wait or stream releases the observation. Execution controls stop or interrupt the underlying work explicitly. |

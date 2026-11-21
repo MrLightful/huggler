@@ -445,3 +445,133 @@ async fn revoked_sender_and_restart_with_two_queued_deliveries() {
     .await
     .unwrap();
 }
+
+#[derive(Debug)]
+struct StudioText;
+
+impl AgentText for StudioText {
+    fn peer_message(&self, title: &str, origin: &str, message: &str) -> String {
+        let origin: Value = serde_json::from_str(origin).unwrap();
+        format!(
+            "{title} / {}\n{message}",
+            origin["thread_id"].as_str().unwrap()
+        )
+    }
+
+    fn peer_title(&self, _: Option<&str>, position: usize) -> String {
+        format!("Studio collaborator {position}")
+    }
+
+    fn label(&self, default: &str) -> String {
+        match default {
+            "Use the same key and message when retrying a delivery." => "Retry key".into(),
+            _ => default.into(),
+        }
+    }
+
+    fn tool_error(&self, error: &Error) -> Value {
+        match error {
+            Error::Forbidden => json!({"failure": "denied"}),
+            _ => json!(error),
+        }
+    }
+}
+
+#[tokio::test]
+async fn host_presentation_reaches_provider_discovery_dispatch_and_peer_prompt() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let mut opts = HugglerOptions::new(dir.path().join("state"));
+    opts.agent_tools = true;
+    opts.claude_agent.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
+    opts.output.name = "atlas".into();
+    opts.output.title = "Atlas Studio".into();
+    opts.output.version = "7".into();
+    opts.output.instructions = Some("Use the directory to find collaborators.".into());
+    opts.output.text = std::sync::Arc::new(StudioText);
+    opts.output
+        .provider_labels
+        .insert("claudeAgent".into(), "Studio writer".into());
+    opts.agent_policy.defer_tools = true;
+    let aliases = [
+        ("orchestrator_capabilities", "capabilities"),
+        ("tool_search", "find"),
+        ("thread_send", "deliver"),
+        ("create_threads", "start_peer"),
+    ];
+    opts.agent_policy.allowed_tools = Some(aliases.map(|(key, _)| key.to_owned()).into());
+    for (key, name) in aliases {
+        opts.output.tools.insert(
+            key.into(),
+            ToolPresentation {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+        );
+    }
+    let send = opts.output.tools.get_mut("thread_send").unwrap();
+    send.title = Some("Send a note".into());
+    send.description = Some("Send the original Huggler wording.".into());
+
+    let rt = Huggler::open(opts.clone()).await?;
+    let root = launch(
+        &rt,
+        &rt.open_project(&repo)?,
+        "author",
+        Provider::ClaudeAgent,
+    );
+    let run = rt
+        .send(
+            CommandId("send".into()),
+            root.clone(),
+            "exercise catalog".into(),
+        )?
+        .run_id
+        .unwrap();
+    completed(&rt, &root, &run).await;
+    let receipt = rt.peer_receipt(&root, "note")?.unwrap();
+    completed(&rt, &receipt.thread_id, &receipt.run_id).await;
+    assert_eq!(rt.output().provider_label("claudeAgent"), "Studio writer");
+    rt.close().await?;
+
+    opts.output
+        .provider_labels
+        .insert("claudeAgent".into(), "Studio reviewer".into());
+    let rt = Huggler::open(opts).await?;
+    let peer = rt.read(&receipt.thread_id)?;
+    assert_eq!(peer.name, "Studio collaborator 1");
+    assert_eq!(peer.messages[0].text, "Keep Huggler in this message.");
+    assert_eq!(
+        peer.messages.last().unwrap().text,
+        "Atlas Studio / author\nKeep Huggler in this message."
+    );
+    assert_eq!(peer.provider_instance.as_str(), "claudeAgent");
+    assert_eq!(
+        rt.output().provider_label(peer.provider_instance.as_str()),
+        "Studio reviewer"
+    );
+    rt.close().await
+}
+
+#[tokio::test]
+async fn ambiguous_and_unknown_tool_names_are_rejected_at_open() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    for (key, alias) in [
+        ("thread_list", "thread_send"),
+        ("tool_search", "a.b"),
+        ("unknown", "other"),
+    ] {
+        let mut opts = HugglerOptions::new(dir.path());
+        opts.output.tools.insert(
+            key.into(),
+            ToolPresentation {
+                name: Some(alias.into()),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(Huggler::open(opts).await, Err(Error::Invalid(_))));
+    }
+    Ok(())
+}

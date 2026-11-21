@@ -162,7 +162,7 @@ impl Database {
                 UserAnswer::Text(text) => vec![text],
                 UserAnswer::Choices(values) => values,
             };
-            values.extend(uploads::claim(&tx, thread, ids)?);
+            values.extend(uploads::claim(&*self.output.text, &tx, thread, ids)?);
             *answer = UserAnswer::Choices(values);
         }
         if tx.execute(

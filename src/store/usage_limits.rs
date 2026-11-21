@@ -44,7 +44,7 @@ impl Database {
             let (next, _, _, _) = start_message(
                 &tx,
                 &thread,
-                "Continue where you left off.",
+                self.output.text.resume_after_limit(),
                 model,
                 None,
                 false,

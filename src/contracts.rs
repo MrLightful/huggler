@@ -726,7 +726,7 @@ pub enum Error {
     IncompatibleProvider(String),
     #[error("the user-input request was already answered")]
     AlreadyAnswered,
-    #[error("state directory already has a runtime owner")]
+    #[error("database already has a runtime owner")]
     AlreadyOpen,
     #[error("agent caller lacks access to this operation")]
     Forbidden,

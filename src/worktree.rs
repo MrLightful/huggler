@@ -1,6 +1,6 @@
 //! Preparation for locally delegated Git worktrees.
 use crate::{Error, Result};
-use std::{fs, path::Path, process::Command};
+use std::{path::Path, process::Command};
 
 fn command(cwd: &Path) -> Command {
     let mut cmd = Command::new("git");
@@ -132,10 +132,14 @@ impl Worktree {
     pub fn prepare(&self) -> Result<()> {
         let path = Path::new(&self.path);
         if !self.ready && !path.try_exists()? {
-            fs::create_dir_all(
-                path.parent()
-                    .ok_or_else(|| Error::Invalid("invalid worktree path".into()))?,
-            )?;
+            let parent = path
+                .parent()
+                .ok_or_else(|| Error::Invalid("invalid worktree path".into()))?;
+            if crate::layout::private_dir(parent)? != parent || path.is_symlink() {
+                return Err(Error::Invalid(
+                    "managed worktree path changed since reservation".into(),
+                ));
+            }
             git(
                 Path::new(&self.common_dir),
                 &["worktree", "add", "--detach", &self.path, &self.base_commit],
@@ -181,6 +185,7 @@ impl Worktree {
 mod tests {
     use super::*;
     use crate::{Action, Command as HostCommand, CommandId, ThreadId, store::Database};
+    use std::fs;
 
     #[test]
     fn worktree_recovery_prepares_the_reserved_commit_before_provider_claim() -> Result<()> {

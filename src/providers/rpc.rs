@@ -10,6 +10,7 @@ use tokio::{
     time::timeout,
 };
 pub(super) struct Rpc {
+    text: std::sync::Arc<dyn crate::AgentText>,
     child: Child,
     input: Option<ChildStdin>,
     output: Option<Lines<BufReader<ChildStdout>>>,
@@ -28,10 +29,14 @@ impl Rpc {
         {
             command.env("HUGGLER_MCP_TOKEN", &tools.token);
         }
-        Self::open(command, &turn.cwd)
+        Self::open(command, &turn.cwd, &turn.output)
     }
 
-    pub fn open(command: std::process::Command, cwd: &Path) -> Result<Self> {
+    pub fn open(
+        command: std::process::Command,
+        cwd: &Path,
+        output: &crate::AgentOutput,
+    ) -> Result<Self> {
         let mut command = Command::from(command);
         command
             .current_dir(cwd)
@@ -55,10 +60,15 @@ impl Rpc {
             }
         })?;
         Ok(Self {
+            text: output.text.clone(),
             input: child.stdin.take(),
             output: Some(BufReader::new(child.stdout.take().unwrap()).lines()),
             child,
         })
+    }
+
+    pub fn error(&self, code: i32, message: &str) -> Value {
+        json!({"code": code, "message": self.text.label(message)})
     }
 
     /// A setup request. Reject unsupported callbacks while waiting for the matching response.
@@ -69,7 +79,7 @@ impl Rpc {
             let frame = self.read().await?;
             if frame.get("method").is_some() {
                 if let Some(wire) = frame.get("id") {
-                    self.write(json!({"jsonrpc":"2.0","id":wire,"error":{"code":-32601,"message":"Unsupported client request"}})).await?;
+                    self.write(json!({"jsonrpc":"2.0","id":wire,"error":self.error(-32601, "Unsupported client request")})).await?;
                 }
                 continue;
             }

@@ -129,13 +129,6 @@ struct PendingRequest {
     answers: Option<crate::UserAnswers>,
 }
 
-fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
-    match value {
-        Ok(value) => CallToolResult::structured(json!(value)),
-        Err(error) => CallToolResult::structured_error(json!(error)),
-    }
-}
-
 #[derive(Deserialize, JsonSchema)]
 struct Search {
     query: String,
@@ -156,6 +149,25 @@ struct SecretInput {
 }
 
 impl AgentServer {
+    fn request_token<'a>(
+        &self,
+        ctx: &'a rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<&'a str, rmcp::ErrorData> {
+        ctx.extensions
+            .get::<Parts>()
+            .and_then(|p| bearer(&p.headers).ok())
+            .ok_or_else(|| {
+                rmcp::ErrorData::invalid_request(self.0.output.text.label("missing caller"), None)
+            })
+    }
+
+    fn tool_result(&self, value: HostResult<impl Serialize>) -> CallToolResult {
+        match value {
+            Ok(value) => CallToolResult::structured(json!(value)),
+            Err(error) => CallToolResult::structured_error(self.0.output.text.tool_error(&error)),
+        }
+    }
+
     fn permitted(&self, name: &str) -> bool {
         let policy = &self.0.agent_policy;
         policy
@@ -189,13 +201,14 @@ impl AgentServer {
         description = "List eligible orchestration tools for this caller. Search for a tool to load its schema."
     )]
     fn orchestrator_capabilities(&self) -> CallToolResult {
-        let names: Vec<_> = Self::tool_router()
-            .list_all()
-            .into_iter()
-            .map(|t| t.name)
-            .filter(|n| self.permitted(n))
+        let names: Vec<_> = self
+            .0
+            .tool_catalog
+            .iter()
+            .filter(|(key, _)| self.permitted(key))
+            .map(|(_, tool)| &tool.name)
             .collect();
-        tool_result(Ok(json!({"tools":names,"deferred":self.deferred()})))
+        self.tool_result(Ok(json!({"tools":names,"deferred":self.deferred()})))
     }
     #[tool(
         description = "Discover matching tools by name and expose their schemas to the current run."
@@ -205,16 +218,16 @@ impl AgentServer {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<Search>,
     ) -> CallToolResult {
-        tool_result(bearer(&parts.headers).and_then(|token| {
+        self.tool_result(bearer(&parts.headers).and_then(|token| {
             let query = input.query.trim().to_lowercase();
             if query.is_empty() {
                 return Err(Error::Invalid("expected a tool name or keyword".into()));
             }
             let mut tools = Vec::new();
-            for tool in Self::tool_router().list_all() {
-                if self.permitted(&tool.name) && tool.name.contains(&query) {
-                    self.0.access(|db| db.discovered(token, &tool.name, true))?;
-                    tools.push(tool);
+            for (key, tool) in &self.0.tool_catalog {
+                if self.permitted(key) && tool.name.to_ascii_lowercase().contains(&query) {
+                    self.0.access(|db| db.discovered(token, key, true))?;
+                    tools.push(tool.clone());
                 }
             }
             Ok(json!({"tools":tools}))
@@ -226,7 +239,7 @@ impl AgentServer {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<Notice>,
     ) -> CallToolResult {
-        tool_result(bearer(&parts.headers).and_then(|token| {
+        self.tool_result(bearer(&parts.headers).and_then(|token| {
             self.0.schedule(|db| {
                 db.notify_user(token, &input.client_request_id, &input.text)?;
                 Ok((json!({"delivered":true}), []))
@@ -241,7 +254,7 @@ impl AgentServer {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<SecretInput>,
     ) -> CallToolResult {
-        tool_result(bearer(&parts.headers).and_then(|token| {
+        self.tool_result(bearer(&parts.headers).and_then(|token| {
             self.0.access(|db| {
                 let ttl = self
                     .0
@@ -297,7 +310,7 @@ impl AgentServer {
             }
         }
         .await;
-        tool_result(result)
+        self.tool_result(result)
     }
 
     #[tool(
@@ -326,7 +339,7 @@ impl AgentServer {
             }
         }
         .await;
-        tool_result(result)
+        self.tool_result(result)
     }
 
     #[tool(
@@ -337,7 +350,7 @@ impl AgentServer {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<TaskLookup>,
     ) -> CallToolResult {
-        tool_result(
+        self.tool_result(
             bearer(&parts.headers)
                 .and_then(|token| self.0.task_status(token, &TaskId(input.task_id))),
         )
@@ -351,7 +364,7 @@ impl AgentServer {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<TaskCancel>,
     ) -> CallToolResult {
-        tool_result(bearer(&parts.headers).and_then(|token| {
+        self.tool_result(bearer(&parts.headers).and_then(|token| {
             self.0.cancel_task(
                 token,
                 &TaskId(input.task_id),
@@ -368,7 +381,7 @@ impl AgentServer {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<ThreadInterrupt>,
     ) -> CallToolResult {
-        tool_result(bearer(&parts.headers).and_then(|token| {
+        self.tool_result(bearer(&parts.headers).and_then(|token| {
             let thread = ThreadId(input.thread_id);
             let run = crate::RunId(input.run_id);
             let terminal = self.0.interrupt_run(
@@ -391,7 +404,7 @@ impl AgentServer {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<CreateThreads>,
     ) -> CallToolResult {
-        tool_result(bearer(&parts.headers).and_then(|token| {
+        self.tool_result(bearer(&parts.headers).and_then(|token| {
             let threads = self.0.create_threads(token, input)?;
             Ok(json!({ "threads": threads }))
         }))
@@ -399,7 +412,7 @@ impl AgentServer {
 
     #[tool(description = "List other Huggler threads in your project and their addresses.")]
     fn thread_list(&self, Extension(parts): Extension<Parts>) -> CallToolResult {
-        tool_result(
+        self.tool_result(
             self.0
                 .access(|db| Ok(json!({"threads":db.peers(bearer(&parts.headers)?)?}))),
         )
@@ -414,7 +427,7 @@ impl AgentServer {
         Parameters(input): Parameters<PeerSend>,
     ) -> CallToolResult {
         let DeliveryMode::Auto = input.mode;
-        tool_result(bearer(&parts.headers).and_then(|token| {
+        self.tool_result(bearer(&parts.headers).and_then(|token| {
             self.0.send_peer(
                 token,
                 ThreadId(input.thread_id),
@@ -425,46 +438,139 @@ impl AgentServer {
     }
 }
 
-#[tool_handler(name = "huggler")]
+/// Build the wire catalog once. Policy and stored discoveries use the original key.
+pub(crate) type ToolCatalog = Vec<(String, rmcp::model::Tool)>;
+
+pub(crate) fn catalog(output: &crate::AgentOutput) -> HostResult<ToolCatalog> {
+    fn valid_name(name: &str) -> bool {
+        (1..=128).contains(&name.len())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+    }
+    if !valid_name(&output.name) {
+        return Err(Error::Invalid("invalid agent server name".into()));
+    }
+    let router = AgentServer::tool_router();
+    for key in output.tools.keys() {
+        if router.get(key).is_none() {
+            return Err(Error::Invalid(format!("unknown orchestration tool {key}")));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut catalog = Vec::new();
+    for mut tool in router.list_all() {
+        let key = tool.name.to_string();
+        let name = output.tool_name(&key);
+        if !valid_name(name) || !seen.insert(name.to_owned()) {
+            return Err(Error::Invalid(format!(
+                "invalid or duplicate agent tool name {name}"
+            )));
+        }
+        tool.name = name.to_owned().into();
+        let custom = output.tools.get(&key);
+        if let Some(title) = custom.and_then(|t| t.title.as_ref()) {
+            tool.title = Some(title.clone());
+        }
+        tool.description = match custom.and_then(|t| t.description.as_ref()) {
+            Some(text) => Some(text.clone().into()),
+            None => tool.description.map(|text| {
+                if key == "delegate_task" {
+                    text.replace("delegate_task", name).into()
+                } else {
+                    text.replace("Huggler", &output.title).into()
+                }
+            }),
+        };
+        schema_labels(Arc::make_mut(&mut tool.input_schema), &*output.text);
+        catalog.push((key, tool));
+    }
+    Ok(catalog)
+}
+
+// Only visit schema nodes. Property names and enum values are wire data.
+fn schema_labels(schema: &mut rmcp::model::JsonObject, text: &dyn crate::AgentText) {
+    use serde_json::Value;
+    for (key, value) in schema {
+        match (key.as_str(), value) {
+            ("title" | "description", Value::String(label)) => *label = text.label(label),
+            ("properties" | "$defs", Value::Object(nodes)) => {
+                for node in nodes.values_mut().filter_map(Value::as_object_mut) {
+                    schema_labels(node, text);
+                }
+            }
+            ("items" | "additionalProperties", Value::Object(node)) => schema_labels(node, text),
+            ("oneOf" | "anyOf" | "allOf", Value::Array(nodes)) => {
+                for node in nodes.iter_mut().filter_map(Value::as_object_mut) {
+                    schema_labels(node, text);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tool_handler]
 impl ServerHandler for AgentServer {
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
+        let output = &self.0.output;
+        let mut config = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(
+                Implementation::new(&output.name, &output.version).with_title(&output.title),
+            );
+        if let Some(instructions) = &output.instructions {
+            config = config.with_instructions(instructions.clone());
+        }
+        config
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        self.0
+            .tool_catalog
+            .iter()
+            .find(|(key, tool)| self.permitted(key) && tool.name == name)
+            .map(|(_, tool)| tool.clone())
+    }
+
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
-        let token = request_token(&context)?;
+        let token = self.request_token(&context)?;
         let mut tools = Vec::new();
-        for tool in Self::tool_router().list_all() {
-            if self.visible(token, &tool.name).unwrap_or(false) {
-                tools.push(tool);
+        for (key, tool) in &self.0.tool_catalog {
+            if self.visible(token, key).unwrap_or(false) {
+                tools.push(tool.clone());
             }
         }
         Ok(rmcp::model::ListToolsResult::with_all_items(tools))
     }
     async fn call_tool(
         &self,
-        request: rmcp::model::CallToolRequestParams,
+        mut request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
-        let token = request_token(&context)?;
-        if !self.visible(token, &request.name).unwrap_or(false) {
-            return Ok(tool_result(HostResult::<()>::Err(Error::Forbidden)).into());
-        }
+        let token = self.request_token(&context)?;
+        let entry = self
+            .0
+            .tool_catalog
+            .iter()
+            .find(|(_, tool)| tool.name == request.name);
+        let Some((key, _)) = entry.filter(|(key, _)| self.visible(token, key).unwrap_or(false))
+        else {
+            return Ok(self
+                .tool_result(HostResult::<()>::Err(Error::Forbidden))
+                .into());
+        };
+        request.name = key.clone().into();
         Self::tool_router()
             .call(rmcp::handler::server::tool::ToolCallContext::new(
                 self, request, context,
             ))
             .await
     }
-}
-
-fn request_token(
-    ctx: &rmcp::service::RequestContext<rmcp::RoleServer>,
-) -> Result<&str, rmcp::ErrorData> {
-    ctx.extensions
-        .get::<Parts>()
-        .and_then(|p| bearer(&p.headers).ok())
-        .ok_or_else(|| rmcp::ErrorData::invalid_request("missing caller", None))
 }
 
 pub(crate) async fn serve(

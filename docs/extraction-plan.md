@@ -10,7 +10,7 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 **Qualification scope.** The desktop checks used the development Mac with a fresh home and a Node-free PATH. Testing on a separate clean Mac, testing the macOS deployment floor and Gatekeeper assessment of a notarized download remain open. The release review accounts for 31 upstream commits and records each deferred workflow with its next check. [Installed results](stage-7.md#compatibility-and-installed-results) · [Upstream comparison](stage-7.md#upstream-comparison)
 
-**Branch recommendation.** Merge Stage 7. The independent consumer, production startup and shutdown, installed upgrade, provider checks and both Cargo feature suites passed within the agreed scope. Future upstream reviews start from the [review record](upstream-review.json).
+**Next work.** Stage 7 landed on `master` in PR #9 (`ef2ffe7`). For the next linked-thread milestone, page through history from an independent client via an intermediary, revoke the grant, and verify the next read fails. The [review record](upstream-review.json) tracks this and the other deferred upstream workflows.
 
 ### Maintaining the handoff
 

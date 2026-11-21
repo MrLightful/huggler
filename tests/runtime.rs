@@ -23,6 +23,81 @@ fn checkout(dir: &Path) {
 }
 
 #[tokio::test]
+async fn custom_database_preserves_ownership_and_history_across_state_roots() -> Result<()> {
+    let temp = tempdir()?;
+    let mut opts = HugglerOptions::new(temp.path().join("state"));
+    opts.storage.database_path = "sessions/conversations.db".into();
+    let rt = Huggler::open(opts.clone()).await?;
+    let database = opts.state_dir.join(&opts.storage.database_path);
+    assert!(database.is_file());
+    assert!(
+        database
+            .with_file_name("conversations.db.runtime.lock")
+            .is_file()
+    );
+    assert!(!opts.state_dir.join("huggler.sqlite3").exists());
+    assert!(!opts.state_dir.join("runtime.lock").exists());
+
+    let repo = temp.path().join("repo");
+    checkout(&repo);
+    let project = rt.open_project(&repo)?;
+    let thread = ThreadId("saved".into());
+    rt.launch(
+        CommandId("launch".into()),
+        thread.clone(),
+        project.id,
+        "Saved".into(),
+        None,
+    )?;
+    let alias = temp.path().join("linked database");
+    std::os::unix::fs::symlink(database, &alias)?;
+    let mut reopen = HugglerOptions::new(temp.path().join("other state"));
+    reopen.storage.database_path = alias;
+    assert!(matches!(
+        Huggler::open(reopen.clone()).await,
+        Err(Error::AlreadyOpen)
+    ));
+    rt.close().await?;
+    let rt = Huggler::open(reopen).await?;
+    assert_eq!(rt.read(&thread)?.name, "Saved");
+    rt.close().await
+}
+
+#[tokio::test]
+async fn invalid_storage_names_are_rejected() -> Result<()> {
+    let temp = tempdir()?;
+    let mut opts = HugglerOptions::new(temp.path());
+    for name in ["fixed", "../{id}", "nested/{id}", "{id}/"] {
+        opts.storage.worktree_name = name.into();
+        assert!(matches!(
+            Huggler::open(opts.clone()).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    opts.storage = Default::default();
+    opts.storage.worktree_root = WorktreeRoot::ProjectRelative(temp.path().into());
+    assert!(matches!(
+        Huggler::open(opts.clone()).await,
+        Err(Error::Invalid(_))
+    ));
+    opts.storage = Default::default();
+    for filename in [
+        "runtime.lock",
+        "other.db-wal",
+        "other.db-shm",
+        "other.db-journal",
+    ] {
+        opts.storage.database_path = filename.into();
+        assert!(matches!(
+            Huggler::open(opts.clone()).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert_eq!(fs::read_dir(temp.path())?.count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn concurrent_receipts_preserve_the_winner_including_no_ops() {
     let temp = tempdir().unwrap();
     checkout(temp.path());

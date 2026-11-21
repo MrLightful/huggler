@@ -39,7 +39,12 @@ impl Database {
     }
 }
 
-pub(super) fn claim(tx: &Transaction, thread: &ThreadId, ids: &[UploadId]) -> Result<Vec<String>> {
+pub(super) fn claim(
+    formatter: &dyn crate::AgentText,
+    tx: &Transaction,
+    thread: &ThreadId,
+    ids: &[UploadId],
+) -> Result<Vec<String>> {
     let mut attachments = vec![];
     for id in ids {
         let (name, content): (String, String) = tx
@@ -50,11 +55,7 @@ pub(super) fn claim(tx: &Transaction, thread: &ThreadId, ids: &[UploadId]) -> Re
             )
             .optional()?
             .ok_or_else(|| Error::Invalid("upload is unavailable for this thread".into()))?;
-        attachments.push(format!(
-            "Text attachment {}\n{}",
-            serde_json::to_string(&name)?,
-            content
-        ));
+        attachments.push(formatter.attachment(&name, &content));
     }
     Ok(attachments)
 }

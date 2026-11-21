@@ -42,22 +42,22 @@ pub(super) fn ids(items: &Value, field: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) async fn inspect(instance: &ProviderInstance, cwd: &Path) -> Result<ProviderReport> {
+pub(crate) async fn inspect(
+    instance: &ProviderInstance,
+    output: &crate::AgentOutput,
+    cwd: &Path,
+) -> Result<ProviderReport> {
     let mut command = instance.command();
     let mut report = match instance.driver {
-        Provider::OpenCode => return opencode::probe(instance, cwd).await,
-        Provider::Pi => pi::probe(instance, cwd).await?,
-        Provider::Muse => muse::probe(instance, cwd).await?,
+        Provider::OpenCode => return opencode::probe(instance, output, cwd).await,
+        Provider::Pi => pi::probe(instance, output, cwd).await?,
+        Provider::Muse => muse::probe(instance, output, cwd).await?,
         Provider::Codex => {
             command.arg("app-server");
-            let mut rpc = Rpc::open(command, cwd)?;
+            let mut rpc = Rpc::open(command, cwd, output)?;
             let mut report = ProviderReport::new("Codex app-server");
             let init = rpc
-                .request(
-                    1,
-                    "initialize",
-                    json!({"clientInfo":{"name":"huggler","version":env!("CARGO_PKG_VERSION")}}),
-                )
+                .request(1, "initialize", json!({"clientInfo":output.client_info()}))
                 .await?;
             report.version = init["userAgent"].as_str().and_then(|s| {
                 s.split_whitespace()
@@ -90,8 +90,8 @@ pub(crate) async fn inspect(instance: &ProviderInstance, cwd: &Path) -> Result<P
             report
         }
         driver => {
-            let mut rpc = Rpc::open(command, cwd)?;
-            let init = claude_agent::initialize(&mut rpc, driver).await?;
+            let mut rpc = Rpc::open(command, cwd, output)?;
+            let init = claude_agent::initialize(&mut rpc, driver, output).await?;
             let mut report = ProviderReport::new(&format!("ACP v{}", init["protocolVersion"]));
             report.version = init["agentInfo"]["version"].as_str().map(str::to_owned);
             report.resume = init["agentCapabilities"]["loadSession"] == true;
@@ -125,7 +125,7 @@ pub(crate) async fn inspect(instance: &ProviderInstance, cwd: &Path) -> Result<P
     if report.version.is_none() && instance.driver != Provider::Muse {
         let mut version = instance.command();
         version.arg("--version");
-        if let Ok(mut rpc) = Rpc::open(version, cwd)
+        if let Ok(mut rpc) = Rpc::open(version, cwd, output)
             && let Ok(Ok(line)) =
                 tokio::time::timeout(std::time::Duration::from_secs(2), rpc.line()).await
             && line.len() <= 128

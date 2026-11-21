@@ -5,7 +5,10 @@ pub mod automation;
 pub mod contracts;
 pub mod guest;
 mod imports;
+mod layout;
 mod mcp;
+mod output;
+pub use output::{AgentOutput, AgentText, ToolPresentation};
 pub mod providers;
 pub mod remote;
 mod runtime;
@@ -13,6 +16,7 @@ mod store;
 mod worktree;
 
 pub use contracts::*;
+pub use layout::{StorageLayout, WorktreeRoot};
 pub use providers::probe::ProviderReport;
 pub use providers::registry::ProviderInstance;
 pub use runtime::{Huggler, HugglerOptions, Subscription};

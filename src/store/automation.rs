@@ -11,6 +11,7 @@ fn occurrence(row: &Row<'_>) -> rusqlite::Result<Occurrence> {
 }
 
 fn release(
+    formatter: &dyn crate::AgentText,
     tx: &Transaction,
     id: &ScheduleId,
     owner: ThreadId,
@@ -29,7 +30,7 @@ fn release(
     }
     let thread = match spec.destination {
         Destination::NewThread => {
-            creation::create_agent_thread(tx, &owner, "Scheduled task", None)?
+            creation::create_agent_thread(tx, &owner, formatter.scheduled_title(), None)?
         }
         _ => owner,
     };
@@ -130,7 +131,7 @@ impl Database {
             return Ok((None, None));
         };
         let spec: Schedule = serde_json::from_str(&spec)?;
-        let released = release(&tx, id, owner, &spec, due.to_string())?;
+        let released = release(&*self.output.text, &tx, id, owner, &spec, due.to_string())?;
         tx.execute(
             "UPDATE automation SET next_at=? WHERE id=?",
             params![spec.trigger.next(now)?, id.0],
@@ -161,7 +162,7 @@ impl Database {
         if delivery.id.trim().is_empty() || delivery.id.len() > 256 {
             return Err(Error::Invalid("invalid webhook delivery ID".into()));
         }
-        let released = release(&tx, id, owner, &spec, delivery.id)?;
+        let released = release(&*self.output.text, &tx, id, owner, &spec, delivery.id)?;
         tx.commit()?;
         Ok(released)
     }

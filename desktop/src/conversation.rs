@@ -56,14 +56,6 @@ fn field(label: &'static str, state: &Entity<InputState>) -> Div {
         .child(control!(label, Input::new(state)))
 }
 
-fn provider_name(instance: &str) -> &str {
-    match instance {
-        "codex" => "Codex",
-        "claudeAgent" => "Claude Agent",
-        id => id,
-    }
-}
-
 impl Desktop {
     pub fn new(
         runtime: Arc<Huggler>,
@@ -312,7 +304,9 @@ impl Desktop {
                     .child(h_flex().flex_wrap().gap_2().children(
                         self.runtime.provider_instances().map(|instance| {
                             let id = instance.id.clone();
-                            let label = SharedString::from(provider_name(id.as_str()).to_owned());
+                            let label = SharedString::from(
+                                self.runtime.output().provider_label(id.as_str()).to_owned(),
+                            );
                             control!(
                                 label.clone(),
                                 Button::new(SharedString::from(format!("provider-{id}")))
@@ -432,7 +426,11 @@ impl Desktop {
     }
 
     fn conversation(&self, thread: &ConversationDetail, cx: &Context<Self>) -> Div {
-        let provider = provider_name(thread.provider_instance.as_str()).to_owned();
+        let provider = self
+            .runtime
+            .output()
+            .provider_label(thread.provider_instance.as_str())
+            .to_owned();
         let last_run = thread.latest_run.as_ref();
         let status = last_run.map_or_else(|| "Ready".to_owned(), |run| format!("{:?}", run.status));
         v_flex()

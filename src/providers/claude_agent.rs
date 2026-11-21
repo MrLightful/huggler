@@ -47,7 +47,7 @@ impl Session<'_> {
     }
 
     async fn unsupported(&mut self, id: &Value) -> Result<()> {
-        self.rpc.write(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported client method"}})).await
+        self.rpc.write(json!({"jsonrpc":"2.0","id":id,"error":self.rpc.error(-32601, "Unsupported client method")})).await
     }
 
     async fn cancel_permission(&mut self, wire_id: Value) -> Result<()> {
@@ -117,14 +117,16 @@ impl Session<'_> {
     }
 
     async fn configure(&mut self, turn: &Turn) -> Result<String> {
-        let init = initialize(self.rpc, turn.provider).await?;
+        let init = initialize(self.rpc, turn.provider, &turn.output).await?;
         self.sequence = 1;
         let mut servers = vec![];
         if let Some(tools) = &turn.agent_tools
             && init["agentCapabilities"]["mcpCapabilities"]["http"] == true
         {
-            servers.push(json!({"name":"huggler","type":"http","url":tools.url,
-                "headers":[{"name":"Authorization","value":format!("Bearer {}",tools.token)}]}));
+            servers.push(
+                json!({"name":turn.output.name,"type":"http","url":tools.url,
+                "headers":[{"name":"Authorization","value":format!("Bearer {}",tools.token)}]}),
+            );
         }
         let mut params = json!({"cwd":turn.cwd,"mcpServers":servers});
         let (session, info) = if let Some(native) = &turn.resume {
@@ -181,7 +183,11 @@ impl Session<'_> {
         Ok(session)
     }
 }
-pub(super) async fn initialize(rpc: &mut Rpc, driver: Provider) -> Result<Value> {
+pub(super) async fn initialize(
+    rpc: &mut Rpc,
+    driver: Provider,
+    output: &crate::AgentOutput,
+) -> Result<Value> {
     let version = if matches!(driver, Provider::Kiro | Provider::Antigravity) {
         2
     } else {
@@ -199,7 +205,7 @@ pub(super) async fn initialize(rpc: &mut Rpc, driver: Provider) -> Result<Value>
         json!({
             "protocolVersion": version,
             "clientCapabilities": caps,
-            "clientInfo": {"name": "huggler", "version": env!("CARGO_PKG_VERSION")},
+            "clientInfo": output.client_info(),
         }),
     )
     .await?;
@@ -305,7 +311,7 @@ pub(crate) async fn execute(
                     let child = if client.children.running(target) {
                         Some(NativeThreadId(target.into()))
                     } else if foreground_complete || target != session {
-                        client.rpc.write(json!({"jsonrpc":"2.0","id":f["id"],"error":{"code":-32602,"message":"Unknown active session"}})).await?;
+                        client.rpc.write(json!({"jsonrpc":"2.0","id":f["id"],"error":client.rpc.error(-32602, "Unknown active session")})).await?;
                         continue;
                     } else {
                         None
@@ -415,6 +421,7 @@ pub(crate) async fn execute(
 /// Load visible history before the host creates a durable binding. This operation sends no prompt.
 pub(crate) async fn load_history(
     instance: &ProviderInstance,
+    output: &crate::AgentOutput,
     cwd: &std::path::Path,
     native: NativeThreadId,
 ) -> Result<crate::imports::Snapshot> {
@@ -427,10 +434,10 @@ pub(crate) async fn load_history(
             "native import requires an ACP Registry session".into(),
         ));
     }
-    let mut rpc = Rpc::open(instance.command(), cwd)?;
+    let mut rpc = Rpc::open(instance.command(), cwd, output)?;
     let mut messages = Messages::new();
     let history = async {
-        let init = initialize(&mut rpc, instance.driver).await?;
+        let init = initialize(&mut rpc, instance.driver, output).await?;
         if init["agentCapabilities"]["loadSession"] != true {
             return Err(Error::Unsupported(
                 "ACP instance does not advertise session/load".into(),
@@ -449,7 +456,7 @@ pub(crate) async fn load_history(
                 break;
             }
             if let Some(id) = frame.get("id") {
-                rpc.write(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported during history import"}})).await?;
+                rpc.write(json!({"jsonrpc":"2.0","id":id,"error":rpc.error(-32601, "Unsupported during history import")})).await?;
                 continue;
             }
             let params = &frame["params"];

@@ -14,13 +14,19 @@ pub(super) fn set_queue_hold(tx: &Transaction, thread: &ThreadId, hold: bool) ->
     Ok(())
 }
 
-pub(super) fn stop_thread(tx: &Transaction, root: &ThreadId) -> Result<Vec<RunId>> {
+pub(super) fn stop_thread(
+    output: &crate::AgentOutput,
+    tx: &Transaction,
+    root: &ThreadId,
+) -> Result<Vec<RunId>> {
     let mut stops = Vec::new();
+    let reason = output.text.label("Stopped by the host");
+    let cancelled = output.text.label("task cancelled");
     for thread in tasks::subtree(tx, root)? {
         tx.execute("DELETE FROM usage_recovery WHERE thread_id=?", [&thread.0])?;
         set_queue_hold(tx, &thread, true)?;
         if &thread != root {
-            tasks::dispose(tx, &thread, None)?;
+            tasks::dispose(tx, &thread, None, &cancelled)?;
         }
         // When stopping a child directly, its owner can still receive the
         // active task's result. Held secondary messages resume independently.
@@ -32,13 +38,13 @@ pub(super) fn stop_thread(tx: &Transaction, root: &ThreadId) -> Result<Vec<RunId
         )?;
         let runs = tx
             .prepare(
-                "UPDATE run SET stop_requested=1, stop_reason='Stopped by the host'
-             WHERE thread_id=? AND stop_requested=0 AND
+                "UPDATE run SET stop_requested=1, stop_reason=?1
+             WHERE thread_id=?2 AND stop_requested=0 AND
                (status IN ('starting','running','waiting') OR
                 id IN (SELECT run_id FROM native_child WHERE active))
              RETURNING id",
             )?
-            .query_map([&thread.0], |r| Ok(RunId(r.get(0)?)))?
+            .query_map(params![reason, thread.0], |r| Ok(RunId(r.get(0)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for run in &runs {
             event(
@@ -106,10 +112,7 @@ impl Database {
         if !matches!(status, RunStatus::Starting | RunStatus::Running) {
             return Err(Error::Invalid("run is not interruptible".into()));
         }
-        let message = reason.map_or_else(
-            || "Stopped by an agent".into(),
-            |s| format!("Stopped by an agent: {s}"),
-        );
+        let message = self.output.text.interrupted_by_agent(reason);
         if tx.execute(
             "UPDATE run SET stop_requested=1,stop_reason=? WHERE id=? AND stop_requested=0",
             params![message, run.0],

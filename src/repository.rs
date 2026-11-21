@@ -96,6 +96,7 @@ impl Huggler {
             .map_err(|_| Error::Invalid("invalid authorization header".into()))?;
         authorization.set_sensitive(true);
         let http = Client::builder()
+            .user_agent(&self.output().name)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -189,7 +190,6 @@ impl RepositoryClient {
             .http
             .request(method, format!("{}{path}", self.binding.origin))
             .header("Authorization", self.authorization.clone())
-            .header("User-Agent", "huggler")
             .header("Accept", "application/json");
         if let Some(body) = body {
             request = request.json(&body);

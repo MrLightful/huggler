@@ -9,12 +9,16 @@ use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path};
 use tokio::sync::watch;
 
-async fn connect(instance: &ProviderInstance, cwd: &Path) -> Result<(Rpc, Value)> {
+async fn connect(
+    instance: &ProviderInstance,
+    output: &crate::AgentOutput,
+    cwd: &Path,
+) -> Result<(Rpc, Value)> {
     let mut cmd = std::process::Command::new(&instance.executable);
     cmd.arg("serve").args(&instance.args);
-    let mut rpc = Rpc::open(cmd, cwd)?;
+    let mut rpc = Rpc::open(cmd, cwd, output)?;
     let init = rpc.request(1, "initialize", json!({
-        "clientInfo": {"name": "huggler", "version": env!("CARGO_PKG_VERSION")},
+        "clientInfo": {"name": output.name, "version": output.version},
         "capabilities": {"userInputDialogs": false, "requestedCapabilities": ["sessionMcp"]},
     })).await?;
     if init["schema"]["version"] != 1 {
@@ -33,8 +37,12 @@ fn supports_mcp(init: &Value) -> bool {
         .is_some_and(|c| c.iter().any(|s| s == "sessionMcp"))
 }
 
-pub(super) async fn probe(instance: &ProviderInstance, cwd: &Path) -> Result<ProviderReport> {
-    let (mut rpc, init) = connect(instance, cwd).await?;
+pub(super) async fn probe(
+    instance: &ProviderInstance,
+    output: &crate::AgentOutput,
+    cwd: &Path,
+) -> Result<ProviderReport> {
+    let (mut rpc, init) = connect(instance, output, cwd).await?;
     let models = rpc.request(2, "model/list", json!({})).await?;
     let mut report = ProviderReport::new("Muse MSP v1");
     report.version = init["serverInfo"]["version"].as_str().map(str::to_owned);
@@ -56,7 +64,7 @@ pub(crate) async fn execute(
     update: impl Fn(Update) -> Result<()>,
 ) -> Result<()> {
     let run = async {
-        let (mut rpc, init) = connect(instance, &turn.cwd).await?;
+        let (mut rpc, init) = connect(instance, &turn.output, &turn.cwd).await?;
         let mut params = json!({"commandId":command_id()});
         if let Some(model) = &turn.model {
             params["modelId"] = json!(model);
@@ -64,7 +72,7 @@ pub(crate) async fn execute(
         if let Some(tools) = &turn.agent_tools
             && supports_mcp(&init)
         {
-            params["config"] = json!({"mcpServers":{"huggler":{"transport":"streamableHttp","mode":"required","url":tools.url,"headers":{"Authorization":format!("Bearer {}",tools.token)}}}});
+            params["config"] = json!({"mcpServers":{(&turn.output.name):{"transport":"streamableHttp","mode":"required","url":tools.url,"headers":{"Authorization":format!("Bearer {}",tools.token)}}}});
         }
         let method = if let Some(saved) = &turn.resume {
             if init["sessionDurability"] != "durable" {
@@ -136,7 +144,7 @@ pub(crate) async fn execute(
                 ));
             }
             if f.get("id").is_some() && f.get("method").is_some() {
-                rpc.write(json!({"jsonrpc":"2.0","id":f["id"],"error":{"code":-32601,"message":"Unsupported client request"}})).await?;
+                rpc.write(json!({"jsonrpc":"2.0","id":f["id"],"error":rpc.error(-32601, "Unsupported client request")})).await?;
                 continue;
             }
             if p["sessionId"] != session {
