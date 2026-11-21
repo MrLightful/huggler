@@ -1,4 +1,5 @@
 mod checkpoints;
+mod command_output;
 mod context;
 #[cfg(test)]
 mod crash_tests;
@@ -60,6 +61,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/020.sql"),
     include_str!("../migrations/021.sql"),
     include_str!("../migrations/022.sql"),
+    include_str!("../migrations/023.sql"),
 ];
 
 const RUN_FIELDS: &str =
@@ -747,6 +749,7 @@ impl Database {
         let tx = self.db.transaction()?;
         match update {
             Update::Steer(command,outcome) => steering::settle(&tx, thread,id,&command,outcome)?,
+            Update::CommandOutput { item, frame } => command_output::record(&tx,thread,id,&item,frame)?,
             Update::Output(text) => {
                 event(&tx, thread, Change::OutputDelta { run_id: id.clone(), text })?;
             }

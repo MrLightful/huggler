@@ -2,7 +2,7 @@
 mod children;
 use super::registry::ProviderInstance;
 use super::{
-    ChildInterrupt, Control, Permissions, Turn, Update,
+    ChildInterrupt, CommandFrame, Control, Permissions, Turn, Update,
     rpc::{Rpc, protocol},
 };
 use crate::{
@@ -113,6 +113,7 @@ impl Client {
                         frame["method"].as_str(),
                         Some(
                             "item/started"
+                                | "item/commandExecution/outputDelta"
                                 | "item/agentMessage/delta"
                                 | "item/completed"
                                 | "turn/started"
@@ -517,6 +518,28 @@ impl Client {
                 continue;
             }
             match frame["method"].as_str() {
+                Some("item/commandExecution/outputDelta") if p["turnId"] == id => {
+                    if let (Some(item), Some(delta)) = (p["itemId"].as_str(), p["delta"].as_str()) {
+                        update(Update::CommandOutput {
+                            item: item.into(),
+                            frame: CommandFrame::Append(delta.into()),
+                        })?;
+                    }
+                }
+                Some(method @ ("item/started" | "item/completed"))
+                    if p["turnId"] == id && p["item"]["type"] == "commandExecution" =>
+                {
+                    if let Some(item) = p["item"]["id"].as_str() {
+                        let output = p["item"]["aggregatedOutput"].as_str().map(str::to_owned);
+                        update(Update::CommandOutput {
+                            item: item.into(),
+                            frame: CommandFrame::Snapshot {
+                                output,
+                                finished: method == "item/completed",
+                            },
+                        })?;
+                    }
+                }
                 Some("item/agentMessage/delta") if p["turnId"] == id => {
                     if let Some(delta) = p["delta"].as_str() {
                         update(Update::Output(delta.into()))?;

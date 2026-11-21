@@ -942,3 +942,61 @@ async fn wait_for_limit_continuation(
     completed(rt, thread, &next).await;
     Ok(())
 }
+
+#[tokio::test]
+async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let opts = options(&dir.path().join("state"));
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&repo)?;
+    let thread = launch(&rt, &project, "root", Provider::Codex);
+    let other = launch(&rt, &project, "sibling", Provider::Codex);
+    let run = rt
+        .send(
+            CommandId("send".into()),
+            thread.clone(),
+            "command output".into(),
+        )?
+        .run_id
+        .unwrap();
+    let q = question(&rt, &thread).await?;
+    assert_eq!(rt.command_items(&thread, &run)?, ["build"]);
+    let live = rt.command_output(&thread, &run, "build", None).await?;
+    assert!(live.truncated && !live.closed);
+    assert!(live.text.len() <= 32768 && live.text.starts_with('界') && live.text.ends_with("end"));
+    assert!(matches!(
+        rt.command_output(&other, &run, "build", None).await,
+        Err(Error::NotFound(_))
+    ));
+    let (result, output) = tokio::join!(
+        rt.dismiss_question(&thread, &run, &q.id),
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            rt.command_output(&thread, &run, "build", Some(live.revision))
+        )
+    );
+    result?;
+    let finished = output.unwrap()?;
+    assert!(finished.closed && !finished.truncated && finished.revision > live.revision);
+    assert_eq!(finished.text, "final report");
+    completed(&rt, &thread, &run).await;
+    let (snapshot, mut events) = rt.subscribe(&thread, Some(0))?;
+    loop {
+        let event = events.next().await?;
+        assert!(!serde_json::to_string(&event)?.contains('界'));
+        if event.sequence == snapshot.cursor {
+            break;
+        }
+    }
+    rt.retain_events(&thread, 1)?;
+    rt.close().await?;
+    let rt = Huggler::open(opts).await?;
+    assert_eq!(rt.command_items(&thread, &run)?, ["build"]);
+    assert_eq!(
+        rt.command_output(&thread, &run, "build", None).await?,
+        finished
+    );
+    rt.close().await
+}

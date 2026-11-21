@@ -49,7 +49,19 @@ pub(crate) struct Turn {
     pub resume: Option<NativeThreadId>,
 }
 
+pub(crate) enum CommandFrame {
+    Append(String),
+    Snapshot {
+        output: Option<String>,
+        finished: bool,
+    },
+}
+
 pub(crate) enum Update {
+    CommandOutput {
+        item: String,
+        frame: CommandFrame,
+    },
     Steer(crate::CommandId, crate::SteerOutcome),
     Output(String),
     Usage {

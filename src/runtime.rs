@@ -711,6 +711,34 @@ impl Huggler {
             .access(|db| db.detail(thread, before, query, limit))
     }
 
+    /// Codex command item IDs observed on one application run, in discovery order.
+    pub fn command_items(&self, thread: &ThreadId, run: &RunId) -> Result<Vec<String>> {
+        self.shared.access(|db| db.command_items(thread, run))
+    }
+
+    /// Read one bounded command tail. Pass its revision to wait for newer output or closure.
+    pub async fn command_output(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        item: &str,
+        after: Option<i64>,
+    ) -> Result<CommandOutput> {
+        let mut changed = self.shared.changed.subscribe();
+        loop {
+            let output = self
+                .shared
+                .access(|db| db.command_output(thread, run, item))?;
+            if after.is_some_and(|r| r < 0 || r > output.revision) {
+                return Err(Error::Invalid("cursor outside command output".into()));
+            }
+            if after != Some(output.revision) || output.closed {
+                return Ok(output);
+            }
+            changed.changed().await.map_err(|_| Error::Closed)?;
+        }
+    }
+
     /// Stage up to 64 KiB of UTF-8 plain text for one thread.
     pub fn prepare_upload(
         &self,

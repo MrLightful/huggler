@@ -404,6 +404,16 @@ pub struct Message {
     pub origin: Option<MessageOrigin>,
     pub text: String,
 }
+/// Latest 32 KiB of one provider command's output. Replace the previous view on each read.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub text: String,
+    pub revision: i64,
+    pub truncated: bool,
+    /// The command or its owning turn has ended.
+    pub closed: bool,
+}
+
 /// Continue a history query on the same thread, filter and snapshot.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryCursor {
@@ -589,6 +599,11 @@ impl From<ThreadSnapshot> for Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    /// An item can now be expanded through the scoped command-output API.
+    CommandOutputAvailable {
+        run_id: RunId,
+        item: String,
+    },
     UsageLimitContinuation {
         failed: RunId,
         run_id: RunId,

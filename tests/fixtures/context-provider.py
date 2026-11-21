@@ -28,6 +28,9 @@ for line in sys.stdin:
         print(json.dumps(frame), file=out)
     if not method:
         assert frame["id"] == "ask"
+        if prompt == "command output":
+            emit(method="item/completed", params={"threadId": session, "turnId": turn, "item": {
+                "type": "commandExecution", "id": "build", "aggregatedOutput": "final report"}})
         completed()
         continue
     if "id" not in frame:
@@ -75,6 +78,11 @@ for line in sys.stdin:
         prompt = params["input"][0]["text"]
         turn = str(uuid4())
         result = {"turn": {"id": turn}}
+        if prompt == "command output":
+            for target, item, delta in [(turn, "build", "prefix" + "界" * 20000 + "end"),
+                                        ("prior", "foreign", "wrong")]:
+                emit(method="item/commandExecution/outputDelta", params={
+                    "threadId": session, "turnId": target, "itemId": item, "delta": delta})
     emit(id=frame["id"], result=result)
     if method == "turn/start":
         if prompt == "callbacks":
@@ -88,7 +96,7 @@ for line in sys.stdin:
                      "primary": {"usedPercent": 100, "resetsAt": reset}}})
             emit(method="turn/completed", params={"threadId": session, "turn": {"id": turn, "status": "failed",
                  "error": {"message": "Quota exhausted", "codexErrorInfo": "usageLimitExceeded"}}})
-        elif prompt in ("ask", "callbacks"):
+        elif prompt in ("ask", "callbacks", "command output"):
             emit(id="ask", method="item/tool/requestUserInput", params={"threadId": session, "turnId": turn,
                  "questions": [{"id": "one"}, {"id": "two"}]})
         else:
