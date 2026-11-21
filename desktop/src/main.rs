@@ -119,7 +119,7 @@ fn main() -> Result<()> {
         })
         .detach();
 
-        let bounds = Bounds::centered(None, size(px(900.), px(660.)), cx);
+        let bounds = Bounds::centered(None, size(px(1120.), px(740.)), cx);
         let _window = cx
             .open_window(
                 WindowOptions {

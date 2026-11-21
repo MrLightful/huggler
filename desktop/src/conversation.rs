@@ -11,11 +11,11 @@ use crate::{
     publish::Publish,
     questions::Questions,
     settings::{Preferences, Settings, SettingsEvent},
-    ui::{choice, field, heading, hint, label, section_title},
+    ui::{field, hint, label},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Selectable,
+    ActiveTheme, Disableable, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Enter, Input, InputEvent, InputState},
@@ -143,8 +143,7 @@ impl Desktop {
                 InputState::new(window, cx).placeholder("Leave blank to use this checkout")
             }),
             launching: None,
-            name: cx
-                .new(|cx| InputState::new(window, cx).placeholder("e.g. Fix checkout validation")),
+            name: cx.new(|cx| InputState::new(window, cx).placeholder("Name this conversation…")),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
             instance,
             launch_model: None,
@@ -565,9 +564,110 @@ impl Desktop {
         }
     }
 
-    fn launch_form(&self, compact: bool, cx: &Context<Self>) -> Div {
+    fn workspace_header(&self, compact: bool, cx: &Context<Self>) -> Div {
+        let checkout = self.checkout.read(cx).value();
+        let (root, title) = match &self.current {
+            Some(thread) => (
+                self.workspaces[&thread.id].root.as_path(),
+                thread.name.as_str(),
+            ),
+            None => (std::path::Path::new(checkout.as_str()), "New conversation"),
+        };
+        let project = root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Workspace");
+        let crumb = h_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .text_sm()
+            .child(IconName::Folder)
+            .child(
+                div()
+                    .max_w(relative(0.40))
+                    .truncate()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(project.to_owned()),
+            )
+            .child(div().text_color(cx.theme().muted_foreground).child("/"))
+            .child(div().min_w_0().truncate().child(title.to_owned()));
+        let pending = self
+            .current
+            .as_ref()
+            .map(|t| t.permissions.len() + t.questions.len());
+        v_flex()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .h_10()
+                    .px_4()
+                    .gap_2()
+                    .child(crumb)
+                    .when_some(pending.filter(|_| !compact), |row, pending| {
+                        row.child(self.workspace_tabs(pending, cx))
+                    }),
+            )
+            .when_some(pending.filter(|_| compact), |header, pending| {
+                header.child(div().px_3().pb_1().child(self.workspace_tabs(pending, cx)))
+            })
+    }
+
+    fn workspace_tabs(&self, pending: usize, cx: &Context<Self>) -> Div {
+        h_flex().flex_shrink_0().gap_1().children(
+            [
+                (Tab::Conversation, "Conversation"),
+                (Tab::Changes, "Changes"),
+                (Tab::Checks, "Checks"),
+                (Tab::Publish, "Publish"),
+            ]
+            .into_iter()
+            .map(|(tab, label)| {
+                let display = if tab == Tab::Conversation && pending != 0 {
+                    format!("{label} ({pending})")
+                } else {
+                    label.into()
+                };
+                control!(
+                    label,
+                    Button::new(label)
+                        .ghost()
+                        .selected(self.tab == tab)
+                        .compact()
+                        .label(display)
+                        .on_click(cx.listener(move |v, _, w, cx| {
+                            v.tab = tab;
+                            if tab == Tab::Changes
+                                && let Some(t) = &v.current
+                            {
+                                v.workspaces[&t.id]
+                                    .changes
+                                    .update(cx, |panel, cx| panel.refresh(w, cx));
+                            }
+                            if tab == Tab::Publish
+                                && let Some(t) = &v.current
+                            {
+                                v.workspaces[&t.id]
+                                    .publish
+                                    .update(cx, |panel, cx| panel.refresh(cx));
+                            }
+                            cx.notify();
+                        }))
+                )
+            }),
+        )
+    }
+
+    fn launch_form(&self, compact: bool, cx: &Context<Self>) -> AnyElement {
         if self.launching.is_some() {
-            return v_flex().p_5().child(label("Opening conversation…"));
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(label("Opening conversation…"))
+                .into_any_element();
         }
         let check = self.provider_check.as_ref().map(|check| check.read(cx));
         let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
@@ -577,101 +677,133 @@ impl Desktop {
                 SharedString::from(self.runtime.output().provider_label(id.as_str()).to_owned());
             control!(
                 name.clone(),
-                choice(
-                    SharedString::from(format!("provider-{id}")),
-                    name,
-                    id == self.instance
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.choose_provider(&id);
-                    cx.notify();
-                }))
+                Button::new(SharedString::from(format!("provider-{id}")))
+                    .small()
+                    .ghost()
+                    .selected(id == self.instance)
+                    .label(name)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.choose_provider(&id);
+                        cx.notify();
+                    }))
             )
         });
-        let check_button = Button::new("check-provider")
-            .label("Check provider")
-            .disabled(checkout_empty || check.is_some_and(ProviderCatalog::loading))
-            .on_click(cx.listener(|view, _, _, cx| {
-                view.catalog(true, cx);
-            }));
-        let provider_section = v_flex()
-            .gap_2()
-            .pt_3()
-            .border_t_1()
+        let launcher = v_flex()
+            .w_full()
+            .p_3()
+            .gap_3()
+            .rounded_xl()
+            .border_1()
             .border_color(cx.theme().border)
-            .child(section_title("Coding provider"))
+            .bg(cx.theme().muted.opacity(0.55))
+            .child(control!(
+                "Conversation name",
+                Input::new(&self.name).appearance(false)
+            ))
             .child(
                 h_flex()
                     .gap_2()
                     .justify_between()
                     .flex_wrap()
-                    .child(h_flex().gap_1().flex_wrap().children(providers))
-                    .child(control!("Check provider", check_button)),
-            )
-            .child(self.model_control(self.launch_model.as_deref(), checkout_empty, cx))
-            .when_some(check, |panel, check| {
-                let status = check.status();
-                panel.child(control!(
-                    format!("provider-status/{status}"),
-                    hint(status, cx)
-                ))
-            });
-        let body = v_flex()
-            .w_full()
-            .max_w(px(720.))
-            .p_5()
-            .gap_4()
-            .when(compact, |form| form.p_3().gap_2())
-            .child(heading("New conversation"))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_end()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(field("Git checkout", &self.checkout)),
-                    )
-                    .child(control!(
-                        "Browse",
-                        Button::new("browse")
-                            .label("Browse…")
-                            .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
-                    )),
-            )
-            .child(field("Conversation name", &self.name))
-            .child(field("New worktree branch (optional)", &self.branch))
-            .child(provider_section);
-        v_flex()
-            .size_full()
-            .min_h_0()
-            .child(
-                div()
-                    .id("launch-form")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(body),
-            )
-            .child(
-                h_flex()
-                    .px_5()
-                    .py_3()
-                    .flex_shrink_0()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
+                    .child(h_flex().gap_1().flex_wrap().children(providers).child(
+                        self.model_control(self.launch_model.as_deref(), checkout_empty, cx),
+                    ))
                     .child(control!(
                         "Open conversation",
                         Button::new("launch")
+                            .small()
                             .primary()
                             .label("Open conversation")
+                            .icon(IconName::ArrowRight)
                             .disabled(
                                 checkout_empty || self.name.read(cx).value().trim().is_empty()
                             )
                             .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
                     )),
+            );
+        let context = h_flex()
+            .items_end()
+            .gap_3()
+            .when(compact, |row| row.flex_col().items_start())
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .when(compact, |field| field.w_full().flex_none())
+                    .child(label("Git checkout"))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(control!("Git checkout", Input::new(&self.checkout))),
+                            )
+                            .child(control!(
+                                "Browse",
+                                Button::new("browse")
+                                    .ghost()
+                                    .icon(IconName::FolderOpen)
+                                    .tooltip("Browse for a checkout")
+                                    .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
+                            )),
+                    ),
             )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(compact, |field| field.w_full().flex_none())
+                    .child(field("New worktree branch (optional)", &self.branch)),
+            );
+        let body = v_flex()
+            .w_full()
+            .max_w(px(736.))
+            .p_4()
+            .gap_3()
+            .child(
+                div()
+                    .mb_2()
+                    .text_center()
+                    .text_2xl()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("What are you working on?"),
+            )
+            .child(launcher)
+            .child(context)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(control!(
+                        "Check provider",
+                        Button::new("check-provider")
+                            .small()
+                            .ghost()
+                            .label("Check provider")
+                            .disabled(checkout_empty || check.is_some_and(ProviderCatalog::loading))
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.catalog(true, cx);
+                            }))
+                    ))
+                    .when_some(check, |row, check| {
+                        let status = check.status();
+                        row.child(control!(
+                            format!("provider-status/{status}"),
+                            hint(status, cx)
+                        ))
+                    }),
+            );
+        v_flex()
+            .id("launch-form")
+            .flex_1()
+            .min_h_0()
+            .items_center()
+            .overflow_y_scroll()
+            .child(body.flex_shrink_0().my_auto())
+            .into_any_element()
     }
 
     fn permission(
@@ -886,89 +1018,7 @@ impl Desktop {
         let status = last_run.map_or_else(|| "Ready".to_owned(), |run| format!("{:?}", run.status));
         let workspace = &self.workspaces[&thread.id];
         let pending = thread.permissions.len() + thread.questions.len();
-        let mut page = v_flex().size_full().min_h_0().child(
-            v_flex()
-                .px_4()
-                .pt_2()
-                .gap_1()
-                .flex_shrink_0()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .justify_between()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_lg()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(thread.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(provider.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .truncate()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(workspace.root.display().to_string()),
-                )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .pb_1()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .children(
-                            [
-                                (Tab::Conversation, "Conversation"),
-                                (Tab::Changes, "Changes"),
-                                (Tab::Checks, "Checks"),
-                                (Tab::Publish, "Publish"),
-                            ]
-                            .into_iter()
-                            .map(|(tab, label)| {
-                                let display = if tab == Tab::Conversation && pending != 0 {
-                                    format!("{label} ({pending})")
-                                } else {
-                                    label.into()
-                                };
-                                control!(
-                                    label,
-                                    Button::new(label)
-                                        .ghost()
-                                        .selected(self.tab == tab)
-                                        .compact()
-                                        .label(display)
-                                        .on_click(cx.listener(move |v, _, w, cx| {
-                                            v.tab = tab;
-                                            if tab == Tab::Changes
-                                                && let Some(t) = &v.current
-                                            {
-                                                v.workspaces[&t.id]
-                                                    .changes
-                                                    .update(cx, |panel, cx| panel.refresh(w, cx));
-                                            }
-                                            if tab == Tab::Publish
-                                                && let Some(t) = &v.current
-                                            {
-                                                v.workspaces[&t.id]
-                                                    .publish
-                                                    .update(cx, |panel, cx| panel.refresh(cx));
-                                            }
-                                            cx.notify();
-                                        }))
-                                )
-                            }),
-                        ),
-                ),
-        );
+        let mut page = v_flex().flex_1().min_h_0();
         if self.tab != Tab::Conversation {
             let content = match self.tab {
                 Tab::Changes => workspace.changes.clone().into_any_element(),
@@ -978,7 +1028,29 @@ impl Desktop {
             page = page.child(div().flex_1().min_h_0().child(content));
             return page;
         }
-        page.child(
+        let fresh = last_run.is_none()
+            && thread.history.messages.is_empty()
+            && self.before.is_none()
+            && self.query.is_empty()
+            && pending == 0
+            && !busy;
+        let column = v_flex()
+            .w_full()
+            .max_w(px(800.))
+            .mx_auto()
+            .flex_1()
+            .min_h_0()
+            .when(fresh, |column| column.justify_center())
+            .when(fresh, |column| {
+                column.child(
+                    div()
+                        .mb_3()
+                        .text_center()
+                        .text_2xl()
+                        .child("What should we build?"),
+                )
+            });
+        let column = column.when(!fresh, |column| column.child(
             h_flex()
                 .px_5()
                 .gap_2()
@@ -1101,6 +1173,7 @@ impl Desktop {
                     history.child(self.turn_activity(thread, cx))
                 }),
         )
+        )
         .when(pending != 0, |view| {
             view.child(
                 div()
@@ -1124,9 +1197,9 @@ impl Desktop {
         })
         .child(
             v_flex()
-                .p_4()
+                .mx_4().mb_3().p_3().rounded_xl().bg(cx.theme().muted.opacity(0.55))
                 .gap_2()
-                .border_t_1()
+                .border_1()
                 .border_color(cx.theme().border)
                 .when(self.checkout_unavailable, |composer| {
                     composer
@@ -1174,12 +1247,7 @@ impl Desktop {
                 .when_some(last_run.filter(|_| !self.checkout_unavailable).and_then(|r| r.error.clone()), |area, error| {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
-                .child(
-                    h_flex().justify_between().gap_2()
-                        .child(label("Message"))
-                        .child(self.model_control(thread.model.as_deref(), false, cx))
-                )
-                .child(control!("Message", Input::new(&self.prompt)))
+                .child(control!("Message", Input::new(&self.prompt).appearance(false)))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
                     let noun = if count == 1 { "message" } else { "messages" };
@@ -1214,7 +1282,8 @@ impl Desktop {
                 })
                 .child(
                     h_flex()
-                        .gap_2()
+                        .flex_wrap().gap_2()
+                        .child(self.model_control(thread.model.as_deref(), false, cx))
                         .child(div().flex_1().min_w_0().child(control!(
                             format!("status/{status}"), label(status)
                         )))
@@ -1274,6 +1343,9 @@ impl Desktop {
                         )),
                 ),
         )
+        .child(div().mx_5().mb_2().text_xs().truncate().text_color(cx.theme().muted_foreground)
+            .child(format!("{}  ·  {}", provider, workspace.root.display())));
+        page.child(column)
     }
 }
 
@@ -1325,11 +1397,22 @@ impl Render for Desktop {
                     .border_color(cx.theme().border)
                     .p_3()
                     .gap_3()
-                    .child(label("Conversations"))
+                    .child(
+                        h_flex()
+                            .h_7()
+                            .gap_2()
+                            .child(IconName::Inbox)
+                            .child(label("Huggler")),
+                    )
                     .child(control!(
                         "New conversation",
                         Button::new("new")
+                            .small()
+                            .compact()
                             .w_full()
+                            .ghost()
+                            .justify_start()
+                            .icon(IconName::Plus)
                             .label("New conversation")
                             .on_click(cx.listener(|view, _, w, cx| view.new_conversation(w, cx))),
                     ))
@@ -1345,6 +1428,7 @@ impl Render for Desktop {
                                     .w_full()
                                     .justify_start()
                                     .ghost()
+                                    .icon(IconName::Settings)
                                     .label("Settings")
                                     .selected(self.show_settings)
                                     .on_click(
@@ -1357,14 +1441,18 @@ impl Render for Desktop {
                 v_flex()
                     .flex_1()
                     .min_w_0()
+                    .when(!self.show_settings, |page| {
+                        page.child(
+                            self.workspace_header(window.viewport_size().width < px(900.), cx),
+                        )
+                    })
                     .child(if self.show_settings {
                         self.settings.clone().into_any_element()
                     } else {
                         match &self.current {
-                            Some(thread) => self.conversation(thread, cx),
-                            None => self.launch_form(window.viewport_size().height <= px(480.), cx),
+                            Some(thread) => self.conversation(thread, cx).into_any_element(),
+                            None => self.launch_form(window.viewport_size().width < px(800.), cx),
                         }
-                        .into_any_element()
                     })
                     .when_some(
                         self.error.as_ref().filter(|_| !self.show_settings),

@@ -1,5 +1,4 @@
 use super::*;
-use gpui_component::Sizable;
 use huggler::RunStatus;
 
 pub(super) const WIDTH: f32 = 184.;
@@ -44,8 +43,12 @@ fn activity(thread: &ConversationSummary) -> (Section, &'static str) {
 
 impl Desktop {
     pub(super) fn conversation_sidebar(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let mut list = div().id("threads").flex_1().min_h_0().overflow_y_scroll();
-        for section in [Section::Attention, Section::Ready, Section::Working] {
+        let mut list = v_flex()
+            .id("threads")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll();
+        for section in [Section::Attention, Section::Working, Section::Ready] {
             let rows: Vec<_> = self
                 .threads
                 .iter()
@@ -74,8 +77,8 @@ impl Desktop {
                 .justify_between()
                 .child(
                     div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
                         .child(format!("{title} ({count})")),
                 )
                 .when(can_fold, |header| {
@@ -95,6 +98,8 @@ impl Desktop {
                     ))
                 });
             let group = v_flex()
+                .flex_shrink_0()
+                .when(section == Section::Ready, |group| group.mt_auto())
                 .pb_3()
                 .gap_1()
                 .child(control!(format!("section/{title}/{count}"), header))
