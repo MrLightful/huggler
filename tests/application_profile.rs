@@ -656,6 +656,41 @@ async fn closing_runtime_reaps_workspace_setup_and_records_failure() -> Result<(
 }
 
 #[tokio::test]
+async fn allowlisted_tools_remain_callable_when_search_is_disabled() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut config = options(&dir.path().join("state"));
+    config.agent_tools = true;
+    config.agent_policy.defer_tools = true;
+    config.agent_policy.allowed_tools = Some(
+        ["send_to_user", "orchestrator_capabilities"]
+            .map(String::from)
+            .into(),
+    );
+    config.claude_agent.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
+    let rt = Huggler::open(config).await?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let thread = launch(
+        &rt,
+        &rt.open_project(&repo)?,
+        "sender",
+        Provider::ClaudeAgent,
+    );
+    let run = rt
+        .send(
+            CommandId("notice".into()),
+            thread.clone(),
+            "direct notice".into(),
+        )?
+        .run_id
+        .unwrap();
+    completed(&rt, &thread, &run).await;
+    assert_eq!(rt.user_notices(&thread)?.len(), 1);
+    rt.close().await
+}
+
+#[tokio::test]
 async fn managed_agent_requests_and_one_use_secret_references() -> Result<()> {
     use application::{Preferences, Theme};
     use std::os::unix::fs::PermissionsExt;

@@ -95,7 +95,15 @@ for line in sys.stdin:
         prompt_id = frame["id"]
         text = params["prompt"][0]["text"]
         tools = mcp("tools/list", {})["result"]["tools"]
+        if text == "direct notice":
+            assert {t["name"] for t in tools} == {"orchestrator_capabilities", "send_to_user"}
+            assert call("orchestrator_capabilities")["deferred"] is False
+            assert call("tool_search", query="request_secret")["code"] == "forbidden"
+            assert call("send_to_user", clientRequestId="notice", text=text)["delivered"]
+            finish(text)
+            continue
         if text.startswith("managed secret "):
+            assert call("orchestrator_capabilities")["deferred"] is True
             names = {t["name"] for t in tools}
             assert names == {"tool_search", "orchestrator_capabilities"}, names
             case = text.split()[-1]

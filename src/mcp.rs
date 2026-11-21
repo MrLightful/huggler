@@ -164,11 +164,15 @@ impl AgentServer {
             .is_none_or(|names| names.contains(name))
             && (name != "request_secret" || policy.secret_ttl_seconds.is_some_and(|n| n > 0))
     }
+    fn deferred(&self) -> bool {
+        self.0.agent_policy.defer_tools && self.permitted("tool_search")
+    }
+
     fn visible(&self, token: &str, name: &str) -> HostResult<bool> {
         if !self.permitted(name) {
             return Ok(false);
         }
-        if !self.0.agent_policy.defer_tools
+        if !self.deferred()
             || matches!(
                 name,
                 "tool_search" | "orchestrator_capabilities" | "delegate_task" | "task_status"
@@ -191,9 +195,7 @@ impl AgentServer {
             .map(|t| t.name)
             .filter(|n| self.permitted(n))
             .collect();
-        tool_result(Ok(
-            json!({"tools":names,"deferred":self.0.agent_policy.defer_tools}),
-        ))
+        tool_result(Ok(json!({"tools":names,"deferred":self.deferred()})))
     }
     #[tool(
         description = "Discover matching tools by name and expose their schemas to the current run."
