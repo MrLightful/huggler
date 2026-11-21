@@ -12,6 +12,7 @@ macro_rules! control {
 
 mod changes;
 mod git;
+mod paths;
 mod questions;
 mod settings;
 mod ui;
@@ -24,7 +25,7 @@ use anyhow::{Context as _, Result};
 use conversation::Desktop;
 use gpui::{prelude::*, *};
 use gpui_component::Root;
-use huggler::{Huggler, HugglerOptions};
+use huggler::Huggler;
 use std::{path::PathBuf, sync::Arc};
 
 const APP_ID: &str = "dev.huggler.stage2";
@@ -40,10 +41,7 @@ actions!(
 );
 
 fn main() -> Result<()> {
-    let state = std::env::var_os("HUGGLER_STATE_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::data_dir().map(|path| path.join(APP_ID)))
-        .context("cannot locate Huggler app data")?;
+    let paths = paths::StoragePaths::discover()?;
     #[cfg(all(feature = "qualification", target_os = "macos"))]
     let driver = qualification::load()?;
 
@@ -52,14 +50,14 @@ fn main() -> Result<()> {
     #[cfg(not(all(feature = "qualification", target_os = "macos")))]
     let interactive = true;
 
-    let (prefs, load_error) = match settings::Preferences::load(&state) {
+    let (prefs, load_error) = match settings::Preferences::load(&paths.state_dir()) {
         Ok(prefs) => (prefs, None),
         Err(error) => (
             settings::Preferences::default(),
             Some(format!("Could not read settings. {error}")),
         ),
     };
-    let mut options = HugglerOptions::new(&state);
+    let mut options = paths.runtime_options();
     options.agent_tools = true;
     options.prompt_suggestions = std::env::var("HUGGLER_PROMPT_SUGGESTIONS").as_deref() == Ok("1");
     options.codex.request_approvals = true;
@@ -139,7 +137,7 @@ fn main() -> Result<()> {
                 |window, cx| {
                     window.set_window_title("Huggler");
                     let view =
-                        cx.new(|cx| Desktop::new(runtime, state, prefs, load_error, window, cx));
+                        cx.new(|cx| Desktop::new(runtime, paths, prefs, load_error, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )

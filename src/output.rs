@@ -10,12 +10,15 @@ pub struct ToolPresentation {
     pub description: Option<String>,
 }
 
-/// Settings shared by provider adapters, the agent tool server and the conversation store.
+/// Client identity and presentation overrides for providers, MCP clients and agents.
 #[derive(Clone, Debug)]
 pub struct AgentOutput {
-    /// Protocol client name and MCP server registration key. ASCII letters, digits, '-' and '_'.
+    /// Stable provider client identifier and MCP server registration key.
+    /// Accepts 1–128 ASCII letters, digits, underscores or hyphens.
     pub name: String,
+    /// Display name in supported provider metadata and Huggler-generated text.
     pub title: String,
+    /// Version advertised to providers and MCP clients. Defaults to the Huggler crate version.
     pub version: String,
     /// Optional instructions advertised at MCP initialization.
     pub instructions: Option<String>,

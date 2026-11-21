@@ -10,8 +10,13 @@ import { Huggler, HugglerError, commandId, threadId, eventCursor, runId, provide
 const [, , phase, repo] = process.argv
 const recorded = providerInstanceId("recorded")
 const approval = providerInstanceId("approval")
-const options: OpenOptions = {
+interface FixtureOptions extends OpenOptions {
+  stateDir: string
+}
+const options: FixtureOptions = {
   stateDir: resolve("state"),
+  name: "Fixture Studio",
+  slug: "fixture-app",
   storage: { databasePath: resolve("custom.sqlite"), worktreeRoot: { kind: "shared", path: resolve("trees") } },
   output: { version: "fixture-sdk" },
   instances: [
@@ -30,7 +35,8 @@ const first = { threadId: thread, commandId: commandId("send-first"), text: "Res
 const second = "Using the conversation history available in this resumed thread, first repeat the exact final answer you gave in the previous turn. Then on a new line write exactly: provider thread resume fixture second turn complete"
 const resumeRecording = join(repo, "docs/reference/codex-resume/codex_transcript.ndjson")
 function recording(start: number, fixture = resumeRecording, substitutions: Record<string, string> = {}) {
-  writeFileSync("case.json", JSON.stringify({ start, fixture, version: options.output!.version, substitutions }))
+  writeFileSync("case.json", JSON.stringify({ start, fixture, substitutions,
+    clientInfo: { name: "fixture-app", title: "Fixture Studio", version: "fixture-sdk" } }))
 }
 const code = (expected: HugglerError["code"]) => (error: unknown) =>
   error instanceof HugglerError && error.code === expected
@@ -72,6 +78,7 @@ async function check(rt: Huggler) {
     rt.launch({ commandId: commandId("launch-" + id), projectId: project.id, threadId: id,
       name: title, providerInstanceId, ...(providerInstanceId === "recorded" && { model }) })
   if (phase === "first") {
+    assert(existsSync("custom.sqlite"))
     execFileSync(process.execPath, ["consumer.mjs", "locked", repo], { stdio: "inherit", timeout: 15000 })
     const instances = await rt.listProviderInstances()
     for (const instance of instances) sample("ProviderInstance", instance)
@@ -133,6 +140,31 @@ async function check(rt: Huggler) {
     assert.equal((await rt.readThread(thread)).cursor, snapshot.cursor)
     assert.equal((await rt.listThreads()).length, 2)
   } else if (phase === "requests") {
+    const defaults = await Huggler.open({ name: "Fixture App" })
+    try { assert(existsSync(resolve("home/.fixture-app/userdata/huggler.sqlite3"))) }
+    finally { await defaults.close() }
+    const slug = await Huggler.open({ name: "Fixture App / Lab", slug: "fixture_lab" })
+    try { assert(existsSync(resolve("home/.fixture_lab/userdata/huggler.sqlite3"))) }
+    finally { await slug.close() }
+    const slugOnly = await Huggler.open({ slug: "fixture-cli" })
+    try { assert(existsSync(resolve("home/.fixture-cli/userdata/huggler.sqlite3"))) }
+    finally { await slugOnly.close() }
+    const explicitState = resolve("explicit state")
+    const explicit = await Huggler.open({ stateDir: explicitState })
+    const explicitThread = threadId("explicit-state-thread")
+    try {
+      assert(existsSync(join(explicitState, "huggler.sqlite3")))
+      const project = await explicit.openProject(checkout)
+      await explicit.launch({ commandId: commandId("explicit-state-launch"), threadId: explicitThread,
+        projectId: project.id, providerInstanceId: "codex", name: "Existing conversation" })
+    }
+    finally { await explicit.close() }
+    const named = await Huggler.open({ name: "Fixture App", slug: "fixture_legacy", stateDir: explicitState })
+    try { assert.equal((await named.readThread(explicitThread)).name, "Existing conversation") }
+    finally { await named.close() }
+    await assert.rejects(Huggler.open({ name: "../outside" }), code("invalid"))
+    await assert.rejects(Huggler.open({ name: "Fixture App", slug: "../outside" }), code("invalid"))
+    await assert.rejects(Huggler.open({}), code("invalid"))
     const probe = await rt.probeProvider(approval, checkout)
     sample("ProviderReport", probe)
     assert.deepEqual(probe, { transport: "ACP v1", version: null, authenticated: null, resume: true, agentTools: false, models: [] })

@@ -7,22 +7,31 @@ The current manifest declares Huggler `0.0.1`, Rust `1.94.1`, and edition 2024. 
 
 ## Runtime options
 
+```rust
+let options = HugglerOptions::default().with_name("Studio Workbench")?;
+let huggler = Huggler::open(options).await?;
+```
+
+`with_name` sets the display name and derives a slug by lowercasing ASCII letters and joining words with hyphens. Use `with_name_and_slug("Studio / Lab", "studio_lab")` to set the slug explicitly. The slug is the provider and MCP identifier and supplies the default directory `~/.<slug>`. It accepts 1–128 ASCII letters, digits, underscores, or hyphens. The default options store the database in `userdata/huggler.sqlite3` and managed checkouts in `worktrees/{id}` under that directory.
+
+Use `HugglerOptions::new(state_dir)` to choose a state directory with `huggler.sqlite3` at its root. Add `.with_name("Studio Workbench")?` to set the display name and identifier for that directory. To use `userdata/huggler.sqlite3` under a custom directory, set `storage.database_path` to that relative path.
+
 | `HugglerOptions` field | Default and purpose |
 | --- | --- |
-| `state_dir` | Required by `new`. Base directory for relative state paths. |
-| `storage` | `huggler.sqlite3` and `worktrees/{id}` under the state directory. Set `StorageLayout.database_path`, `worktree_root`, or `worktree_name` before opening. |
+| `state_dir` | Base directory for relative storage paths. |
+| `storage` | Override the database path, worktree root, or worktree directory name. |
 | `codex`, `claude_agent` | Built-in instance executable configuration. Codex approval requests are opt-in. |
 | `instances` | Empty. Adds named `ProviderInstance` configurations to the built-ins. |
 | `agent_tools` | `false`. Starts the loopback MCP endpoint when enabled. |
 | `agent_policy` | Default policy. Controls the built-in tool allowlist, deferred tool discovery, and opt-in secret requests. |
-| `output` | Default `AgentOutput`. Configures client identity, MCP presentation, provider labels, and generated text. |
+| `output` | Overrides how Huggler and its tools appear to providers, MCP clients, and agents. Set these overrides after setting the name and slug. |
 | `auto_resume_usage_limits` | `false`. Allows one eligible continuation after a provider-reported Codex quota reset. A newer message or stop can cancel it. |
 | `prompt_suggestions` | `false`. Enables extra Codex sampling for an eligible follow-up, exposed as `Run.prompt_suggestion`. |
 
 Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_dir`. Use `WorktreeRoot::ProjectRelative` for a directory relative to each registered project. The `worktree_name` is a single path component containing the literal placeholder `{id}`, which is replaced with a generated UUID.
 
 ```rust
-let mut options = HugglerOptions::new(state_dir);
+let mut options = HugglerOptions::new(state_dir).with_name("Studio Workbench")?;
 options.storage.database_path = "sessions/history.db".into();
 options.storage.worktree_root = WorktreeRoot::ProjectRelative(".myapp/worktrees".into());
 options.storage.worktree_name = "checkout-{id}".into();
@@ -48,10 +57,15 @@ This places the database and its owner lock, `history.db.runtime.lock`, under `s
 
 `RunStatus::terminal()` covers `Completed`, `Failed`, and `Interrupted`. In a `Receipt`, `message_id` and `run_id` are optional. `event_sequences` lists the event positions committed by the command. In a `Thread`, use `provider_instance` and `worktree_path` to identify where subsequent work runs.
 
-## Customize agent output
+## Customize provider and agent presentation
 
-Set `AgentOutput.name`, `title`, `version`, and optional `instructions` to identify your host to supported providers and MCP clients. Map instance IDs to display names with `provider_labels`. Use `ToolPresentation` to rename a tool or override its title and description. Policies use the original built-in tool keys.
+Override `options.output` only when you need to customize what providers and agents see.
 
-The MCP server name and advertised tool names accept 1–128 ASCII letters, digits, underscores, or hyphens. Give each advertised tool a unique name. Keep the server name stable across restarts for providers that store permissions under it. Resolve a display label with `runtime.output().provider_label(id)`, which falls back to the instance ID.
+- `name` is the stable provider client identifier and MCP registration key. Change it to match an existing registration. Providers can store permissions under this key.
+- `title` is the display name in supported provider metadata, approval prompts, and generated conversation text.
+- `version` is advertised in provider and MCP handshakes. It defaults to the Huggler crate version. Set it to your app version if you want providers to see that version.
+- `instructions` adds an optional message to MCP initialization. `provider_labels` maps instance IDs to display labels. `tools` overrides the advertised names, titles, and descriptions of built-in tools. Policies use the original built-in keys.
+
+The MCP server name and advertised tool names accept 1–128 ASCII letters, digits, underscores, or hyphens. Give each advertised tool a unique name. Resolve a provider display label with `runtime.output().provider_label(id)`, which falls back to the instance ID.
 
 Implement `AgentText` to change the host-generated text for history, attachments, peer messages, and other prompts or diagnostics. Store the implementation in an `Arc` and assign it to `options.output.text`. Callbacks are synchronous and can run inside a database transaction. Keep them fast and avoid callbacks into the runtime.

@@ -14,9 +14,8 @@ from desktop_check import ROOT, installer, isolated_env
 
 def launch_and_quit(app, case):
     env = isolated_env(case)
-    # Use the ordinary application entry point and its default Application Support directory.
-    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-    database = Path(env["HOME"]) / "Library/Application Support" / info["CFBundleIdentifier"] / "huggler.sqlite3"
+    # Use the ordinary application entry point with a fresh home and no overrides.
+    database = Path(env["HOME"]) / ".huggler/userdata/huggler.sqlite3"
     process = subprocess.Popen([app / "Contents/MacOS/huggler-desktop"], env=env, cwd="/")
     try:
         until = time.monotonic() + 30

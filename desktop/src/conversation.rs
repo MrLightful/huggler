@@ -11,6 +11,7 @@ use models::{Models, ProviderCatalog};
 use crate::{
     changes::Changes,
     git,
+    paths::StoragePaths,
     questions::Questions,
     settings::{Preferences, Settings, SettingsEvent},
     ui::{field, hint, label},
@@ -87,12 +88,13 @@ struct CommandLog {
 impl Desktop {
     pub fn new(
         runtime: Arc<Huggler>,
-        state: PathBuf,
+        paths: StoragePaths,
         prefs: Preferences,
         load_error: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let state = paths.state_dir();
         let settings = cx.new(|cx| {
             Settings::new(
                 prefs,
@@ -129,7 +131,7 @@ impl Desktop {
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
-            scratch_root: state.join("scratch"),
+            scratch_root: paths.scratch_dir(),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
             expanded_sections: HashMap::new(),

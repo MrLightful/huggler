@@ -26,9 +26,10 @@ use tokio::{
 
 #[derive(Clone, Debug)]
 pub struct HugglerOptions {
-    /// Base directory for relative storage paths.
+    /// Base directory for relative storage paths. The naming methods fill an empty path.
     pub state_dir: PathBuf,
     pub storage: crate::StorageLayout,
+    /// Controls how Huggler and its tools appear to providers and agents.
     pub output: crate::AgentOutput,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
@@ -41,7 +42,16 @@ pub struct HugglerOptions {
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,
 }
+impl Default for HugglerOptions {
+    fn default() -> Self {
+        let mut options = Self::new(PathBuf::new());
+        options.storage.database_path = Path::new("userdata").join(&options.storage.database_path);
+        options
+    }
+}
+
 impl HugglerOptions {
+    /// Configure a caller-selected state directory with `huggler.sqlite3` at its root.
     pub fn new(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
@@ -55,6 +65,48 @@ impl HugglerOptions {
             codex: CodexOptions::default(),
             claude_agent: ClaudeAgentOptions::default(),
         }
+    }
+    /// Set the display name and derive the provider and MCP identifier.
+    ///
+    /// Huggler lowercases ASCII letters and replaces whitespace with hyphens to
+    /// get the identifier. This also fills an empty state directory. For example,
+    /// `Studio Workbench` defaults to `~/.studio-workbench`. Set individual
+    /// `output` overrides after calling this method.
+    pub fn with_name(self, name: &str) -> Result<Self> {
+        let slug = name
+            .trim()
+            .split_ascii_whitespace()
+            .collect::<Vec<_>>()
+            .join("-")
+            .to_ascii_lowercase();
+        self.with_name_and_slug(name, &slug)
+    }
+
+    /// Set the display name and use the supplied slug for the provider and MCP
+    /// identifier and the default `~/.<slug>` directory.
+    pub fn with_name_and_slug(mut self, name: &str, slug: &str) -> Result<Self> {
+        let title = name.trim();
+        if title.is_empty() {
+            return Err(Error::Invalid("expected a nonempty name".into()));
+        }
+        if !crate::mcp::valid_name(slug) {
+            return Err(Error::Invalid(
+                "slug must contain 1–128 ASCII letters, digits, underscores or hyphens".into(),
+            ));
+        }
+        if self.state_dir.as_os_str().is_empty() {
+            self.state_dir = std::env::home_dir()
+                .filter(|path| path.is_absolute())
+                .ok_or_else(|| {
+                    Error::Invalid(
+                        "cannot locate the home directory. Specify a state directory".into(),
+                    )
+                })?
+                .join(format!(".{slug}"));
+        }
+        self.output.name = slug.into();
+        self.output.title = title.into();
+        Ok(self)
     }
 }
 
@@ -389,6 +441,9 @@ impl Huggler {
     /// Requires a Tokio runtime with I/O and time enabled.
     pub async fn open(options: HugglerOptions) -> Result<Self> {
         let dir = options.state_dir;
+        if dir.as_os_str().is_empty() {
+            return Err(Error::Invalid("expected a state directory path".into()));
+        }
         let storage = options.storage;
         let registry = crate::providers::registry::registry(
             &options.codex,

@@ -441,13 +441,14 @@ impl AgentServer {
 /// Build the wire catalog once. Policy and stored discoveries use the original key.
 pub(crate) type ToolCatalog = Vec<(String, rmcp::model::Tool)>;
 
+pub(crate) fn valid_name(name: &str) -> bool {
+    (1..=128).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+}
+
 pub(crate) fn catalog(output: &crate::AgentOutput) -> HostResult<ToolCatalog> {
-    fn valid_name(name: &str) -> bool {
-        (1..=128).contains(&name.len())
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-    }
     if !valid_name(&output.name) {
         return Err(Error::Invalid("invalid agent server name".into()));
     }

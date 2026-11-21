@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { chmodSync, copyFileSync, cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -10,7 +10,7 @@ const sdk = fileURLToPath(new URL("../", import.meta.url))
 const repo = resolve(sdk, "../..")
 const dir = mkdtempSync(join(tmpdir(), "huggler-consumer-"))
 const target = platformTarget()
-const run = (bin, args, cwd = dir) => execFileSync(bin, args, { cwd, stdio: "inherit", timeout: 90000 })
+const run = (bin, args, cwd = dir, env = process.env) => execFileSync(bin, args, { cwd, env, stdio: "inherit", timeout: 90000 })
 function pack(cwd) {
   const result = execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", dir], { cwd })
   return join(dir, JSON.parse(result)[0].filename)
@@ -30,8 +30,11 @@ try {
   copyFileSync(join(repo, "tests/fixtures/replay-codex.py"), join(dir, "codex"))
   chmodSync(join(dir, "codex"), 0o755)
   run(process.execPath, ["common.cjs"])
+  const testHome = join(dir, "home")
+  mkdirSync(testHome)
   for (const phase of ["responsive", "first", "second", "requests", "diagnostics", "worker", "idle"]) {
-    run(process.execPath, ["consumer.mjs", phase, repo])
+    const env = phase === "requests" ? { ...process.env, HOME: testHome } : process.env
+    run(process.execPath, ["consumer.mjs", phase, repo], dir, env)
     if (phase === "first") {
       execFileSync("cargo", ["run", "--quiet", "--locked", "--manifest-path", "native/Cargo.toml",
         "--example", "handoff", "--", dir], { cwd: sdk, stdio: "inherit" })

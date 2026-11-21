@@ -19,7 +19,7 @@ cargo add tokio --features macros,rt-multi-thread,time
 
 ## Run one turn
 
-Replace `src/main.rs` with the example below. Pass a new state directory for the first run. Huggler creates it and stores the conversation there.
+Replace `src/main.rs` with the example below. Huggler stores the conversation under `~/.huggler-example` by default. Pass a directory to store it elsewhere.
 
 ```rust
 use huggler::{CommandId, Huggler, HugglerOptions, Role, RunStatus, ThreadId};
@@ -27,10 +27,10 @@ use std::{io, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let state_dir = std::env::args_os().nth(1).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "pass a state directory")
-    })?;
-    let options = HugglerOptions::new(state_dir);
+    let options = std::env::args_os().nth(1)
+        .map(HugglerOptions::new)
+        .unwrap_or_default()
+        .with_name("Huggler Example")?;
     let huggler = Huggler::open(options.clone()).await?;
     let project = huggler.open_project(std::env::current_dir()?)?;
     let thread = ThreadId("first-conversation".into());
