@@ -100,6 +100,47 @@ async fn missing_checkout_is_distinct_from_a_missing_codex_executable() {
 }
 
 #[tokio::test]
+async fn codex_discovery_lists_enabled_skills_for_the_requested_checkout() {
+    let (temp, root) = checkout();
+    let mut options = HugglerOptions::new(temp.path().join("state"));
+    options.codex.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-provider.py");
+    let rt = Huggler::open(options).await.unwrap();
+    let skills = rt
+        .list_provider_skills("codex", &root)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        ["build-guide", "lint-guide", "shared-skill", "shared-skill"]
+    );
+    assert_eq!(skills[1].description.as_deref(), Some("Run the linter"));
+    assert_eq!(skills[2].path, root.join("repo/SKILL.md"));
+    assert_eq!(skills[3].path, root.join("user/SKILL.md"));
+    let calls = fs::read_to_string(root.join("frames.ndjson")).unwrap();
+    assert!(!calls.contains("model/list"));
+    assert!(!calls.contains("turn/start"));
+
+    fs::write(root.join("skill-list-unavailable"), "").unwrap();
+    assert!(
+        rt.list_provider_skills("codex", &root)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    fs::remove_file(root.join("frames.ndjson")).unwrap();
+    let report = rt.probe_provider("codex", &root).await.unwrap();
+    assert_eq!(report.models, ["fixture-deep", "fixture-fast"]);
+    let calls = fs::read_to_string(root.join("frames.ndjson")).unwrap();
+    assert!(!calls.contains("skills/list"));
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
 #[ignore = "uses the signed-in cloud Codex subscription"]
 async fn cloud_codex_with_missing_acp() {
     let (temp, root) = checkout();
