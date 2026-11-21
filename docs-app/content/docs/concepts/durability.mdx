@@ -1,0 +1,26 @@
+---
+title: Durability and recovery
+description: Understand what survives a restart and where provider delivery can become uncertain.
+---
+
+## One database, one owner
+
+A runtime owns its SQLite file until `close().await` finishes. Close stops intake, waits for managed work and releases the state lock. Reopen the same database to recover thread identities, history, queue state, and receipts. A concurrent open of the same database can return `Error::AlreadyOpen`.
+
+The default database is `huggler.sqlite3` under `state_dir`. `StorageLayout` can point at an absolute database path or a path relative to that directory. The runtime lock and SQLite sidecars sit alongside the database. Worktree reservations record absolute paths, so changing the configured root only affects future reservations.
+
+## Acceptance and delivery happen separately
+
+A host command commits a receipt and its local effects together. Retry with the original command ID, thread and payload to recover the receipt. Reusing the ID for a different intent returns `Error::Conflict`.
+
+The provider runs after the local commit. A host send that was committed and never claimed can reopen as failed and unsent. If the process dies after provider I/O, the restored run can report uncertain delivery. Inspect the stored run before submitting a replacement. An identical command retry returns the receipt without sending a second prompt. Durable queued work and delegated results have their own recovery paths.
+
+## Recover a view from its cursor
+
+For a new view, call `subscribe(&thread, None)` and start applying events to the returned snapshot. For an existing view saved at a cursor, call `subscribe(&thread, Some(cursor))` and apply the stream to that saved view. The snapshot returned by this second call is current. You can also replace the view with that snapshot and start a new stream after its cursor.
+
+Persist the last processed `Event.sequence` with the view. If retention has removed the required events, `subscribe` returns `CursorExpired`. Request a fresh snapshot and stream. History pagination and command output use their own cursors.
+
+## Keep the native session binding
+
+A Huggler thread has an application-owned `ThreadId` and may have a provider-owned `NativeThreadId` after its first turn. A run can likewise carry a `NativeTurnId`. Huggler uses the original provider instance to load or resume its native session where supported. A portable fork or file import supplies a bounded history prefix for a new session.

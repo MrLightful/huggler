@@ -1,0 +1,46 @@
+---
+title: Runtime API
+description: Configuration, public entry points, and return values for a Huggler host.
+---
+
+The current manifest declares Huggler `0.0.1`, Rust `1.94.1`, and edition 2024. Build the full Rust API reference from the checkout with `cargo doc --locked --all-features --no-deps --open`.
+
+## Runtime options
+
+| `HugglerOptions` field | Default and purpose |
+| --- | --- |
+| `state_dir` | Required by `new`. Base directory for relative state paths. |
+| `storage` | `huggler.sqlite3` and `worktrees/{id}` under the state directory. Set `StorageLayout.database_path`, `worktree_root`, or `worktree_name` before opening. |
+| `codex`, `claude_agent` | Built-in instance executable configuration. Codex approval requests are opt-in. |
+| `instances` | Empty. Adds named `ProviderInstance` configurations to the built-ins. |
+| `agent_tools` | `false`. Starts the loopback MCP endpoint when enabled. |
+| `agent_policy` | Default policy. Controls the built-in tool allowlist, deferred tool discovery, and opt-in secret requests. |
+| `output` | Default `AgentOutput`. Configures client identity, MCP presentation, provider labels, and generated text. |
+| `auto_resume_usage_limits` | `false`. Allows one eligible continuation after a provider-reported Codex quota reset. A newer message or stop can cancel it. |
+| `prompt_suggestions` | `false`. Enables extra Codex sampling for an eligible follow-up, exposed as `Run.prompt_suggestion`. |
+
+Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_dir`. Use `WorktreeRoot::ProjectRelative` for a directory relative to each registered project. The `worktree_name` is a single path component containing the literal placeholder `{id}`, which is replaced with a generated UUID.
+
+## Read and control
+
+| API | Return or effect |
+| --- | --- |
+| `Huggler::open(options).await` | Opens the state database, establishes ownership and recovers persisted records. Call from a running Tokio runtime. |
+| `open_project(path)` | Registers or resolves the Git working tree and returns its canonical root and project ID. |
+| `launch`, `send`, `dispatch` | Commit a command and return a `Receipt`. The optional run ID identifies the run affected by the action. |
+| `threads`, `wait_for_threads_after` | List thread summaries or wait for new thread entries after a position. |
+| `read`, `detail`, `read_message` | Return a full state snapshot, a bounded conversation page, or a single full message. |
+| `subscribe`, `wait_for_change` | Read events after a thread cursor, or wait for a later cursor. |
+| `wait` | Returns the specified terminal run, including a failed or interrupted run. |
+| `command_items`, `command_output` | Read Codex command item IDs and bounded output tails. |
+| `retain_events` | Prunes old event records for the thread. Existing replay cursors can expire. |
+| `delete_thread` | With the application feature, removes an idle thread and its local history. |
+| `close().await` | Waits for managed workers to shut down and releases database ownership. |
+
+`RunStatus::terminal()` covers `Completed`, `Failed`, and `Interrupted`. In a `Receipt`, `message_id` and `run_id` are optional. `event_sequences` lists the event positions committed by the command. In a `Thread`, use `provider_instance` and `worktree_path` to identify where subsequent work runs.
+
+## Customize agent output
+
+Set `AgentOutput.name`, `title`, `version`, and optional `instructions` to identify your host to supported providers and MCP clients. Map instance IDs to display names with `provider_labels`. Use `ToolPresentation` to rename a tool or override its title and description. Policies use the original built-in tool keys.
+
+Implement `AgentText` to change the host-generated text for history, attachments, peer messages, and other prompts or diagnostics. Store the implementation in an `Arc` and assign it to `options.output.text`. Callbacks are synchronous and can run inside a database transaction. Keep them fast and avoid callbacks into the runtime.

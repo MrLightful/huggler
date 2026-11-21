@@ -1,0 +1,35 @@
+---
+title: Provider transports
+description: Driver keys, qualified protocol versions, and provider-specific behavior.
+---
+
+Configure an instance by its Rust `Provider` variant. The key below is its serialized value. The versions identify the repository’s qualification evidence. Probe your installed version with `probe_provider` before offering capabilities in your host.
+
+## Driver matrix
+
+| Driver key | Transport and evidence | Observed operation |
+| --- | --- | --- |
+| `codex` | App-server JSON-RPC over stdio. Recorded 0.156.1 and authenticated cloud CLI 0.170.0. | Native resume, streaming, and account and model discovery. Fixtures cover approvals, steering, native forks, and child turns. |
+| `claudeAgent` | ACP v1 over stdio. Standalone ACP 0.109.0 with Claude Code 2.1.328. | Live permission denial, peer messaging, and delegated completion. Replays cover child sessions and permission ownership. |
+| `cursor` | ACP v1 over stdio. CLI 2026.11.19-f005e9d with `agent acp`. | Installed discovery reached a login challenge. Scripted turns cover streaming, resume, permission, and interruption. |
+| `grok` | Recorded ACP v1 over stdio, 1.0.41. | Config-option model selection, streaming, resume, permission and interruption. |
+| `fx` | Recorded ACP v1 over stdio, 0.0.13. | Config-option model selection, streaming, permission denial, and session loading. |
+| `kiro` | Recorded ACP v2 over stdio, 2.32.0. | Empty catalog with a working default-model turn, streaming, permission response and resume. |
+| `antigravity` | Installed ACP v1 CLI 1.5.13 with `agy acp`. Recorded ACP v2 server 1.1.1. | Installed discovery reached a login challenge. Scripted turns cover streaming, resume and interruption on both versions, and scoped MCP on v2. |
+| `acpRegistry` | Recorded generic ACP v1 over stdio, agent-reported version `1`. | Model discovery, permissions, streaming, resume, and scoped MCP. A limited fixture advertised fewer capabilities. |
+| `opencode` (1.x) | HTTP, fixture 1.14.39 in managed and external modes. | Final text from the prompt response, native resume, and abort. |
+| `opencode` (2.x) | HTTP and SSE, fixture 2.0.18 in managed and external modes. | Streaming, native resume, form callbacks, and queued or active cancellation. |
+| `pi` | Process RPC, recorded 1.0.0. | Native resume scoped to private homes. The optional extension exercised a Huggler agent tool. |
+| `muse` | MSP v1 over stdio, recorded 1.4.3 and installed CLI 1.4.23-R8977.1. | Recorded streaming, usage and session MCP. Installed deterministic echo resumed the original session. |
+
+Qualification details and fixtures are in the [provider test record](https://github.com/MrLightful/huggler/blob/master/docs/stage-4.md) and [conformance suite](https://github.com/MrLightful/huggler/blob/master/tests/provider_instances.rs).
+
+## Adapter settings and limits
+
+- **ACP.** Pass provider-specific invocation arguments in `ProviderInstance.args`. Resume needs negotiated session loading, and agent tools need HTTP MCP support. Root interruption on managed stdio stops the provider process. Native child tracking and interruption are covered for Claude Agent and Codex.
+- **OpenCode.** Managed mode starts a server and can register run-scoped MCP. Set `server_url` for an externally managed numeric loopback HTTP origin. Supply `password_env` to read its password from the named environment variable. External mode leaves MCP configuration and process lifetime with the host. Use one writer per native session. On 2.x, a disconnect between actual and observed inbox delivery can leave the prompt running on an external server.
+- **Pi.** For agent tools, set `pi_extension` to the absolute path of the separate [Huggler extension](https://github.com/MrLightful/huggler/tree/master/adapters/pi). It runs inside Pi’s runtime. Pi cancels interactive extension dialogs.
+- **Muse.** Use the provider’s MSP server configuration. An unsupported interactive request fails the turn.
+- **Usage.** `provider_usage` aggregates input and output tokens for reporting application runs, grouped by instance. Providers that omit usage contribute no report.
+
+See [Configure providers](/guides/configure-providers/) for the registration and launch workflow.

@@ -1,0 +1,83 @@
+---
+title: Quickstart
+description: Launch a Codex conversation, read the result, and recover it after reopening.
+---
+
+You’ll need Rust 1.94.1 or later, Git, and a signed-in Codex CLI on your PATH. The example submits a real prompt using the CLI’s configured account. Run it from a Git working tree, such as the Cargo project created below.
+
+## Add the crate
+
+Clone Huggler next to your example project and add it as a path dependency. This uses the checkout’s Cargo package, currently version `0.0.1`.
+
+```sh
+git clone https://github.com/MrLightful/huggler.git
+cargo new huggler-example --vcs git
+cd huggler-example
+cargo add huggler --path ../huggler
+cargo add tokio --features macros,rt-multi-thread,time
+```
+
+## Run one turn
+
+Replace `src/main.rs` with the example below. Pass a new state directory for the first run. Huggler creates it and stores the conversation there.
+
+```rust
+use huggler::{CommandId, Huggler, HugglerOptions, Role, RunStatus, ThreadId};
+use std::{io, time::Duration};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let state_dir = std::env::args_os().nth(1).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "pass a state directory")
+    })?;
+    let options = HugglerOptions::new(state_dir);
+    let huggler = Huggler::open(options.clone()).await?;
+    let project = huggler.open_project(std::env::current_dir()?)?;
+    let thread = ThreadId("first-conversation".into());
+
+    huggler.launch(
+        CommandId("launch-first-conversation".into()),
+        thread.clone(),
+        project.id,
+        "First conversation".into(),
+        None,
+    )?;
+
+    let receipt = huggler.send(
+        CommandId("first-prompt".into()),
+        thread.clone(),
+        "Explain what a Cargo.lock file is in one sentence.".into(),
+    )?;
+    let run_id = receipt.run_id.ok_or_else(|| io::Error::other("missing run ID"))?;
+    let run = tokio::time::timeout(Duration::from_secs(120), huggler.wait(&thread, &run_id))
+        .await??;
+    if run.status != RunStatus::Completed {
+        return Err(io::Error::other(format!("{:?}: {:?}", run.status, run.error)).into());
+    }
+
+    huggler.close().await?;
+
+    let reopened = Huggler::open(options).await?;
+    for message in reopened.read(&thread)?.messages {
+        if matches!(message.role, Role::Assistant) {
+            println!("{}", message.text);
+        }
+    }
+    reopened.close().await?;
+    Ok(())
+}
+```
+
+```sh
+cargo run -- "$(mktemp -d)"
+```
+
+The program prints the stored assistant reply after opening the same database a second time. For a new turn in this conversation, reopen the same state directory and send to the same `ThreadId` using a fresh `CommandId`. An identical retry of the first send returns its original receipt.
+
+## If the turn fails
+
+- If Codex is missing from PATH, set `options.codex.executable` to the absolute path of the Codex binary before opening Huggler.
+- To check the executable, login, and model catalog without sending a prompt, call `huggler.probe_provider("codex", &project.root).await`.
+- For a turn that requires user input, drive the [permission and question callbacks](/guides/control-threads/#answer-permissions-and-questions) while the run is active.
+
+For the recorded resume scenario, run `cargo test --locked --test resume` from the Huggler checkout. The test uses a replay fixture and requires no model account.

@@ -1,0 +1,23 @@
+---
+title: Huggler
+description: Embed durable coding-agent conversations in a Rust application.
+---
+
+Huggler runs in your application process. It stores conversation history, queued work, and command receipts in SQLite and communicates with agent providers through their native transports. Your application chooses how to present output, resolve approvals, and configure providers.
+
+<p className="docs-start"><a href="/quickstart/">Run your first conversation →</a></p>
+
+## Build a host
+
+| If you want to… | Start here |
+| --- | --- |
+| Select a provider, model, or account | [Configure providers](/guides/configure-providers/) |
+| Stream output, queue messages, and handle requests | [Control threads](/guides/control-threads/) |
+| Browse, import, or branch a conversation | [Manage history and context](/guides/history-and-context/) |
+| Let agents exchange messages or delegate work | [Coordinate agents](/guides/collaboration/) |
+| Share a thread with another host or a guest | [Connect hosts](/guides/connect-hosts/) |
+| Add schedules, workspaces, or host services | [Application integrations](/guides/application-integrations/) |
+
+## Look up a detail
+
+Use the [runtime API reference](/reference/runtime-api/) for options and entry points, the [provider reference](/reference/providers/) for transport and capability differences, and the [agent tool reference](/reference/agent-tools/) for the MCP catalog. [Durability and recovery](/concepts/durability/) explains what a receipt guarantees and what can happen when a provider disconnects.
