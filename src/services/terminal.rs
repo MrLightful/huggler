@@ -71,6 +71,33 @@ impl ServiceHost for TerminalHost {
 }
 impl Resource for Terminal {
     fn call(&mut self, action: Action) -> Result<Output> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if matches!(action, Action::ExitStatus) {
+            use std::os::unix::process::ExitStatusExt;
+            // Peek without reaping. Drop still owns the process group and kills
+            // surviving descendants before the kernel can recycle the leader PID.
+            let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.child.id(),
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let status = (unsafe { info.si_pid() } != 0).then(|| {
+                let code = unsafe { info.si_status() };
+                std::process::ExitStatus::from_raw(if info.si_code == libc::CLD_EXITED {
+                    code << 8
+                } else {
+                    code
+                })
+            });
+            return Ok(Output::ExitStatus(status));
+        }
         let Action::Output { after } = action else {
             return Err(Error::Unsupported("expected output cursor".into()));
         };

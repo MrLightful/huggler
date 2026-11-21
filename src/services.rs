@@ -56,6 +56,8 @@ pub enum Action {
     Output {
         after: Option<u64>,
     },
+    /// Inspect process termination independently of output pipe EOF.
+    ExitStatus,
     Navigate {
         url: String,
     },
@@ -71,7 +73,7 @@ pub enum Action {
 impl Action {
     fn supports(&self, kind: Kind) -> bool {
         match self {
-            Self::Output { .. } => kind == Kind::Terminal,
+            Self::Output { .. } | Self::ExitStatus => kind == Kind::Terminal,
             Self::Navigate { .. } => kind == Kind::Preview,
             Self::Capture => matches!(kind, Kind::Preview | Kind::Html | Kind::Device),
             Self::ReadResource { .. } | Self::CallTool { .. } => kind == Kind::McpApp,
@@ -81,6 +83,7 @@ impl Action {
 #[derive(Debug)]
 pub enum Output {
     Done,
+    ExitStatus(Option<std::process::ExitStatus>),
     Bytes {
         mime: String,
         data: Vec<u8>,
@@ -152,6 +155,10 @@ impl Huggler {
             registry.hosts.insert(kind, host);
         }
         Ok(())
+    }
+    /// Resolve a thread's working directory, including managed delegation worktrees.
+    pub fn thread_checkout(&self, thread: &ThreadId) -> Result<PathBuf> {
+        self.shared.access(|db| db.service_checkout(thread))
     }
     pub fn devices(&self, thread: &ThreadId) -> Result<Vec<String>> {
         let mut registry = self.shared.services.lock().unwrap();

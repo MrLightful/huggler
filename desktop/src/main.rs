@@ -1,3 +1,24 @@
+// Only the installed qualification build needs names for the painted controls.
+macro_rules! control {
+    ($name:expr, $child:expr $(,)?) => {{
+        #[cfg(all(feature = "qualification", target_os = "macos"))]
+        let key = SharedString::from($name);
+        let element = div().child($child);
+        #[cfg(all(feature = "qualification", target_os = "macos"))]
+        let element = crate::qualification::observe(key, element);
+        element
+    }};
+}
+
+mod changes;
+mod checks;
+mod git;
+mod publish;
+mod questions;
+
+/// Editable context to bring from a checkout tool into the conversation.
+struct FollowUp(String);
+
 mod conversation;
 #[cfg(all(feature = "qualification", target_os = "macos"))]
 mod qualification;
@@ -29,6 +50,7 @@ fn main() -> Result<()> {
     options.agent_tools = true;
     options.prompt_suggestions = std::env::var("HUGGLER_PROMPT_SUGGESTIONS").as_deref() == Ok("1");
     options.codex.request_approvals = true;
+    options.codex.workspace_write = true;
     if let Some(path) = std::env::var_os("HUGGLER_CODEX") {
         options.codex.executable = path.into();
     }
@@ -42,6 +64,12 @@ fn main() -> Result<()> {
     }
     let executor = tokio::runtime::Runtime::new()?;
     let runtime = Arc::new(executor.block_on(Huggler::open(options))?);
+
+    #[cfg(unix)]
+    runtime.set_service_host(
+        huggler::services::Kind::Terminal,
+        Some(Box::new(huggler::services::terminal::TerminalHost)),
+    )?;
 
     Application::new().run(move |cx| {
         gpui_component::init(cx);

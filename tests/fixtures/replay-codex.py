@@ -54,8 +54,8 @@ while True:
             }
             del frame["params"]["capabilities"]["extensions"]
         if method == "turn/start":
-            # This consumer explicitly runs read-only turns.
-            frame["params"]["sandboxPolicy"] = {"type": "readOnly"}
+            frame["params"]["sandboxPolicy"] = ({"type": "workspaceWrite", "networkAccess": False}
+                                                if case.get("workspaceWrite") else {"type": "readOnly"})
             if case.get("approvals"):
                 frame["params"]["approvalPolicy"] = "on-request"
         if method == "thread/start":
@@ -68,7 +68,7 @@ while True:
                     "url": config["url"], "bearer_token_env_var": "HUGGLER_MCP_TOKEN", "required": True,
                 }
             if case.get("approvals"):
-                frame["params"].update(approvalPolicy="on-request", sandbox="read-only")
+                frame["params"].update(approvalPolicy="on-request", sandbox="workspace-write" if case.get("workspaceWrite") else "read-only")
             # The recorder raised this limit to capture a three-level spawn.
             for key in records[0].get("metadata", {}).get("recorderThreadConfigKeys", []):
                 del frame["params"]["config"][key]

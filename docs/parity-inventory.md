@@ -16,6 +16,8 @@ Stage 6 verified authenticated peer sends and remote completion, moderated guest
 
 Stage 7 links each inventory group to a passing Rust or host scenario and its limits. The upstream review advances independently of the counts at the original source pin. [Release coverage](stage-7.md#capability-coverage-at-release) · [Upstream comparison](stage-7.md#upstream-comparison)
 
+The macOS desktop coding workflow covers planning, editing, queueing follow-ups, running checks, reviewing staged and unstaged changes, committing and pushing a branch. The native-window check uses a scripted Codex peer and a local Git remote. [Desktop workflow and reproduction](desktop-coding.md)
+
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
 | Thread orchestration commands | 58 wire variants + 15 additional internal variants | [Command and event unions][src-1] · [Command policy][src-2] |

@@ -29,6 +29,9 @@ pub struct ProviderInstance {
     pub server_url: Option<String>,
     #[serde(default)]
     pub request_approvals: bool,
+    /// Allow workspace writes on this Codex instance.
+    #[serde(default)]
+    pub workspace_write: bool,
     /// Environment variable containing the external OpenCode server password.
     #[serde(default)]
     pub password_env: Option<String>,
@@ -49,6 +52,7 @@ impl ProviderInstance {
             pi_extension: None,
             server_url: None,
             request_approvals: false,
+            workspace_write: false,
             password_env: None,
         }
     }
@@ -181,6 +185,7 @@ pub(crate) fn registry(
 ) -> Result<Registry> {
     let mut first = ProviderInstance::new("codex", Provider::Codex, &codex.executable);
     first.request_approvals = codex.request_approvals;
+    first.workspace_write = codex.workspace_write;
     let second = ProviderInstance::new("claudeAgent", Provider::ClaudeAgent, &claude.executable);
     let mut registry = Registry::new();
     for instance in [first, second].into_iter().chain(extra.iter().cloned()) {

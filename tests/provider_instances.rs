@@ -75,6 +75,31 @@ async fn answer(rt: &Huggler, thread: &ThreadId, prompt: &str) -> String {
 }
 
 #[tokio::test]
+async fn missing_checkout_is_distinct_from_a_missing_codex_executable() {
+    let (temp, root) = checkout();
+    let mut options = HugglerOptions::new(temp.path().join("state"));
+    options.codex.executable = temp.path().join("missing-codex");
+    let rt = Huggler::open(options).await.unwrap();
+    let thread = launch(&rt, &root, "codex", None);
+    assert!(matches!(
+        rt.probe_provider("codex", &root).await,
+        Err(Error::MissingExecutable(_))
+    ));
+    fs::rename(&root, temp.path().join("moved")).unwrap();
+    assert!(matches!(
+        rt.probe_provider("codex", &root).await,
+        Err(Error::CheckoutUnavailable(path)) if path == root
+    ));
+    let run = turn(&rt, &thread, "Check this checkout").await;
+    assert_eq!(run.status, RunStatus::Failed);
+    assert_eq!(
+        run.error,
+        Some(Error::CheckoutUnavailable(root).to_string())
+    );
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
 #[ignore = "uses the signed-in cloud Codex subscription"]
 async fn cloud_codex_with_missing_acp() {
     let (temp, root) = checkout();

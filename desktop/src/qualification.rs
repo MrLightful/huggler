@@ -14,8 +14,10 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum Step {
     Click(String),
+    Resize([u16; 2]),
     Type(String),
     See(String),
+    Contains(String),
     Absent(String),
     SeeAny(Vec<String>),
     PermissionFrom(String),
@@ -54,6 +56,10 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
     window.draw(cx).clear();
     let controls = &cx.default_global::<Controls>().0;
     match step {
+        Step::Resize([width, height]) => {
+            window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
+            true
+        }
         Step::Click(key) => {
             let Some(bounds) = controls.get(key.as_str()) else {
                 return false;
@@ -89,6 +95,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             cx,
         ),
         Step::See(key) => controls.contains_key(key.as_str()),
+        Step::Contains(text) => controls.keys().any(|key| key.contains(text.as_str())),
         Step::SeeAny(keys) => keys.iter().any(|key| controls.contains_key(key.as_str())),
         Step::Absent(key) => !controls.contains_key(key.as_str()),
         Step::PermissionFrom(path) => controls.keys().any(|key| {

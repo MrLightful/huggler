@@ -469,6 +469,21 @@ pub struct ConversationDetail {
     pub name: String,
     pub provider_instance: ProviderInstanceId,
     pub latest_run: Option<Run>,
+    /// Run holding the thread's execution slot, even when later messages are queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_run: Option<Run>,
+    #[serde(default)]
+    pub queued_count: i64,
+    #[serde(default)]
+    pub queue_held: bool,
+    /// Tail of recent assistant deltas on the foreground run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub streaming_text: String,
+    /// Command output IDs on the foreground run, or the latest run when idle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_items: Vec<String>,
+    #[serde(default)]
+    pub questions: Vec<UserInputRequest>,
     pub permissions: Vec<PermissionRequest>,
     pub native_children: Vec<NativeChild>,
     pub history: HistoryPage,
@@ -716,6 +731,8 @@ fn display_error<E: fmt::Display, S: serde::Serializer>(
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", content = "detail", rename_all = "snake_case")]
 pub enum Error {
+    #[error("Checkout directory is unavailable: {}", .0.display())]
+    CheckoutUnavailable(PathBuf),
     #[error("install the provider executable or configure its path: {0}")]
     MissingExecutable(String),
     #[error("sign in with the provider CLI for this instance, then refresh")]

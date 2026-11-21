@@ -677,7 +677,16 @@ impl Huggler {
             .get(id)
             .ok_or_else(|| Error::NotFound(format!("provider instance {id}")))?
             .clone();
-        let cwd = cwd.as_ref().canonicalize()?;
+        let cwd = cwd.as_ref();
+        let cwd = cwd.canonicalize().map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+                Error::CheckoutUnavailable(cwd.to_owned())
+            }
+            _ => Error::Io(error),
+        })?;
+        if !cwd.is_dir() {
+            return Err(Error::CheckoutUnavailable(cwd));
+        }
         let output = self.shared.output.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
