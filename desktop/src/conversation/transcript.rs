@@ -915,7 +915,7 @@ fn message_footer(
     let time = control!(format!("message-time/{time}"), div().child(time))
         .id(SharedString::from(format!("time-{group}")))
         .when_some(local, |time, date| {
-            let date = date.format("%A, %B %-d, %Y at %H:%M").to_string();
+            let date = date.format("%A, %b. %-d, %Y at %H:%M").to_string();
             time.tooltip(move |window, cx| Tooltip::new(date.clone()).build(window, cx))
         });
     let duration = duration_ms.map_or_else(
