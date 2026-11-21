@@ -62,10 +62,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/021.sql"),
     include_str!("../migrations/022.sql"),
     include_str!("../migrations/023.sql"),
+    include_str!("../migrations/024.sql"),
 ];
 
-const RUN_FIELDS: &str =
-    "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at";
+const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
     let status: String = row.get(2)?;
@@ -88,6 +88,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         queue_held: row.get(5)?,
         delivery_slot: row.get(6)?,
         usage_limit_reset_at: row.get(7)?,
+        prompt_suggestion: row.get(8)?,
     })
 }
 
@@ -677,6 +678,7 @@ impl Database {
             [&id.0],
             |r| {
                 Ok(Turn {
+                    sample_suggestion: false,
                     fork: None,
                     plan_mode: r.get(7)?,
                     instance: ProviderInstanceId(r.get(8)?),
@@ -727,6 +729,16 @@ impl Database {
         Ok(turn)
     }
 
+    pub fn can_sample_suggestion(&self, run: &RunId) -> Result<bool> {
+        Ok(self.db.prepare(
+            "SELECT 1 FROM run r JOIN message m ON m.run_id=r.id
+             WHERE r.id=?1 AND m.role='user' AND m.origin IS NULL AND r.task_id IS NULL
+             AND NOT EXISTS(SELECT 1 FROM delegated_task WHERE child_thread=r.thread_id AND request_key IS NOT NULL)
+             AND NOT EXISTS(SELECT 1 FROM delegated_task WHERE parent_thread=r.thread_id AND wake_run=r.id)
+             AND NOT EXISTS(SELECT 1 FROM run WHERE thread_id=r.thread_id AND status='queued')"
+        )?.exists([&run.0])?)
+    }
+
     pub fn usage(&self) -> Result<Vec<crate::ProviderUsage>> {
         let mut statement = self.db.prepare(
             "SELECT t.provider_instance, count(*), sum(u.input_tokens), sum(u.output_tokens)
@@ -773,6 +785,15 @@ impl Database {
                 answered,
             } => questions::close(&tx, thread, id, &request, answered)?,
             Update::NativeChild(child) => native_children::record(&tx, thread, child)?,
+            Update::PromptSuggestion(text) => {
+                if tx.execute(
+                    "UPDATE run SET prompt_suggestion=?3 WHERE thread_id=?1 AND id=?2 AND status='completed'
+                     AND id=(SELECT id FROM run WHERE thread_id=?1 ORDER BY coalesce(delivery_slot,ordinal) DESC LIMIT 1)",
+                    params![thread.0,id.0,text],
+                )? == 1 {
+                    run_event(&tx, thread, id)?;
+                }
+            }
             Update::ForegroundComplete => {
                 // Finalizing committed the answer. Ignore any later callback once its run settles.
                 if !tx.prepare("SELECT 1 FROM run WHERE id=? AND thread_id=? AND status='waiting'")?

@@ -1000,3 +1000,93 @@ async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result
     );
     rt.close().await
 }
+
+#[tokio::test]
+async fn prompt_suggestions_settle_independently_and_stay_with_the_latest_turn() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let mut opts = options(&dir.path().join("state"));
+    let rt = Huggler::open(opts.clone()).await?;
+    let root = launch(&rt, &rt.open_project(&repo)?, "root", Provider::Codex);
+    let run = rt
+        .send(CommandId("disabled".into()), root.clone(), "first".into())?
+        .run_id
+        .unwrap();
+    completed(&rt, &root, &run).await;
+    rt.close().await?;
+    assert!(frames(&repo, "thread/sample").is_empty());
+
+    opts.prompt_suggestions = true;
+    let rt = Huggler::open(opts.clone()).await?;
+    let send = |prompt: &str| {
+        rt.send(CommandId(prompt.into()), root.clone(), prompt.into())
+            .map(|receipt| receipt.run_id.unwrap())
+    };
+    let wait_file = |name: &str| {
+        let file = repo.join(name);
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !file.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    for prompt in ["sample unavailable", "sample blank"] {
+        let run = send(prompt)?;
+        completed(&rt, &root, &run).await;
+        wait_file(&format!("{prompt}.finished")).await;
+        assert!(
+            rt.detail(&root, None, "", 1)?
+                .latest_run
+                .unwrap()
+                .prompt_suggestion
+                .is_none()
+        );
+    }
+    let slow = send("delayed sample")?;
+    completed(&rt, &root, &slow).await;
+    let newer = send("ask")?;
+    let question = question(&rt, &root).await?;
+    fs::write(repo.join("release-sample"), "")?;
+    wait_file("delayed sample.finished").await;
+    assert!(
+        rt.read(&root)?
+            .runs
+            .iter()
+            .all(|r| r.prompt_suggestion.is_none())
+    );
+    rt.dismiss_question(&root, &newer, &question.id).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let detail = rt.detail(&root, None, "", 2)?;
+            if let Some(hint) = detail.latest_run.unwrap().prompt_suggestion {
+                assert_eq!(hint, "Explain the result.");
+                break;
+            }
+            rt.wait_for_change(&root, detail.history.sequence).await?;
+        }
+        Ok::<_, Error>(())
+    })
+    .await
+    .unwrap()?;
+    assert_eq!(frames(&repo, "thread/sample").len(), 4);
+    rt.close().await?;
+    let rt = Huggler::open(opts).await?;
+    let detail = rt.detail(&root, None, "", 100)?;
+    assert_eq!(
+        detail.latest_run.unwrap().prompt_suggestion.as_deref(),
+        Some("Explain the result.")
+    );
+    assert!(
+        !detail
+            .history
+            .messages
+            .iter()
+            .any(|m| m.message.text == "Explain the result.")
+    );
+    rt.close().await
+}

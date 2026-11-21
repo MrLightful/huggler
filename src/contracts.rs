@@ -361,6 +361,9 @@ pub struct Run {
     /// Unix seconds reported for an exhausted Codex quota window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_limit_reset_at: Option<i64>,
+    /// Optional provider-generated follow-up for this completed run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_suggestion: Option<String>,
     pub error: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

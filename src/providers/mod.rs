@@ -37,6 +37,7 @@ pub(crate) struct AgentTools {
 }
 
 pub(crate) struct Turn {
+    pub sample_suggestion: bool,
     pub fork: Option<(NativeThreadId, NativeTurnId)>,
     pub plan_mode: bool,
     pub agent_tools: Option<AgentTools>,
@@ -77,8 +78,9 @@ pub(crate) enum Update {
     Bound(NativeThreadId),
     Started(Option<NativeTurnId>),
     Finalizing(String),
-    /// The foreground has returned its answer and this worker has background children.
+    /// Settle the foreground while this worker finishes background work.
     ForegroundComplete,
+    PromptSuggestion(String),
     NativeChild(crate::NativeChild),
 }
 

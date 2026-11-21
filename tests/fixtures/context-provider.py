@@ -62,6 +62,15 @@ for line in sys.stdin:
         emit(method="session/update", params={"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk",
              "content": {"type": "text", "text": "portable reply"}}})
         result = {"stopReason": "end_turn"}
+    elif method == "thread/sample":
+        assert params["threadId"] == session and params["expectedTurnId"] == turn and params["effort"] == "low"
+        if prompt == "sample unavailable":
+            emit(id=frame["id"], error={"code": -32601, "message": "unsupported"})
+            continue
+        if prompt == "delayed sample":
+            while not Path("release-sample").exists():
+                time.sleep(.01)
+        result = {"text": "  " if prompt == "sample blank" else " Explain the result. "}
     elif method == "turn/steer":
         assert params["threadId"] == session and params["expectedTurnId"] == turn
         text = params["input"][0]["text"]
@@ -101,3 +110,7 @@ for line in sys.stdin:
                  "questions": [{"id": "one"}, {"id": "two"}]})
         else:
             completed()
+
+# EOF proves the adapter has finished processing the sample response.
+if not acp and "prompt" in globals() and prompt in ("delayed sample", "sample blank", "sample unavailable"):
+    Path(prompt + ".finished").touch()

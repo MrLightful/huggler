@@ -131,6 +131,20 @@ impl Client {
         }
     }
 
+    async fn sample_suggestion(&mut self, thread: &str, turn: &str) -> Option<String> {
+        let request = self.request("thread/sample", json!({
+            "threadId": thread, "expectedTurnId": turn, "effort": "low",
+            "prompt": "Suggest one short follow-up the user might type next. Return only that message, or empty text if none is useful."
+        }));
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+            .await
+            .ok()?
+            .ok()?;
+        let text = response["text"].as_str()?.trim();
+        (!text.is_empty() && text.len() <= 1024 && !text.starts_with("Delegated task"))
+            .then(|| text.to_owned())
+    }
+
     async fn write_answers(&mut self, wire_id: Value, answers: UserAnswers) -> Result<()> {
         let answers = answers
             .into_iter()
@@ -591,6 +605,12 @@ impl Client {
                         .ok_or_else(|| protocol("completed turn has no final answer"))?;
                     update(Update::Finalizing(text))?;
                     if !children.active() && interrupt_replies.is_empty() {
+                        if turn.sample_suggestion {
+                            update(Update::ForegroundComplete)?;
+                            if let Some(text) = self.sample_suggestion(thread, id).await {
+                                update(Update::PromptSuggestion(text))?;
+                            }
+                        }
                         return Ok(());
                     }
                     update(Update::ForegroundComplete)?;

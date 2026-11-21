@@ -581,6 +581,24 @@ impl Desktop {
                     .gap_2()
                     .border_t_1()
                     .border_color(cx.theme().border)
+                    .when_some(
+                        last_run.and_then(|run| run.prompt_suggestion.clone()),
+                        |row, hint| {
+                            row.child(control!(
+                                "Suggested reply",
+                                Button::new("suggestion").label(hint.clone()).on_click(
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.prompt.read(cx).value().is_empty() {
+                                            view.prompt.update(cx, |input, cx| {
+                                                input.set_value(hint.clone(), window, cx)
+                                            });
+                                            view.prompt.focus_handle(cx).focus(window);
+                                        }
+                                    })
+                                )
+                            ))
+                        },
+                    )
                     .child(field("Message", &self.prompt))
                     .child(
                         h_flex()

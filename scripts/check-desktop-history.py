@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-from desktop_check import launch_thread, run_window
+from desktop_check import ROOT, launch_thread, run_window, send_message
 
 
 def main():
@@ -33,7 +33,15 @@ def main():
             {"see": "expand/5"}, {"click": "expand/5"}, {"see": "Codex/" + long_message},
         ]
         run_window(executable, state, steps, os.environ)
-    print("Native history paging, search and full message passed")
+        env = dict(os.environ, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"),
+                   HUGGLER_PROMPT_SUGGESTIONS="1")
+        run_window(executable, checkout / "suggestion-state", [
+            *launch_thread(checkout, "Follow-up"), *send_message("First question"),
+            {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/Explain the result."},
+            {"see": "Suggested reply"}, {"click": "Message"}, {"type": "My own question"},
+            {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/My own question"},
+        ], env)
+    print("Native history paging, search, full message and suggested replies passed")
 
 
 if __name__ == "__main__":

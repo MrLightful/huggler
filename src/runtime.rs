@@ -30,6 +30,8 @@ pub struct HugglerOptions {
     pub agent_tools: bool,
     /// Continue an idle independent Codex thread after a provider-reported quota reset.
     pub auto_resume_usage_limits: bool,
+    /// Ask Codex for an optional follow-up after eligible independent conversations.
+    pub prompt_suggestions: bool,
     pub instances: Vec<crate::providers::registry::ProviderInstance>,
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,
@@ -40,6 +42,7 @@ impl HugglerOptions {
             state_dir: state_dir.into(),
             agent_tools: false,
             auto_resume_usage_limits: false,
+            prompt_suggestions: false,
             instances: vec![],
             codex: CodexOptions::default(),
             claude_agent: ClaudeAgentOptions::default(),
@@ -48,6 +51,7 @@ impl HugglerOptions {
 }
 
 pub(crate) struct Shared {
+    prompt_suggestions: bool,
     registry: crate::providers::registry::Registry,
     endpoint: Option<String>,
     handle: Handle,
@@ -295,6 +299,9 @@ impl Shared {
         }
         let turn = self.access(|db| {
             let mut turn = db.claim(run)?;
+            turn.sample_suggestion = self.prompt_suggestions
+                && turn.provider == Provider::Codex
+                && db.can_sample_suggestion(run)?;
             if let Some(url) = &self.endpoint {
                 turn.agent_tools = Some(crate::providers::AgentTools {
                     url: url.clone(),
@@ -381,6 +388,7 @@ impl Huggler {
             .transpose()?;
         let jobs = db.ready_jobs()?;
         let shared = Arc::new(Shared {
+            prompt_suggestions: options.prompt_suggestions,
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
             run_stops: Mutex::default(),
