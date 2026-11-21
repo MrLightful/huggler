@@ -373,6 +373,24 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
     assert!(rt.schedule_history(&hook)?.is_empty());
     assert!(matches!(fire(), Err(Error::Forbidden)));
     assert_eq!(rt.read(&child.thread)?.runs.len(), 1);
+    let later = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        rt.wait_for_threads_after(Some(&thread)),
+    )
+    .await
+    .expect("a surviving child should be visible immediately")?;
+    assert_eq!(later.len(), 1);
+    assert_eq!(later[0].id, child.thread);
+    let unknown = ThreadId("never-created".into());
+    assert!(matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            rt.wait_for_threads_after(Some(&unknown)),
+        )
+        .await
+        .expect("unknown list cursor should fail immediately"),
+        Err(Error::NotFound(id)) if id == unknown.0
+    ));
     rt.close().await
 }
 

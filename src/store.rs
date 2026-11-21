@@ -1200,6 +1200,17 @@ impl Database {
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
 
+    pub fn thread_cursor_position(&self, id: &ThreadId) -> Result<i64> {
+        self.db
+            .query_row(
+                "SELECT position FROM thread_order WHERE id=?",
+                [&id.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
     pub fn threads_after(&self, position: i64) -> Result<Vec<ThreadSummary>> {
         Ok(self
             .db

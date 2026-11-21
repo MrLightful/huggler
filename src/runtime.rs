@@ -695,14 +695,15 @@ impl Huggler {
     }
 
     /// Wait for conversations created after the last thread seen in creation order.
-    /// Pass `None` for an empty list. An unknown thread ID returns `Error::NotFound`.
+    /// The last seen ID remains a valid cursor after deletion. Pass `None` for an empty list.
+    /// An unknown thread ID returns `Error::NotFound`.
     pub async fn wait_for_threads_after(
         &self,
         last: Option<&ThreadId>,
     ) -> Result<Vec<ThreadSummary>> {
         let mut changed = self.shared.changed.subscribe();
         let position = match last {
-            Some(id) => self.shared.access(|db| db.thread_position(id))?,
+            Some(id) => self.shared.access(|db| db.thread_cursor_position(id))?,
             None => 0,
         };
         loop {
