@@ -80,10 +80,7 @@ async fn scenario(mode: &str, parent_provider: Provider, reviewer: Reviewer) {
     let project = rt.open_project(&repo).unwrap();
     let parent = launch(&rt, &project, "author", parent_provider);
     let prompt = if parent_provider == Provider::Codex {
-        let instance = match child_provider {
-            Provider::Codex => "codex",
-            Provider::ClaudeAgent => "claudeAgent",
-        };
+        let instance = child_provider.key();
         let review = "First call the huggler thread_list tool once. When it returns, finish the turn by copying the five-character review finding verbatim as plain text: 2+2=4";
         format!(
             "Use the huggler delegate_task tool once with clientRequestId review, title Reviewer, target.providerInstanceId {instance}, mode async and isolation shared. Set its task to exactly the following quoted text: \"{review}\". After delegation finish this turn immediately. When Huggler delivers the child result, reply with the finding."
@@ -1001,11 +998,16 @@ async fn exercise_worktree_delegation() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repository with spaces");
     checkout(&repo);
-    let options = options(&dir.path().join("state"));
+    let mut options = options(&dir.path().join("state"));
+    options.instances.push(ProviderInstance::new(
+        "review-profile",
+        Provider::ClaudeAgent,
+        &options.claude_agent.executable,
+    ));
     let rt = Huggler::open(options.clone()).await.unwrap();
     let project = rt.open_project(&repo).unwrap();
     let author = launch(&rt, &project, "author", Provider::ClaudeAgent);
-    let isolated = r#"checkout task {"clientRequestId":"isolate","task":"edit tracked isolated","isolation":"worktree"}"#;
+    let isolated = r#"checkout task {"clientRequestId":"isolate","task":"edit tracked isolated","isolation":"worktree","target":{"providerInstanceId":"review-profile"}}"#;
     let rejected: serde_json::Value =
         serde_json::from_str(&acp_prompt(&rt, &author, "unborn", isolated).await).unwrap();
     assert_eq!(rejected["code"], "invalid");
@@ -1054,6 +1056,10 @@ async fn exercise_worktree_delegation() {
     let rt = Huggler::open(options).await.unwrap();
     let retry = checkout_task(&rt, &author, "retry", isolated).await;
     assert_eq!(retry, task);
+    assert_eq!(
+        rt.read(child).unwrap().provider_instance.as_str(),
+        "review-profile"
+    );
     assert_eq!(rt.read(child).unwrap().worktree_path.as_ref(), Some(&path));
     assert_eq!(rt.read(child).unwrap().runs.len(), 1);
     assert_eq!(
@@ -1068,6 +1074,13 @@ async fn exercise_worktree_delegation() {
     let inherit = r#"checkout task {"clientRequestId":"shared-child","task":"edit tracked inherited","isolation":"shared"}"#;
     let sub = checkout_task(&rt, child, "inherit", inherit).await;
     assert_eq!(sub.result.as_deref(), Some("resumed"));
+    assert_eq!(
+        rt.read(&sub.child_thread_id)
+            .unwrap()
+            .provider_instance
+            .as_str(),
+        "review-profile"
+    );
     assert_eq!(
         rt.read(&sub.child_thread_id)
             .unwrap()

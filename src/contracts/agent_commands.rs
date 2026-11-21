@@ -1,5 +1,5 @@
 //! Caller-scoped thread creation and delegation commands shared by the runtime and store.
-use super::{Provider, RunId, ThreadId};
+use super::{ProviderInstanceId, RunId, ThreadId};
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,8 @@ pub(crate) struct Delegation {
 #[derive(Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProviderTarget {
-    pub provider_instance_id: Provider,
+    #[schemars(with = "String")]
+    pub provider_instance_id: ProviderInstanceId,
 }
 
 #[derive(Deserialize, JsonSchema)]

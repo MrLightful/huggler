@@ -34,6 +34,11 @@ fn main() -> Result<()> {
     if let Some(path) = std::env::var_os("HUGGLER_CLAUDE_ACP") {
         options.claude_agent.executable = path.into();
     }
+    if let Some(path) = std::env::var_os("HUGGLER_PROVIDERS") {
+        let file = std::fs::File::open(path).context("open provider instance configuration")?;
+        options.instances =
+            serde_json::from_reader(file).context("parse provider instance list")?;
+    }
     let executor = tokio::runtime::Runtime::new()?;
     let runtime = Arc::new(executor.block_on(Huggler::open(options))?);
 

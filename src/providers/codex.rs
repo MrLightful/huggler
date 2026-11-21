@@ -1,5 +1,6 @@
 //! Codex app-server over newline-delimited JSON-RPC on a managed child's stdio.
 mod children;
+use super::registry::ProviderInstance;
 use super::{
     ChildInterrupt, Control, Permissions, Turn, Update,
     rpc::{Rpc, protocol},
@@ -94,21 +95,23 @@ impl Client {
                     .cloned()
                     .ok_or_else(|| protocol(format!("missing {method} result")));
             }
-            if method == "turn/start"
-                && matches!(
-                    frame["method"].as_str(),
-                    Some(
-                        "item/started"
-                            | "item/completed"
-                            | "turn/started"
-                            | "turn/completed"
-                            | "item/commandExecution/requestApproval"
-                            | "item/tool/requestUserInput"
-                            | "serverRequest/resolved"
-                            | "item/permissions/requestApproval"
-                            | "mcpServer/elicitation/request"
+            if frame["method"] == "thread/tokenUsage/updated"
+                || method == "turn/start"
+                    && matches!(
+                        frame["method"].as_str(),
+                        Some(
+                            "item/started"
+                                | "item/agentMessage/delta"
+                                | "item/completed"
+                                | "turn/started"
+                                | "turn/completed"
+                                | "item/commandExecution/requestApproval"
+                                | "item/tool/requestUserInput"
+                                | "serverRequest/resolved"
+                                | "item/permissions/requestApproval"
+                                | "mcpServer/elicitation/request"
+                        )
                     )
-                )
             {
                 self.early.push_back(frame);
             }
@@ -234,6 +237,26 @@ impl Client {
             .pointer("/turn/id")
             .and_then(Value::as_str)
             .ok_or_else(|| protocol("missing native turn ID"))?;
+        // Resume can emit the preceding turn's cumulative counters before acknowledging
+        // turn/start. Without that baseline, the thread total cannot be attributed to this run.
+        let baseline = if turn.resume.is_none() {
+            Some((0, 0))
+        } else {
+            self.early
+                .iter()
+                .filter(|f| {
+                    f["method"] == "thread/tokenUsage/updated"
+                        && f["params"]["threadId"] == thread
+                        && f["params"]["turnId"].as_str().is_some_and(|t| t != id)
+                })
+                .filter_map(
+                    |f| match super::usage(&f["params"]["tokenUsage"]["total"]) {
+                        Some(Update::Usage { input, output }) => Some((input, output)),
+                        _ => None,
+                    },
+                )
+                .next_back()
+        };
         update(Update::Started(Some(NativeTurnId(id.to_owned()))))?;
         let mut answer = None;
         let mut pending = HashMap::<RequestId, PendingApproval>::new();
@@ -283,6 +306,21 @@ impl Client {
                 },
             };
             let p = &frame["params"];
+            if !foreground_complete
+                && frame["method"] == "thread/tokenUsage/updated"
+                && p["threadId"] == thread
+                && p["turnId"] == id
+                && let Some((previous_input, previous_output)) = baseline
+                && let Some(Update::Usage { input, output }) =
+                    super::usage(&p["tokenUsage"]["total"])
+                && input >= previous_input
+                && output >= previous_output
+            {
+                update(Update::Usage {
+                    input: input - previous_input,
+                    output: output - previous_output,
+                })?;
+            }
             if let Some(wire_id) = frame.get("id") {
                 if frame.get("method").is_none() {
                     if let Some(reply) = wire_id
@@ -412,6 +450,11 @@ impl Client {
                 continue;
             }
             match frame["method"].as_str() {
+                Some("item/agentMessage/delta") if p["turnId"] == id => {
+                    if let Some(delta) = p["delta"].as_str() {
+                        update(Update::Output(delta.into()))?;
+                    }
+                }
                 Some("serverRequest/resolved") => {
                     if let Some(request) = questions
                         .iter()
@@ -461,7 +504,7 @@ impl Client {
 }
 
 pub(crate) async fn execute(
-    options: CodexOptions,
+    options: &ProviderInstance,
     turn: Turn,
     mut stop: watch::Receiver<bool>,
     update: impl Fn(Update) -> Result<()>,
@@ -472,7 +515,7 @@ pub(crate) async fn execute(
         return Err(Error::Closed);
     }
     let mut client = Client {
-        rpc: Rpc::spawn(&options.executable, &["app-server"], &turn)?,
+        rpc: Rpc::spawn(options, &["app-server"], &turn)?,
         next_id: 1,
         early: VecDeque::new(),
     };

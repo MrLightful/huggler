@@ -1,11 +1,13 @@
-//! Claude Agent ACP v1 over the standalone adapter's stdio.
+//! ACP sessions over stdio, including Claude Agent's subagent extension.
 mod children;
+use super::registry::ProviderInstance;
 use super::{
     Control, Permissions, Turn, Update,
     rpc::{Rpc, protocol},
 };
 use crate::{
-    Error, NativeChildTurn, NativeThreadId, PermissionOption, PermissionRequest, RequestId, Result,
+    Error, NativeChildTurn, NativeThreadId, PermissionOption, PermissionRequest, Provider,
+    RequestId, Result,
 };
 use children::{Children, text_chunk};
 use serde_json::{Value, json};
@@ -112,15 +114,12 @@ impl Session<'_> {
     }
 
     async fn configure(&mut self, turn: &Turn) -> Result<String> {
-        let init = self.request("initialize",json!({"protocolVersion":1,"clientCapabilities":{"subagents":{}},"clientInfo":{"name":"huggler","version":env!("CARGO_PKG_VERSION")}})).await?;
-        if init["protocolVersion"] != 1 {
-            return Err(protocol("ACP v1 required"));
-        }
+        let init = initialize(self.rpc, turn.provider).await?;
+        self.sequence = 1;
         let mut servers = vec![];
-        if let Some(tools) = &turn.agent_tools {
-            if init.pointer("/agentCapabilities/mcpCapabilities/http") != Some(&Value::Bool(true)) {
-                return Err(protocol("adapter does not support HTTP MCP servers"));
-            }
+        if let Some(tools) = &turn.agent_tools
+            && init["agentCapabilities"]["mcpCapabilities"]["http"] == true
+        {
             servers.push(json!({"name":"huggler","type":"http","url":tools.url,
                 "headers":[{"name":"Authorization","value":format!("Bearer {}",tools.token)}]}));
         }
@@ -145,7 +144,16 @@ impl Session<'_> {
                 info,
             )
         };
-        if info.pointer("/modes/currentModeId").and_then(Value::as_str) != Some("default") {
+        if info
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id != session)
+        {
+            return Err(protocol("ACP resume returned a different session"));
+        }
+        if turn.provider == Provider::ClaudeAgent
+            && info.pointer("/modes/currentModeId").and_then(Value::as_str) != Some("default")
+        {
             self.request(
                 "session/set_mode",
                 json!({"sessionId":session,"modeId":"default"}),
@@ -153,22 +161,81 @@ impl Session<'_> {
             .await?;
         }
         if let Some(model) = &turn.model {
-            self.request(
-                "session/set_model",
-                json!({"sessionId":session,"modelId":model}),
-            )
-            .await?;
+            if model_option(&info).is_some() {
+                self.request(
+                    "session/set_config_option",
+                    json!({"sessionId":session,"configId":"model","value":model}),
+                )
+                .await?;
+            } else {
+                self.request(
+                    "session/set_model",
+                    json!({"sessionId":session,"modelId":model}),
+                )
+                .await?;
+            }
         }
         Ok(session)
     }
+}
+pub(super) async fn initialize(rpc: &mut Rpc, driver: Provider) -> Result<Value> {
+    let version = if matches!(driver, Provider::Kiro | Provider::Antigravity) {
+        2
+    } else {
+        1
+    };
+    let caps = if driver == Provider::ClaudeAgent {
+        json!({"subagents":{}})
+    } else {
+        json!({})
+    };
+    let init = setup_request(
+        rpc,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": version,
+            "clientCapabilities": caps,
+            "clientInfo": {"name": "huggler", "version": env!("CARGO_PKG_VERSION")},
+        }),
+    )
+    .await?;
+    if init["protocolVersion"] != version
+        && !(driver == Provider::Antigravity && init["protocolVersion"] == 1)
+    {
+        return Err(Error::IncompatibleProvider(format!(
+            "configure an ACP v{version} adapter for {}",
+            driver.key()
+        )));
+    }
+    Ok(init)
+}
+
+pub(super) async fn setup_request(
+    rpc: &mut Rpc,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    result(&rpc.request_frame(id, method, params).await?, id, method)
+}
+
+pub(super) fn model_option(info: &Value) -> Option<&Value> {
+    info["configOptions"]
+        .as_array()?
+        .iter()
+        .find(|o| o["id"] == "model" && o["type"] == "select")
 }
 fn result(frame: &Value, id: u64, method: &str) -> Result<Value> {
     if frame["id"] != id {
         return Err(protocol(format!("unexpected ACP reply during {method}")));
     }
     if let Some(error) = frame.get("error") {
+        if error["code"] == -32000 {
+            return Err(Error::LoginRequired);
+        }
         return Err(protocol(format!(
-            "Claude ACP {method}: {}",
+            "ACP {method}: {}",
             error["message"].as_str().unwrap_or("provider error")
         )));
     }
@@ -179,7 +246,7 @@ fn result(frame: &Value, id: u64, method: &str) -> Result<Value> {
 }
 
 pub(crate) async fn execute(
-    options: &ClaudeAgentOptions,
+    options: &ProviderInstance,
     turn: Turn,
     mut stop: watch::Receiver<bool>,
     update: impl Fn(Update) -> Result<()>,
@@ -189,7 +256,7 @@ pub(crate) async fn execute(
     if *stop.borrow() {
         return Err(Error::Closed);
     }
-    let mut rpc = Rpc::spawn(&options.executable, &[], &turn)?;
+    let mut rpc = Rpc::spawn(options, &[], &turn)?;
     let conversation = async {
         let mut client = Session {
             rpc: &mut rpc,
@@ -296,6 +363,7 @@ pub(crate) async fn execute(
                                 .and_then(Value::as_str)
                                 .is_none()
                         {
+                            update(Update::Output(text.to_owned()))?;
                             answer.push_str(text);
                         }
                     } else if let Some(child) = client.children.message(target, notification) {
@@ -311,10 +379,15 @@ pub(crate) async fn execute(
                         return Err(Error::Interrupted);
                     }
                     if response["stopReason"] != "end_turn" {
-                        return Err(protocol(format!(
-                            "Claude stopped: {}",
-                            response["stopReason"]
-                        )));
+                        return Err(protocol(format!("ACP stopped: {}", response["stopReason"])));
+                    }
+                    let usage = super::usage(&response["usage"]).or_else(|| {
+                        (turn.provider == Provider::Grok)
+                            .then(|| super::usage(&response["_meta"]["usage"]))
+                            .flatten()
+                    });
+                    if let Some(tokens) = usage {
+                        update(tokens)?;
                     }
                     update(Update::Finalizing(std::mem::take(&mut answer)))?;
                     if !client.children.active() {

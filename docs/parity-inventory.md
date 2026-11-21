@@ -6,6 +6,10 @@ Stage 1 exercised selected command, projection, provider and agent-tool paths in
 
 Stage 2 verified root-checkout launch, idle send, receipt retry and conflicts, model selection and thread-scoped reads, waits and events through the Huggler crate. The installed macOS app also verified provider-native Codex continuation across quit and reopen. [Stage 2 coverage and versions](stage-2.md)
 
+Stage 3 verified cross-provider peer replies, delegated completions, live permission responses and native child control for Codex and Claude Agent. [Stage 3 coverage](stage-3.md)
+
+Stage 4 added named instances for all eleven driver kinds. A host can probe an instance, select it at launch, observe run output and read usage for runs that reported tokens. Agent-created peers and delegates can inherit or select an instance. Installed Cursor and Antigravity CLIs returned login challenges in fresh homes. Both advertised session loading, and only Cursor advertised HTTP MCP in these runs. The upstream Antigravity v2 recording advertises both. Successful turns for these two providers use scripted peers. [Driver matrix and limits](stage-4.md#driver-results)
+
 | Surface | Baseline | Implementation to compare |
 | --- | ---: | --- |
 | Thread orchestration commands | 58 wire variants + 15 additional internal variants | [Command and event unions][src-1] · [Command policy][src-2] |

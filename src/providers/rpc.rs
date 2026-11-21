@@ -1,7 +1,9 @@
 use super::Turn;
+use super::registry::ProviderInstance;
 use crate::{Error, Result};
-use serde_json::Value;
-use std::{path::Path, process::Stdio, time::Duration};
+use serde_json::{Value, json};
+use std::path::Path;
+use std::{process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -10,7 +12,7 @@ use tokio::{
 pub(super) struct Rpc {
     child: Child,
     input: Option<ChildStdin>,
-    output: Lines<BufReader<ChildStdout>>,
+    output: Option<Lines<BufReader<ChildStdout>>>,
 }
 
 pub(super) fn protocol(message: impl Into<String>) -> Error {
@@ -18,30 +20,78 @@ pub(super) fn protocol(message: impl Into<String>) -> Error {
 }
 
 impl Rpc {
-    pub fn spawn(executable: &Path, args: &[&str], turn: &Turn) -> Result<Self> {
-        let mut command = Command::new(executable);
-        command
-            .args(args)
-            .current_dir(&turn.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+    pub fn spawn(instance: &ProviderInstance, args: &[&str], turn: &Turn) -> Result<Self> {
+        let mut command = instance.command();
+        command.args(args);
         if turn.provider == crate::Provider::Codex
             && let Some(tools) = &turn.agent_tools
         {
             command.env("HUGGLER_MCP_TOKEN", &tools.token);
         }
+        Self::open(command, &turn.cwd)
+    }
+
+    pub fn open(command: std::process::Command, cwd: &Path) -> Result<Self> {
+        let mut command = Command::from(command);
+        command
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|e| protocol(format!("launch {}: {e}", executable.display())))?;
+        let mut child = command.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::MissingExecutable(
+                    command
+                        .as_std()
+                        .get_program()
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            } else {
+                Error::Io(e)
+            }
+        })?;
         Ok(Self {
             input: child.stdin.take(),
-            output: BufReader::new(child.stdout.take().unwrap()).lines(),
+            output: Some(BufReader::new(child.stdout.take().unwrap()).lines()),
             child,
         })
+    }
+
+    /// A setup request. Reject unsupported callbacks while waiting for the matching response.
+    pub async fn request_frame(&mut self, id: u64, method: &str, params: Value) -> Result<Value> {
+        self.write(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+            .await?;
+        loop {
+            let frame = self.read().await?;
+            if frame.get("method").is_some() {
+                if let Some(wire) = frame.get("id") {
+                    self.write(json!({"jsonrpc":"2.0","id":wire,"error":{"code":-32601,"message":"Unsupported client request"}})).await?;
+                }
+                continue;
+            }
+            if frame["id"] != id {
+                return Err(protocol(format!("unexpected reply to {method}")));
+            }
+            return Ok(frame);
+        }
+    }
+
+    pub async fn request(&mut self, id: u64, method: &str, params: Value) -> Result<Value> {
+        let frame = self.request_frame(id, method, params).await?;
+        if let Some(error) = frame.get("error") {
+            return Err(protocol(format!(
+                "{method}: {}",
+                error["message"].as_str().unwrap_or("request failed")
+            )));
+        }
+        frame
+            .get("result")
+            .cloned()
+            .ok_or_else(|| protocol(format!("missing result for {method}")))
     }
 
     pub async fn write(&mut self, frame: Value) -> Result<()> {
@@ -51,12 +101,21 @@ impl Rpc {
         Ok(())
     }
 
-    pub async fn read(&mut self) -> Result<Value> {
-        let line = self
-            .output
+    pub fn drain_stdout(&mut self) {
+        let mut lines = self.output.take().expect("stdout already drained");
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    }
+
+    pub async fn line(&mut self) -> Result<String> {
+        self.output
+            .as_mut()
+            .expect("stdout already drained")
             .next_line()
             .await?
-            .ok_or_else(|| protocol("provider stdout closed before turn completion"))?;
+            .ok_or_else(|| protocol("provider stdout closed before turn completion"))
+    }
+    pub async fn read(&mut self) -> Result<Value> {
+        let line = self.line().await?;
         serde_json::from_str(&line).map_err(|e| protocol(format!("invalid JSON-RPC frame: {e}")))
     }
 

@@ -25,6 +25,25 @@ id!(ProjectId);
 id!(RequestId);
 id!(NativeThreadId);
 id!(NativeTurnId);
+id!(ProviderInstanceId);
+
+impl ProviderInstanceId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ProviderInstanceId {
+    fn from(value: &str) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<String> for ProviderInstanceId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, rmcp::schemars::JsonSchema,
@@ -35,19 +54,48 @@ pub enum Provider {
     #[default]
     Codex,
     ClaudeAgent,
+    Cursor,
+    Grok,
+    Fx,
+    Kiro,
+    Antigravity,
+    AcpRegistry,
+    #[serde(rename = "opencode")]
+    OpenCode,
+    Pi,
+    Muse,
 }
 
 impl Provider {
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Codex => "codex",
             Self::ClaudeAgent => "claudeAgent",
+            Self::Cursor => "cursor",
+            Self::Grok => "grok",
+            Self::Fx => "fx",
+            Self::Kiro => "kiro",
+            Self::Antigravity => "antigravity",
+            Self::AcpRegistry => "acpRegistry",
+            Self::OpenCode => "opencode",
+            Self::Pi => "pi",
+            Self::Muse => "muse",
         }
     }
+
     pub(crate) fn from_key(value: &str) -> rusqlite::Result<Self> {
         match value {
             "codex" => Ok(Self::Codex),
             "claudeAgent" => Ok(Self::ClaudeAgent),
+            "cursor" => Ok(Self::Cursor),
+            "grok" => Ok(Self::Grok),
+            "fx" => Ok(Self::Fx),
+            "kiro" => Ok(Self::Kiro),
+            "antigravity" => Ok(Self::Antigravity),
+            "acpRegistry" => Ok(Self::AcpRegistry),
+            "opencode" => Ok(Self::OpenCode),
+            "pi" => Ok(Self::Pi),
+            "muse" => Ok(Self::Muse),
             _ => Err(rusqlite::Error::InvalidQuery),
         }
     }
@@ -143,6 +191,12 @@ pub enum Action {
         name: String,
         model: Option<String>,
         provider: Provider,
+    },
+    LaunchInstance {
+        project: ProjectId,
+        name: String,
+        model: Option<String>,
+        instance: ProviderInstanceId,
     },
     Send {
         text: String,
@@ -309,19 +363,25 @@ pub struct NativeChild {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProviderUsage {
+    pub instance: ProviderInstanceId,
+    pub reported_runs: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "ThreadSnapshot")]
 pub struct Thread {
-    #[serde(default)]
     pub questions: Vec<UserInputRequest>,
-    #[serde(default)]
     pub native_children: Vec<NativeChild>,
-    #[serde(default)]
     pub tasks: Vec<DelegatedTask>,
     pub provider: Provider,
+    pub provider_instance: ProviderInstanceId,
     pub permissions: Vec<PermissionRequest>,
     pub id: ThreadId,
     pub project: ProjectId,
     /// Managed checkout used by this thread. None selects the project root.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<PathBuf>,
     pub name: String,
     pub model: Option<String>,
@@ -330,9 +390,62 @@ pub struct Thread {
     pub runs: Vec<Run>,
     pub cursor: i64,
 }
+
+/// Snapshots written before named instances selected the built-in instance of their driver.
+#[derive(Deserialize)]
+struct ThreadSnapshot {
+    #[serde(default)]
+    questions: Vec<UserInputRequest>,
+    #[serde(default)]
+    native_children: Vec<NativeChild>,
+    #[serde(default)]
+    tasks: Vec<DelegatedTask>,
+    provider: Provider,
+    provider_instance: Option<ProviderInstanceId>,
+    permissions: Vec<PermissionRequest>,
+    id: ThreadId,
+    project: ProjectId,
+    worktree_path: Option<PathBuf>,
+    name: String,
+    model: Option<String>,
+    native_thread: Option<NativeThreadId>,
+    messages: Vec<Message>,
+    runs: Vec<Run>,
+    cursor: i64,
+}
+
+impl From<ThreadSnapshot> for Thread {
+    fn from(snapshot: ThreadSnapshot) -> Self {
+        Self {
+            provider_instance: snapshot
+                .provider_instance
+                .unwrap_or_else(|| snapshot.provider.key().into()),
+            provider: snapshot.provider,
+            questions: snapshot.questions,
+            native_children: snapshot.native_children,
+            tasks: snapshot.tasks,
+            permissions: snapshot.permissions,
+            id: snapshot.id,
+            project: snapshot.project,
+            worktree_path: snapshot.worktree_path,
+            name: snapshot.name,
+            model: snapshot.model,
+            native_thread: snapshot.native_thread,
+            messages: snapshot.messages,
+            runs: snapshot.runs,
+            cursor: snapshot.cursor,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    /// Text as received, before the final assistant message is committed.
+    OutputDelta {
+        run_id: RunId,
+        text: String,
+    },
     /// Recorded on the thread whose agent created an independent peer.
     PeerCreated {
         caller_run_id: RunId,
@@ -397,6 +510,14 @@ fn display_error<E: fmt::Display, S: serde::Serializer>(
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", content = "detail", rename_all = "snake_case")]
 pub enum Error {
+    #[error("install the provider executable or configure its path: {0}")]
+    MissingExecutable(String),
+    #[error("sign in with the provider CLI for this instance, then refresh")]
+    LoginRequired,
+    #[error("OpenCode refused access; check the configured server password and permissions")]
+    ServerAccessDenied,
+    #[error("incompatible provider: {0}")]
+    IncompatibleProvider(String),
     #[error("the user-input request was already answered")]
     AlreadyAnswered,
     #[error("state directory already has a runtime owner")]

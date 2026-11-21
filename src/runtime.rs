@@ -28,6 +28,7 @@ pub struct HugglerOptions {
     pub state_dir: PathBuf,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
+    pub instances: Vec<crate::providers::registry::ProviderInstance>,
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,
 }
@@ -36,6 +37,7 @@ impl HugglerOptions {
         Self {
             state_dir: state_dir.into(),
             agent_tools: false,
+            instances: vec![],
             codex: CodexOptions::default(),
             claude_agent: ClaudeAgentOptions::default(),
         }
@@ -43,7 +45,7 @@ impl HugglerOptions {
 }
 
 pub(crate) struct Shared {
-    options: HugglerOptions,
+    registry: crate::providers::registry::Registry,
     endpoint: Option<String>,
     handle: Handle,
     workers: Mutex<Option<JoinSet<()>>>,
@@ -292,28 +294,23 @@ impl Shared {
         let (tx, controls) = mpsc::unbounded_channel();
         let owner = (thread.clone(), run.clone());
         self.controls.lock().unwrap().insert(owner.clone(), tx);
+        let instance = self
+            .registry
+            .get(turn.instance.as_str())
+            .ok_or_else(|| Error::NotFound(format!("provider instance {}", turn.instance)))?;
         let result = match turn.provider {
             Provider::Codex => {
-                codex::execute(
-                    self.options.codex.clone(),
-                    turn,
-                    stopped,
-                    update,
-                    permissions,
-                    controls,
-                )
-                .await
+                codex::execute(instance, turn, stopped, update, permissions, controls).await
             }
-            Provider::ClaudeAgent => {
-                claude_agent::execute(
-                    &self.options.claude_agent,
-                    turn,
-                    stopped,
-                    update,
-                    permissions,
-                    controls,
-                )
-                .await
+            Provider::Pi => crate::providers::pi::execute(instance, turn, stopped, update).await,
+            Provider::Muse => {
+                crate::providers::muse::execute(instance, turn, stopped, update).await
+            }
+            Provider::OpenCode => {
+                crate::providers::opencode::execute(instance, turn, stopped, update).await
+            }
+            _ => {
+                claude_agent::execute(instance, turn, stopped, update, permissions, controls).await
             }
         };
         self.controls.lock().unwrap().remove(&owner);
@@ -332,9 +329,16 @@ impl Huggler {
     /// Requires a Tokio runtime with I/O and time enabled.
     pub async fn open(options: HugglerOptions) -> Result<Self> {
         let dir = options.state_dir.clone();
-        let mut db = tokio::task::spawn_blocking(move || Database::open(&dir))
-            .await
-            .map_err(|e| Error::Worker(e.to_string()))??;
+        let registry = crate::providers::registry::registry(
+            &options.codex,
+            &options.claude_agent,
+            &options.instances,
+        )?;
+        let configured = registry.clone();
+        let mut db =
+            tokio::task::spawn_blocking(move || Database::open_with_registry(&dir, &configured))
+                .await
+                .map_err(|e| Error::Worker(e.to_string()))??;
         let listener = if options.agent_tools {
             Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?)
         } else {
@@ -353,7 +357,7 @@ impl Huggler {
             fault: Mutex::default(),
             changed: watch::channel(()).0,
             stop: watch::channel(false).0,
-            options,
+            registry,
             endpoint,
             handle: Handle::current(),
             workers: Mutex::new(Some(JoinSet::new())),
@@ -499,6 +503,56 @@ impl Huggler {
             self.shared.changed.send_replace(());
         }
         Ok(revoked)
+    }
+
+    /// Enumerate configured instances in stable ID order without starting a provider.
+    pub fn provider_instances(&self) -> impl Iterator<Item = &crate::ProviderInstance> {
+        self.shared.registry.values()
+    }
+
+    /// Check a single configured installation in the supplied working directory. ACP may
+    /// create an empty native session to discover its model catalog and detect a login challenge.
+    pub async fn probe_provider(
+        &self,
+        id: &str,
+        cwd: impl AsRef<Path>,
+    ) -> Result<crate::ProviderReport> {
+        let instance = self
+            .shared
+            .registry
+            .get(id)
+            .ok_or_else(|| Error::NotFound(format!("provider instance {id}")))?
+            .clone();
+        let cwd = cwd.as_ref().canonicalize()?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut gate = self.shared.workers.lock().unwrap();
+            let workers = gate.as_mut().ok_or(Error::Closed)?;
+            let mut stop = self.shared.stop.subscribe();
+            workers.spawn_on(
+                async move {
+                    let probe = crate::providers::probe::inspect(&instance, &cwd);
+                    let deadline = std::time::Duration::from_secs(15);
+                    let result = tokio::select! {
+                        _ = stop.wait_for(|stopped| *stopped) => Err(Error::Closed),
+                        result = tokio::time::timeout(deadline, probe) => result.unwrap_or_else(|_| {
+                            Err(Error::Provider(format!(
+                                "{} timed out during discovery. Check its executable, server and login",
+                                instance.id
+                            )))
+                        }),
+                    };
+                    let _ = tx.send(result);
+                },
+                &self.shared.handle,
+            );
+        }
+        rx.await.map_err(|_| Error::Closed)?
+    }
+
+    /// Totals for application runs with a provider usage report, including archived instance IDs.
+    pub fn provider_usage(&self) -> Result<Vec<ProviderUsage>> {
+        self.shared.access(|db| db.usage())
     }
 
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {

@@ -282,12 +282,17 @@ async fn batch_creation_retries_after_reopen_and_accepts_a_late_prompt() {
         options.agent_tools = true;
         options.claude_agent.executable =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/peer-acp.py");
+        options.instances.push(ProviderInstance::new(
+            "writer-profile",
+            Provider::ClaudeAgent,
+            &options.claude_agent.executable,
+        ));
         let rt = Huggler::open(options.clone()).await.unwrap();
         let project = rt.open_project(dir.path()).unwrap();
         let author = launch(&rt, &project, "author", Provider::ClaudeAgent);
         let mut entries = json!([
             {"title":"Reviewer","prompt":"read batch marker"},
-            {"title":"Writer","target":{"providerInstanceId":"claudeAgent"}}
+            {"title":"Writer","target":{"providerInstanceId":"writer-profile"}}
         ]);
         let (creator_run, peers) = batch(&rt, &author, "create", &entries).await;
         let [reviewer, writer] = peers.as_slice() else {
@@ -305,6 +310,8 @@ async fn batch_creation_retries_after_reopen_and_accepts_a_late_prompt() {
         let reviewed = rt.read(&reviewer.thread_id).unwrap();
         let idle = rt.read(&writer.thread_id).unwrap();
         assert_eq!(rt.threads().unwrap().len(), 3);
+        assert_eq!(idle.provider_instance.as_str(), "writer-profile");
+        assert_eq!(reviewed.provider_instance.as_str(), "claudeAgent");
         for thread in [&reviewed, &idle] {
             assert_eq!(thread.project, project.id);
             assert_eq!(thread.provider, Provider::ClaudeAgent);
@@ -365,7 +372,9 @@ async fn batch_creation_retries_after_reopen_and_accepts_a_late_prompt() {
         let (_, other) = batch(&rt, &writer.thread_id, "both-prompted", &entries).await;
         for peer in other {
             completed(&rt, &peer.thread_id, peer.run_id.as_ref().unwrap()).await;
-            assert_eq!(rt.read(&peer.thread_id).unwrap().runs.len(), 1);
+            let snapshot = rt.read(&peer.thread_id).unwrap();
+            assert_eq!(snapshot.provider_instance.as_str(), "writer-profile");
+            assert_eq!(snapshot.runs.len(), 1);
         }
         assert_eq!(rt.threads().unwrap().len(), 5);
         rt.close().await.unwrap();

@@ -19,10 +19,17 @@ with tempfile.TemporaryDirectory(prefix="huggler independent ") as tmp:
     consumer = Path(tmp)
     with tarfile.open(target / "package" / f"{name}.crate") as archive:
         members = set(archive.getnames())
-        for required in ("Cargo.lock", "migrations/001.sql", "docs/reference/codex-resume/LICENSE",
-                         "docs/reference/codex-resume/codex_transcript.ndjson", "src/providers/codex.rs"):
+        fixtures = ("fx", "grok", "kiro", "registry", "muse", "pi", "open1", "open2")
+        for required in ("Cargo.lock", "migrations/001.sql", "migrations/013.sql",
+                         "docs/reference/codex-resume/LICENSE",
+                         "tests/fixtures/providers/LICENSE", "docs/reference/codex-resume/codex_transcript.ndjson",
+                         "src/providers/codex.rs", *(f"tests/fixtures/providers/{f}.ndjson" for f in fixtures),
+                         "tests/fixtures/providers/antigravity-initialize.json",
+                         "tests/fixtures/providers/antigravity-cli-startup.json",
+                         "tests/fixtures/providers/cursor-cli-startup.json"):
             assert f"{name}/{required}" in members, required
-        assert not any(p.startswith(name + "/desktop/") for p in members)
+        assert not any(p.startswith((name + "/desktop/", name + "/adapters/")) or p.endswith("/huggler.mjs") for p in members)
+        assert not any("__pycache__" in Path(p).parts or p.endswith(".pyc") for p in members)
         archive.extractall(consumer, filter="data")
     package = consumer / name
     assert (package / "docs/reference/codex-resume/LICENSE").read_bytes() == (root / "docs/reference/codex-resume/LICENSE").read_bytes()

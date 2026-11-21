@@ -156,6 +156,17 @@ pub async fn scenario(source: &Path) {
         fs::read_to_string(temp.path().join("cursor")).unwrap(),
         "92"
     );
+    let usage = rt.provider_usage().unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(
+        (
+            usage[0].instance.as_str(),
+            usage[0].reported_runs,
+            usage[0].input_tokens,
+            usage[0].output_tokens
+        ),
+        ("codex", 2, 42897, 50)
+    );
     let after = rt.read(&thread).unwrap();
     assert_eq!(after.native_thread, Some(NativeThreadId(NATIVE.into())));
     assert_eq!(after.runs, [first_run.clone(), second_run.clone()]);

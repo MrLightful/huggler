@@ -1,20 +1,31 @@
 use super::*;
 use crate::contracts::agent_commands::{CreateThreads, CreatedPeer};
 
+pub(super) fn instance_driver(tx: &Transaction, instance: &str) -> Result<String> {
+    tx.query_row(
+        "SELECT driver FROM configured_provider WHERE id=?",
+        [instance],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| Error::NotFound(format!("provider instance {instance}")))
+}
+
 /// Agent-created threads inherit their caller's checkout. A different provider
 /// starts with its own default model.
 pub(super) fn create_agent_thread(
     tx: &Transaction,
     caller: &ThreadId,
     name: &str,
-    provider: Option<Provider>,
+    provider: Option<&str>,
 ) -> Result<ThreadId> {
     let thread = ThreadId(new_id());
+    let driver = provider.map(|id| instance_driver(tx, id)).transpose()?;
     tx.execute(
-        "INSERT INTO thread(id,project,name,provider,model,worktree_path)
-         SELECT ?1,project,?2,coalesce(?3,provider),CASE WHEN ?3 IS NULL OR ?3=provider THEN model END,worktree_path
+        "INSERT INTO thread(id,project,name,provider_instance,model,worktree_path,provider)
+         SELECT ?1,project,?2,coalesce(?3,provider_instance),CASE WHEN ?3 IS NULL OR ?3=provider_instance THEN model END,worktree_path,coalesce(?5,provider)
          FROM thread WHERE id=?4",
-        params![thread.0, name, provider.map(Provider::key), caller.0],
+        params![thread.0, name, provider, caller.0, driver],
     )?;
     event(tx, &thread, Change::Launched)?;
     Ok(thread)
@@ -90,13 +101,16 @@ impl Database {
         for (position, request) in input.threads.into_iter().enumerate() {
             let title = request.title.as_deref();
             let prompt = request.prompt.as_deref();
-            let provider = request.target.map(|t| t.provider_instance_id);
+            let provider = request
+                .target
+                .as_ref()
+                .map(|t| t.provider_instance_id.as_str());
             if title.is_some_and(|t| t.trim().is_empty()) {
                 return Err(Error::Invalid("empty thread title".into()));
             }
             let mut peer = if let Some(previous) = prior.next() {
                 if previous.title != request.title
-                    || previous.provider.as_deref() != provider.map(Provider::key)
+                    || previous.provider.as_deref() != provider
                     || prompt
                         .zip(previous.prompt.as_deref())
                         .is_some_and(|(requested, accepted)| requested != accepted)
@@ -110,7 +124,7 @@ impl Database {
                 tx.execute(
                     "INSERT INTO peer_creation(caller_thread,request_key,position,thread_id,requested_title,requested_provider)
                      VALUES(?,?,?,?,?,?)",
-                    params![caller.0, key, position as i64, thread_id.0, title, provider.map(Provider::key)],
+                    params![caller.0, key, position as i64, thread_id.0, title, provider],
                 )?;
                 event(
                     &tx,
