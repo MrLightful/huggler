@@ -5,6 +5,8 @@ description: Choose between independent peers, owned delegation, and native chil
 
 ## Enable agent tools
 
+The Rust host configures and serves run-scoped agent tools. A TypeScript host that reopens the database can inspect stored `tasks` and `nativeChildren` with `readThread` and replay collaboration events with `subscribe`.
+
 Set `options.agent_tools = true` before opening the runtime. Huggler starts a loopback MCP endpoint and gives supported adapters a run-scoped connection. Check `probe_provider` on the chosen instance for tool support. If the host sets `AgentPolicy.allowed_tools`, use the built-in keys even when `AgentOutput.tools` renames the wire tools.
 
 ## Create independent peers

@@ -5,9 +5,9 @@ description: Register provider instances, discover capabilities, and bind a thre
 
 ## Register an installation
 
-`HugglerOptions::new` registers two built-in instances. `codex` looks for `codex` on PATH, and `claudeAgent` looks for `claude-agent-acp`. Set `options.codex.executable` or `options.claude_agent.executable` to override those paths. Opening the runtime validates the registry. Provider startup and login checks happen when you probe an instance or use it.
+Both hosts register two built-in instances. `codex` looks for `codex` on PATH, and `claudeAgent` looks for `claude-agent-acp`. Opening the runtime validates the registry. Provider startup and login checks happen when you probe an instance or use it.
 
-Add named configurations before calling `Huggler::open`. For example, use a separate authenticated Codex home for work:
+In Rust, set `options.codex.executable` or `options.claude_agent.executable` to override the built-in executable paths. To add a separate authenticated Codex home for work, register a named configuration before opening the runtime.
 
 ```rust
 use huggler::{HugglerOptions, Provider, ProviderInstance};
@@ -19,11 +19,29 @@ work.request_approvals = true;
 options.instances.push(work);
 ```
 
+In TypeScript, pass the configuration in `Huggler.open`'s `instances` array. For the same work account, the options are
+
+```ts
+import { providerInstanceId, type OpenOptions } from "@huggler/sdk"
+
+const work = providerInstanceId("work-codex")
+const options: OpenOptions = {
+  stateDir: "/path/to/app-state",
+  instances: [{
+    id: work,
+    driver: "codex",
+    executable: "codex",
+    home: "/path/to/codex-work-home",
+    requestApprovals: true,
+  }],
+}
+```
+
 Instance IDs support ASCII letters, digits, period, underscore, and hyphen, with a maximum of 100 characters. IDs must be unique. Use an executable name on PATH or an absolute executable path. Absolute instance homes are supported by Codex, Claude Agent, and Pi. See the [provider and transport matrix](/reference/providers/) for other driver settings.
 
 ## Probe and select
 
-List the registry with `provider_instances()` and probe the chosen ID in the project checkout. A probe can start a provider and, for ACP, create an empty session for model discovery. It sends no prompt. An empty model catalog can still support turns using the provider’s default model.
+List the registry with Rust’s `provider_instances()` or TypeScript’s `await host.listProviderInstances()`. A probe can start a provider and, for ACP, create an empty session for model discovery. An empty model catalog can still support turns using the provider’s default model.
 
 ```rust
 use huggler::{Action, Command, CommandId, ThreadId};
@@ -43,15 +61,17 @@ huggler.dispatch(Command {
 })?;
 ```
 
-Use `model: None` to let the provider pick its default. `Thread.provider_instance` identifies the configuration used to launch the thread. For native continuation after a restart, preserve the instance ID and its executable, invocation arguments, home, and server settings. To transfer context to a different instance, use a [portable fork](/guides/history-and-context/#fork-at-a-completed-turn).
+In TypeScript, open the host with `await Huggler.open(options)`, then call `await host.probeProvider(work, project.root)`. Pass `providerInstanceId: work` to `host.launch` and optionally choose a `model` from `report.models`. The snapshot records the selected instance as `providerInstanceId` in TypeScript and `provider_instance` in Rust.
+
+For native continuation after a restart, preserve the instance ID and its executable, invocation arguments, home, and server settings. A Rust host can transfer context to a different instance with a [portable fork](/guides/history-and-context/#fork-at-a-completed-turn).
 
 ## Diagnose discovery failures
 
-| Error | What to check |
-| --- | --- |
-| `MissingExecutable` | Install the executable or update its configured path. |
-| `LoginRequired` | Sign in with the selected provider’s CLI using the instance’s home. |
-| `ServerAccessDenied` | Check the external OpenCode server’s credentials and permissions. |
-| `IncompatibleProvider` | Check the executable, arguments, and negotiated protocol version. |
+| Rust error | TypeScript `HugglerError.code` | What to check |
+| --- | --- | --- |
+| `MissingExecutable` | `missing_executable` | Install the executable or update its configured path. |
+| `LoginRequired` | `login_required` | Sign in with the selected provider’s CLI using the instance’s home. |
+| `ServerAccessDenied` | `server_access_denied` | Check the external OpenCode server’s credentials and permissions. |
+| `IncompatibleProvider` | `incompatible_provider` | Check the executable, arguments, and negotiated protocol version. |
 
 A `ProviderReport` exposes the transport, optional version and authentication status, model IDs, and booleans for native continuation and Huggler agent tools. Authentication can remain unverified even when discovery succeeds.

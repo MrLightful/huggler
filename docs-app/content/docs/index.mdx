@@ -1,23 +1,26 @@
 ---
 title: Huggler
-description: Embed durable coding-agent conversations in a Rust application.
+description: Embed durable coding-agent conversations in a Rust or TypeScript application.
 ---
 
-Huggler runs in your application process. It stores conversation history, queued work, and command receipts in SQLite and communicates with agent providers through their native transports. Your application chooses how to present output, resolve approvals, and configure providers.
+Use the `huggler` crate to embed the runtime directly in a Rust application. In a TypeScript project, use `@huggler/sdk` to load the same runtime into Node.js. Both hosts can run a conversation in a Git checkout, handle provider requests, and recover the conversation from SQLite after a restart.
 
-<p className="docs-start"><a href="/quickstart/">Run your first conversation →</a></p>
+<p className="docs-start"><a href="/quickstart/">Rust quickstart →</a>{' '}<a href="/typescript-quickstart/">TypeScript quickstart →</a></p>
 
 ## Build a host
 
 | If you want to… | Start here |
 | --- | --- |
 | Select a provider, model, or account | [Configure providers](/guides/configure-providers/) |
-| Stream output, queue messages, and handle requests | [Control threads](/guides/control-threads/) |
-| Browse, import, or branch a conversation | [Manage history and context](/guides/history-and-context/) |
-| Let agents exchange messages or delegate work | [Coordinate agents](/guides/collaboration/) |
-| Share a thread with another host or a guest | [Connect hosts](/guides/connect-hosts/) |
-| Add schedules, workspaces, or host services | [Application integrations](/guides/application-integrations/) |
+| Stream output, handle approvals, or stop a turn | [Control threads](/guides/control-threads/) |
+| Page or search stored messages | [Manage history and context](/guides/history-and-context/) |
+| Resume a thread in another Rust or Node.js process | [Durability and recovery](/concepts/durability/) |
+| Enable peer messaging or delegation in a Rust host | [Coordinate agents](/guides/collaboration/) |
+| Share a Rust-hosted thread with another host or a guest | [Connect hosts](/guides/connect-hosts/) |
+| Add schedules, managed workspaces, or host services in Rust | [Application integrations](/guides/application-integrations/) |
 
 ## Look up a detail
 
-Use the [runtime API reference](/reference/runtime-api/) for options and entry points, the [provider reference](/reference/providers/) for transport and capability differences, and the [agent tool reference](/reference/agent-tools/) for the MCP catalog. [Durability and recovery](/concepts/durability/) explains what a receipt guarantees and what can happen when a provider disconnects.
+- Host options, methods, and return types. [Rust API](/reference/runtime-api/) · [TypeScript SDK](/reference/typescript-sdk/)
+- Driver keys, transports, and tested provider capabilities. [Provider transports](/reference/providers/)
+- MCP tools a Rust host can offer to agents. [Agent tools](/reference/agent-tools/)

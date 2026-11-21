@@ -3,7 +3,7 @@ title: Provider transports
 description: Driver keys, qualified protocol versions, and provider-specific behavior.
 ---
 
-Configure an instance by its Rust `Provider` variant. The key below is its serialized value. The versions identify the repository’s qualification evidence. Probe your installed version with `probe_provider` before offering capabilities in your host.
+Configure an instance with a Rust `Provider` variant or use the driver key below as a TypeScript instance’s `driver`. The matrix describes the underlying adapters. The host APIs for invoking their capabilities are listed in the [Rust reference](/reference/runtime-api/) and [TypeScript reference](/reference/typescript-sdk/). To discover what your installation supports, call `probe_provider` in Rust or `probeProvider` in TypeScript.
 
 ## Driver matrix
 
@@ -30,6 +30,6 @@ Qualification details and fixtures are in the [provider test record](https://git
 - **OpenCode.** Managed mode starts a server and can register run-scoped MCP. Set `server_url` for an externally managed numeric loopback HTTP origin. Supply `password_env` to read its password from the named environment variable. External mode leaves MCP configuration and process lifetime with the host. Use one writer per native session. On 2.x, a disconnect between actual and observed inbox delivery can leave the prompt running on an external server.
 - **Pi.** For agent tools, set `pi_extension` to the absolute path of the separate [Huggler extension](https://github.com/MrLightful/huggler/tree/master/adapters/pi). It runs inside Pi’s runtime. Pi cancels interactive extension dialogs.
 - **Muse.** Use the provider’s MSP server configuration. An unsupported interactive request fails the turn.
-- **Usage.** `provider_usage` aggregates input and output tokens for reporting application runs, grouped by instance. Providers that omit usage contribute no report.
+- **Usage.** Rust’s `provider_usage` and TypeScript’s `readProviderUsage()` aggregate input and output tokens for reporting application runs, grouped by instance. Providers that omit usage contribute no report.
 
 See [Configure providers](/guides/configure-providers/) for the registration and launch workflow.

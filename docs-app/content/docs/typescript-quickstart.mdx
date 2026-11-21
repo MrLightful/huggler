@@ -1,0 +1,87 @@
+---
+title: TypeScript quickstart
+description: Install the Node.js SDK preview, run a Codex turn, and read the stored reply.
+---
+
+Start in a TypeScript project with a Git working tree and a signed-in Codex CLI on your PATH. The example sends one prompt using that account. Use Node.js 22.14 or later in the 22 series, 24.x, or 26.x on Apple Silicon macOS or Linux x64 with glibc.
+
+## Install the preview
+
+The preview ships as two local tarballs. Copy the SDK tarball and its matching native package into your project directory. To produce the files yourself, see [Build the tarballs](#build-the-tarballs).
+
+On Apple Silicon macOS, run
+
+```sh
+npm install --ignore-scripts ./huggler-sdk-0.0.1-preview.0.tgz ./huggler-sdk-darwin-arm64-0.0.1-preview.0.tgz
+```
+
+On Linux x64 with glibc, run
+
+```sh
+npm install --ignore-scripts ./huggler-sdk-0.0.1-preview.0.tgz ./huggler-sdk-linux-x64-gnu-0.0.1-preview.0.tgz
+```
+
+## Run one turn
+
+Save this as `first-turn.mts` in the project root. Pass a state directory where Huggler can keep the conversation between runs.
+
+```ts
+import { Huggler, commandId, threadId } from "@huggler/sdk"
+
+const stateDir = process.argv[2]
+if (!stateDir) throw new Error("Pass a state directory")
+
+const host = await Huggler.open({ stateDir })
+try {
+  const project = await host.openProject(".")
+  const thread = threadId("first-conversation")
+  await host.launch({
+    commandId: commandId("launch-first-conversation"),
+    threadId: thread,
+    projectId: project.id,
+    providerInstanceId: "codex",
+    name: "First conversation",
+  })
+  const receipt = await host.send({
+    commandId: commandId("first-prompt"),
+    threadId: thread,
+    text: "Explain what a package-lock.json file is in one sentence.",
+  })
+  const run = await host.wait(thread, receipt.runId)
+  if (run.status !== "completed") throw new Error(run.error ?? run.status)
+
+  const { messages } = await host.readThread(thread)
+  for (const message of messages) {
+    if (message.runId === run.id && message.role === "assistant") {
+      console.log(message.text)
+    }
+  }
+} finally {
+  await host.close()
+}
+```
+
+Compile and run the example from the project root.
+
+```sh
+npm install --save-dev typescript@5.9 @types/node@22
+npx tsc --strict --target ES2022 --module NodeNext first-turn.mts
+state_dir=$(mktemp -d)
+node first-turn.mjs "$state_dir"
+```
+
+Run the last command again with the same directory. The program prints the saved reply and reuses the original receipts. For a follow-up, keep the thread ID and give the next send a fresh command ID. For an interactive prompt, your host can show pending approvals and questions while the turn runs. [Control threads](/guides/control-threads/#answer-permissions-and-questions)
+
+## Build the tarballs
+
+From a Huggler checkout containing `bindings/node`, build on the same platform as the consuming Node.js process. You’ll need Rust 1.94.1, a C toolchain, Git, Python 3.11+, and a supported Node.js version.
+
+```sh
+cd bindings/node
+rustup component add rust-docs
+cargo install --locked cargo-about --version 0.9.1
+npm ci --ignore-scripts
+npm run pack:local
+```
+
+Copy the two files from `bindings/node/packages/` into the consuming project, then follow the install step above. On macOS with Xcode 27, the bundled Rust linker needs a compatible macOS SDK. The build detects the Command Line Tools macOS 26 SDK or accepts its path through `SDKROOT`.
