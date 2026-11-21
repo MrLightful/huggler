@@ -1,5 +1,6 @@
 mod attachments;
 mod models;
+mod project_actions;
 mod sidebar;
 
 use attachments::Attachments;
@@ -642,6 +643,7 @@ impl Desktop {
             .and_then(|s| s.to_str())
             .unwrap_or("Workspace");
         let crumb = h_flex()
+            .ml_2()
             .flex_1()
             .min_w_0()
             .gap_2()
@@ -691,7 +693,7 @@ impl Desktop {
                 } else {
                     "Show changes"
                 };
-                header.child(control!(
+                header.child(self.project_actions(cx)).child(control!(
                     action,
                     Button::new("toggle-changes")
                         .ghost()
@@ -705,6 +707,28 @@ impl Desktop {
                         }))
                 ))
             })
+    }
+
+    fn send_controls(
+        &self,
+        attachments: &Attachments,
+        _name: &'static str,
+        button: Button,
+        cx: &Context<Self>,
+    ) -> Div {
+        h_flex()
+            .gap_2()
+            .flex_shrink_0()
+            .child(self.attach_button(attachments, cx))
+            .child(control!(_name, button.primary()))
+    }
+
+    fn send_icon(id: &'static str, tooltip: &'static str) -> Button {
+        Button::new(id)
+            .large()
+            .rounded(px(999.))
+            .icon(IconName::ArrowUp)
+            .tooltip(tooltip)
     }
 
     fn launch_form(&self, compact: bool, cx: &Context<Self>) -> AnyElement {
@@ -756,19 +780,17 @@ impl Desktop {
                     h_flex()
                         .justify_end()
                         .gap_2()
-                        .child(self.attach_button(&self.starter_attachments, cx))
                         .child(self.model_control(cx))
-                        .child(control!(
-                            "Send first message",
-                            Button::new("send-first")
-                                .rounded(px(999.))
-                                .primary()
-                                .small()
-                                .icon(IconName::ArrowUp)
-                                .tooltip("Send first message (⌘Enter)")
-                                .disabled(empty_message || self.starter_attachments.loading)
-                                .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
-                        )),
+                        .child(
+                            self.send_controls(
+                                &self.starter_attachments,
+                                "Send first message",
+                                Self::send_icon("send-first", "Send first message (⌘Enter)")
+                                    .disabled(empty_message || self.starter_attachments.loading)
+                                    .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
+                                cx,
+                            ),
+                        ),
                 );
             let body = v_flex()
                 .w_full()
@@ -835,26 +857,32 @@ impl Desktop {
                     .gap_2()
                     .justify_between()
                     .flex_wrap()
-                    .child(self.attach_button(&self.starter_attachments, cx))
                     .child(self.model_control(cx))
-                    .child(control!(
-                        "Open conversation",
-                        Button::new("launch")
-                            .small()
-                            .primary()
-                            .label(if empty_message {
+                    .child(
+                        self.send_controls(
+                            &self.starter_attachments,
+                            if empty_message {
                                 "Open conversation"
                             } else {
                                 "Send first message"
+                            },
+                            (if empty_message {
+                                Button::new("launch")
+                                    .small()
+                                    .label("Open conversation")
+                                    .icon(IconName::ArrowRight)
+                            } else {
+                                Self::send_icon("launch", "Send first message")
                             })
-                            .icon(IconName::ArrowRight)
                             .disabled(
                                 self.starter_attachments.loading
                                     || (empty_message
-                                        && self.name.read(cx).value().trim().is_empty())
+                                        && self.name.read(cx).value().trim().is_empty()),
                             )
-                            .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx)))
-                    )),
+                            .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
+                            cx,
+                        ),
+                    ),
             );
         let context = h_flex()
             .items_end()
@@ -1397,7 +1425,6 @@ impl Desktop {
                 .child(
                     h_flex()
                         .flex_wrap().gap_2()
-                        .child(self.attach_button(attachments, cx))
                         .child(self.model_control(cx))
                         .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
                             format!("status/{status}"), label(status)
@@ -1425,15 +1452,15 @@ impl Desktop {
                                 ))
                             },
                         )
-                        .child(control!(
+                        .child(self.send_controls(
+                            attachments,
                             if busy { "Queue message" } else { "Send" },
-                            Button::new("send")
-                                .primary()
-                                .label(if busy { "Queue message" } else { "Send" }).disabled(empty_draft)
+                            Self::send_icon("send", if busy { "Queue message" } else { "Send" }).disabled(empty_draft)
                                 .on_click(cx.listener(|view, _, window, cx| {
                                     let result = view.send(window, cx);
                                     view.report(result, cx);
                                 })),
+                            cx,
                         )),
                 ),
         )

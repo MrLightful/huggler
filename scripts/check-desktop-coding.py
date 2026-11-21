@@ -32,12 +32,13 @@ def check(binary):
                    GIT_COMMON_DIR=str(root / ".git"), GIT_INDEX_FILE=str(root / ".git/index"))
         env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
         run_window(binary, state, [
-            {"see": "First message"}, {"absent": "Conversation options"},
+            {"see": "First message"}, {"right_of": ["Send first message", "Attach files"]}, {"absent": "Conversation options"},
             *launch_thread(checkout, "Implementation"),
             {"see": "Ready/Implementation/New conversation"},
             {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
-            {"absent": "Send plan"},
+            {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open project"]},
+            {"right_of": ["Hide changes", "Create PR"]},
             *send_message("Create the answer file."),
             {"see": "writing/Checking the requested filename. I will confirm the path with you before "
                     "creating the answer file in this checkout."}, {"click": "Command 1 output"},
@@ -66,6 +67,8 @@ def check(binary):
         subprocess.run(["git", "init", "-q", other], check=True)
         run_window(binary, state, [
             {"resize": [640, 440]}, {"see": "Codex/Corrected the answer."},
+            {"right_of": ["Create PR", "Open project"]},
+            {"right_of": ["Show changes", "Create PR"]},
             {"absent": f"Changed/{name}"}, {"click": "Show changes"}, {"see": f"Changed/{name}"},
             {"click": "Hide changes"}, {"resize": [1120, 740]}, {"click": "Show changes"},
             {"click": "Message"}, {"type": "Wait for my next instruction."},
