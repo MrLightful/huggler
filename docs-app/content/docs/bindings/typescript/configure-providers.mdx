@@ -1,0 +1,56 @@
+---
+title: Configure providers in TypeScript
+description: Configure an SDK provider, probe its capabilities, and select it on launch.
+---
+
+Pass additional named installations in the `instances` array when opening the SDK.
+
+## Register an installation
+
+```ts
+import { providerInstanceId, type OpenOptions } from "@huggler/sdk"
+
+const work = providerInstanceId("work-codex")
+const options: OpenOptions = {
+  stateDir: "/path/to/app-state",
+  instances: [{
+    id: work,
+    driver: "codex",
+    executable: "codex",
+    home: "/path/to/codex-work-home",
+    requestApprovals: true,
+  }],
+}
+```
+
+## Probe and select
+
+Continue with the options above. The probe uses the registered project’s root as its working directory.
+
+```ts
+import { Huggler, commandId, threadId } from "@huggler/sdk"
+
+const host = await Huggler.open(options)
+try {
+  const project = await host.openProject(".")
+  const report = await host.probeProvider(work, project.root)
+  await host.launch({
+    commandId: commandId("launch-work-review"),
+    threadId: threadId("work-review"),
+    projectId: project.id,
+    providerInstanceId: work,
+    name: "Work review",
+    model: report.models[0],
+  })
+} finally {
+  await host.close()
+}
+```
+
+Call `await host.listProviderInstances()` to list the configurations. The thread snapshot records the chosen instance as `providerInstanceId`.
+
+## Diagnose discovery failures
+
+Check `HugglerError.code` for `missing_executable`, `login_required`, `server_access_denied`, or `incompatible_provider`. The [shared provider guide](/guides/configure-providers/#diagnose-discovery-failures) lists what to check for each failure.
+
+See [Provider transports](/reference/providers/) for supported drivers, including their adapter-specific settings.

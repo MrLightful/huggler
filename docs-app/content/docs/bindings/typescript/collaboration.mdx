@@ -1,0 +1,14 @@
+---
+title: Observe collaboration in TypeScript
+description: Read stored tasks and native children, then follow their events.
+---
+
+Use the SDK to inspect collaboration state in a database opened by a compatible runtime. Enabling agent tools and issuing delegation or native-child interruption commands require a binding that exposes those controls. [Binding feature matrix](/bindings/#feature-availability)
+
+## Read stored state
+
+Open the database once the other runtime finishes closing. Call `host.readThread(thread)` and read its `tasks` and `nativeChildren`. Task entries describe Huggler-owned work. Native-child entries describe sessions created within a provider run.
+
+## Follow changes
+
+Call `host.subscribe(thread)` to read the snapshot and observe subsequent events. Handle the `task` and `nativeChild` change types in the async iterator. For a saved view, pass its last processed sequence to replay later events. [Resume a subscription](/bindings/typescript/control-threads/#resume-a-subscription)

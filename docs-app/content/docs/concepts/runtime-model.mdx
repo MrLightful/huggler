@@ -1,0 +1,31 @@
+---
+title: Projects, threads, and runs
+description: Trace a prompt from your application to an agent and back to your UI.
+---
+
+Your **host** is the application embedding Huggler. It owns the user interface and decides which provider to use and how to handle its requests. Huggler owns the conversation state and coordinates work with the provider.
+
+## What the runtime keeps track of
+
+| Entity | What it represents |
+| --- | --- |
+| Project | A registered Git working tree. The runtime resolves it to a canonical root and returns a project ID. |
+| Provider instance | A named installation and configuration for a coding agent. A thread binds to one instance so it can resume the provider session with the same configuration. |
+| Thread | The durable identity of a conversation. It carries its project, provider binding, messages, and runs. |
+| Command | An application action such as launching a thread, sending a prompt, or stopping work. The host supplies an ID and gets a receipt when the command commits. |
+| Run | One unit of work in a thread, usually a turn triggered by a prompt. It can finish as completed, failed, or interrupted. |
+| Event | An ordered change to a thread, such as a status update, output delta, committed message, or request for input. |
+
+## Follow a prompt
+
+1. Open the runtime with a state directory and register the Git working tree.
+2. Launch a thread with an application-owned ID and select a provider instance.
+3. Send the prompt with a fresh command ID. Keep the run ID returned with the receipt.
+4. Observe events to display output and act on permission requests or questions. A provider may wait for the user’s response before it can finish.
+5. Check the run’s terminal status and read the committed reply.
+
+The provider can assign its own session and turn IDs. Huggler uses that binding for native continuation when the adapter supports it. Your application uses Huggler’s thread and run IDs to address the conversation and its work.
+
+<BindingLinks topic="quickstart" />
+
+For persistence and replay, see [Durability and recovery](/concepts/durability/).

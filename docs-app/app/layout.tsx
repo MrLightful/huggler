@@ -7,7 +7,7 @@ import SearchDialog from './search';
 
 export const metadata: Metadata = {
   title: { default: 'Huggler', template: '%s · Huggler' },
-  description: 'Embed Huggler in a Rust application or a TypeScript project on Node.js.',
+  description: 'Learn how to embed durable coding-agent conversations in your application with Huggler.',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

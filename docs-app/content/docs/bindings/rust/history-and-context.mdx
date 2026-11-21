@@ -1,0 +1,32 @@
+---
+title: Manage history and context in Rust
+description: Read bounded history pages and carry conversation context into another thread.
+---
+
+## Page and search one thread
+
+List conversations with `threads()`. For a full snapshot use `read(&thread)`. For a paged view, start with `detail(&thread, None, "", 40)` and pass the returned `history.older` cursor to request older messages. Keep the same query while paging. If `Error::HistoryChanged` occurs, start again from the newest page.
+
+Pass a literal search string to `detail` to search one thread with ASCII case folding. A page contains 1–100 messages. Previews cap message text at 4 KiB. When the user expands a preview, call `read_message` with its message ID.
+
+## Import an existing conversation
+
+Call `import_history` with the registered project, a new destination thread ID, its name, the destination instance ID, and an `ImportSource`. Use `Claude`, `Codex`, or `Pi` with a local transcript path. File imports copy visible history and use that copy for portable continuation. Input files are limited to 8 MiB and 32,768 records.
+
+For `ImportSource::AcpRegistry`, supply a native session ID and an ACP Registry instance that can load it. Use `import_source` to recover provenance, including the input digest and native session ID when known. Reimporting an identical snapshot at the same destination preserves its history.
+
+## Fork at a completed turn
+
+Dispatch `Action::Fork` using a new destination thread ID. Supply the source thread, its completed boundary run in `through`, the destination instance and model, and the first prompt for the fork.
+
+| Mode | What the fork inherits |
+| --- | --- |
+| `Native` | A Codex native session fork on the original instance. Huggler verifies the inherited turn boundary before sending the first prompt. |
+| `Portable` | An attributed message prefix through the chosen turn. It can cross providers or instances. Context is bounded to 16 KiB serialized and 2 KiB of text per message. |
+| `Checkpoint` | The portable prefix plus a new detached Git worktree at an explicitly captured commit. |
+
+To capture a checkpoint, commit the files you want to preserve and dispatch `CaptureCheckpoint` for the latest completed run on an idle thread with a clean checkout. Use `checkpoint_diff` to compare two captured runs on the same thread. The diff is bounded to 1 MiB.
+
+Use `fork_history` to inspect the source, mode, and inherited messages. To send a completed branch result back to its direct parent, dispatch `MergeBack` on the parent thread with the fork as `source` and the completed fork run as `through`. This sends conversation context. Merge any Git changes separately through your host workflow.
+
+See the [shared history guide](/guides/history-and-context/) for cursor and fork behavior.

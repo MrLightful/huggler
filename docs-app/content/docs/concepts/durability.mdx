@@ -1,32 +1,30 @@
 ---
 title: Durability and recovery
-description: Understand what survives a restart and where provider delivery can become uncertain.
+description: Reopen a conversation, retry a command, and restore a live view.
 ---
 
 ## One database, one owner
 
-A runtime owns its SQLite file until shutdown finishes. Use `huggler.close().await` in Rust or `await host.close()` in TypeScript. Close stops intake, waits for managed work and releases the state lock. Another host using a compatible core revision can then reopen the same database to recover thread identities, history, queue state, and receipts. A concurrent open can return Rust’s `Error::AlreadyOpen` or the SDK error code `already_open`.
+Keep one runtime open per SQLite database. Close it and wait for shutdown before reopening the database in another process. A compatible runtime can recover thread identities, history, queue state, and receipts from the same file.
 
-The default database is `huggler.sqlite3` under Rust’s `state_dir` or TypeScript’s `stateDir`. To override it, use `storage.database_path` in Rust or `storage.databasePath` in TypeScript. Both accept an absolute path or a path relative to the state directory. The runtime lock and SQLite sidecars sit alongside the database. Worktree reservations record absolute paths, so changing the configured root only affects future reservations.
+By default the database is `huggler.sqlite3` under the state directory. A database override can be absolute or relative to that directory. The runtime lock and SQLite sidecars sit alongside the database. Worktree reservations carry absolute paths, so storage configuration changes apply to future reservations.
 
 ## Acceptance and delivery happen separately
 
-A host command commits a receipt and its local effects together. Retry with the original command ID, thread and payload to recover the receipt. Reusing the ID for a different intent returns Rust’s `Error::Conflict` or the SDK error code `conflict`.
+Huggler commits a command’s receipt and local effects together. Keep the command ID, thread, and payload together. Retry with those same values to recover the original receipt. Reusing an ID with a different intent yields a conflict.
 
-The provider runs after the local commit. A host send that was committed and never claimed can reopen as failed and unsent. If the process dies after provider I/O, the restored run can report uncertain delivery. Inspect the stored run before submitting a replacement. An identical command retry returns the receipt without sending a second prompt. Durable queued work and delegated results have their own recovery paths.
+The provider runs after the local commit. A send that was accepted and never claimed can reopen as failed and unsent. If the process exits after provider I/O, the recovered run can report uncertain delivery. Inspect the run before deciding whether to send a replacement. An identical command retry returns the original receipt without submitting another prompt.
 
 ## Recover a view from its cursor
 
-For a new view, subscribe and start applying events to the returned snapshot. To resume a saved view, pass its last processed cursor and apply subsequent events to that saved view. The snapshot returned with a replay already includes changes through its current cursor.
+For a new view, start with the subscription snapshot. Apply events that arrive after its cursor. Persist the view together with the last event sequence it has processed.
 
-| Operation | Rust | TypeScript |
-| --- | --- | --- |
-| Start a new view | `subscribe(&thread, None)` | `await host.subscribe(thread)` |
-| Resume a saved view | `subscribe(&thread, Some(cursor))` | `await host.subscribe(thread, { after: cursor })` |
-| Handle an expired cursor | `Error::CursorExpired` | `HugglerError.code === "cursor_expired"` |
-
-Persist each processed event’s `sequence` with the view. The SDK returns it as a string. Use `eventCursor(savedString)` when loading it from storage. If retention has removed the required events, start a new view. History pagination and command output use their own cursors.
+To resume a saved view, request replay after that saved sequence and apply the events to the saved view. The snapshot returned with the replay already includes changes through its own cursor. If retention has removed events needed for replay, rebuild from a fresh snapshot. History pagination and command output use separate cursors.
 
 ## Keep the native session binding
 
-A Huggler thread has an application-owned `ThreadId` and may have a provider-owned `NativeThreadId` after its first turn. A run can likewise carry a `NativeTurnId`. Huggler uses the original provider instance to load or resume its native session where supported. A portable fork or file import supplies a bounded history prefix for a new session.
+Preserve the original provider instance and its configuration for native continuation. A portable fork or file import supplies a bounded history prefix for a new provider session.
+
+## Subscription APIs
+
+<BindingLinks topic="control-threads" />

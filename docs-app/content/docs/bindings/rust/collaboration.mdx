@@ -1,0 +1,45 @@
+---
+title: Coordinate agents in Rust
+description: Enable scoped agent tools and observe independent peers, delegated tasks, and provider-native children.
+---
+
+## Enable agent tools
+
+Set `options.agent_tools = true` before opening the runtime. Huggler starts a loopback MCP endpoint and gives supported adapters a run-scoped connection. Check `probe_provider` on the chosen instance for tool support.
+
+## Create independent peers
+
+Use `create_threads` to create peers in the caller’s project and checkout. A peer can start with a prompt or remain idle until it receives one. Use `thread_list` to find peers and `thread_send` to exchange messages. An idle recipient starts a run and a busy recipient queues the delivery. The resulting message records its origin, which the recipient can use to reply.
+
+A peer can continue after the original sender stops. Use independent peers for conversations that need their own lifecycle.
+
+## Delegate owned work
+
+Use `delegate_task` when a parent needs a child to complete a task and return a result. The child can use the caller’s provider instance or a different configured instance.
+
+```json
+{
+  "task": "Review the changelog and return suggested corrections.",
+  "clientRequestId": "changelog-review-1",
+  "isolation": "shared",
+  "mode": "wait",
+  "timeoutMs": 10000
+}
+```
+
+- Use `shared` for the caller’s current checkout or `worktree` for a separate checkout at its committed revision.
+- Use `async` to return immediately and wake the parent once it is idle. Use `wait` to return on completion, a human approval request, or timeout.
+- Reuse `clientRequestId` for retries of the same delegation. Give each new round a fresh key. Reading a terminal result with `task_status` acknowledges it and suppresses its pending wake.
+- Use `task_cancel` to stop a delegated subtree. The host can observe tasks through `Thread.tasks` and `Change::Task`.
+
+## Observe provider-native child sessions
+
+Codex and Claude Agent can create child sessions inside an application run. Use `Thread.native_children` and `Change::NativeChild` to follow their ancestry and status. Use `interrupt_native_child` with the owning run and native child identity. Codex interruption also requires its native child turn ID. A root turn can finish while a provider-native child remains active.
+
+## Scope and policy
+
+Use `AgentPolicy.allowed_tools` to restrict built-in keys and `defer_tools` to enable discovery. `AgentOutput.tools` can rename tools on the wire. Stored policy uses the built-in key. Use `revoke_agent_tools` to end a run’s access.
+
+When secret requests are enabled, the host can approve or deny them with `answer_secret` or use `approve_onepassword` with an authenticated CLI executable and a host-selected reference. Secret bytes live in process memory. Use `consume_secret` to redeem the reference once in the owning project.
+
+See the [tool catalog](/reference/agent-tools/) for names, scope, and retry keys.

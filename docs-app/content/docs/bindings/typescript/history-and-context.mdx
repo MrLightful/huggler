@@ -1,0 +1,32 @@
+---
+title: Manage history in TypeScript
+description: Search a thread, page through results, and expand truncated messages.
+---
+
+## Page and search one thread
+
+Use `host.listThreads()` for the list and `host.readThread(thread)` for a full snapshot. To search or page, call `host.readHistory` with the same query for each page. For example, to print full matches for “authentication” from newest page to oldest, use
+
+```ts
+import type { HistoryCursor, Huggler, ThreadId } from "@huggler/sdk"
+
+async function printMatches(host: Huggler, thread: ThreadId) {
+  let before: HistoryCursor | undefined
+  do {
+    const { history } = await host.readHistory(thread, {
+      query: "authentication", limit: 40, before,
+    })
+    for (const { message, truncated } of history.messages) {
+      const full = truncated ? await host.readMessage(thread, message.id) : message
+      console.log(full.text)
+    }
+    before = history.older ?? undefined
+  } while (before)
+}
+```
+
+If the SDK reports `history_changed`, discard the stale pages and restart the query. An event subscription uses a separate replay cursor. [Durability and recovery](/concepts/durability/#recover-a-view-from-its-cursor)
+
+## Read context from a reopened thread
+
+Read `host.readThread(thread)` to recover the thread’s persisted messages, runs, and collaboration state. The SDK preview exposes history reads. For creating forks, importing transcripts, or capturing checkpoints, see the [binding feature matrix](/bindings/#feature-availability).

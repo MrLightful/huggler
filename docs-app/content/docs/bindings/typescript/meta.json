@@ -1,0 +1,5 @@
+{
+  "title": "TypeScript",
+  "pagesIndex": "index",
+  "pages": ["quickstart", "configure-providers", "control-threads", "history-and-context", "collaboration", "api"]
+}
