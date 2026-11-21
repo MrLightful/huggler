@@ -8,7 +8,10 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     v_flex,
 };
-use huggler::{Huggler, ProviderInstanceId};
+use huggler::{
+    Huggler, ProviderInstanceId,
+    workspace::{OrphanedWorktreeOutcome, OrphanedWorktreeReport},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -42,6 +45,7 @@ pub struct Preferences {
     pub provider: ProviderInstanceId,
     appearance: Appearance,
     pub codex_executable: Option<PathBuf>,
+    pub automatic_worktree_cleanup: bool,
 }
 
 impl Default for Preferences {
@@ -50,6 +54,7 @@ impl Default for Preferences {
             provider: "codex".into(),
             appearance: Appearance::System,
             codex_executable: None,
+            automatic_worktree_cleanup: false,
         }
     }
 }
@@ -88,6 +93,8 @@ pub struct Settings {
     active_executable: PathBuf,
     pub focus: FocusHandle,
     error: Option<String>,
+    cleanup_running: bool,
+    cleanup_status: Option<String>,
 }
 
 impl EventEmitter<SettingsEvent> for Settings {}
@@ -143,6 +150,8 @@ impl Settings {
             active_executable,
             focus: cx.focus_handle(),
             error: load_error,
+            cleanup_running: false,
+            cleanup_status: None,
         }
     }
 
@@ -188,6 +197,62 @@ impl Settings {
             cx,
         )
     }
+
+    fn cleanup_worktrees(&mut self, cx: &mut Context<Self>) {
+        if self.cleanup_running {
+            return;
+        }
+        self.cleanup_running = true;
+        self.cleanup_status = None;
+        let runtime = self.runtime.clone();
+        let job = cx.background_spawn(async move { runtime.cleanup_orphaned_worktrees() });
+        cx.spawn(async move |view, cx| {
+            let result = job.await;
+            let _ = view.update(cx, |view, cx| {
+                view.cleanup_running = false;
+                match result {
+                    Ok(report) => {
+                        view.cleanup_status = Some(cleanup_summary(&report));
+                    }
+                    Err(error) => {
+                        view.error = Some(format!("Could not clean up worktrees. {error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+}
+
+fn cleanup_summary(report: &OrphanedWorktreeReport) -> String {
+    let removed = report
+        .entries
+        .iter()
+        .filter(|entry| entry.outcome == OrphanedWorktreeOutcome::Removed)
+        .count();
+    let kept = report
+        .entries
+        .iter()
+        .filter(|entry| entry.outcome == OrphanedWorktreeOutcome::Kept)
+        .count();
+    let failed = report
+        .entries
+        .iter()
+        .filter(|entry| entry.outcome == OrphanedWorktreeOutcome::Failed)
+        .count();
+    if report.entries.is_empty() {
+        return "No unused worktrees found.".into();
+    }
+    let mut parts = vec![format!("Removed {removed}")];
+    if kept > 0 {
+        parts.push(format!("kept {kept} for review"));
+    }
+    if failed > 0 {
+        parts.push(format!("retry later {failed}"));
+    }
+    format!("{}.", parts.join(", "))
 }
 
 fn validate_program(path: &Path) -> Result<()> {
@@ -300,6 +365,51 @@ impl Render for Settings {
                     }),
             )
             .child(hint(path_hint, cx));
+        let automatic_cleanup = self.prefs.automatic_worktree_cleanup;
+        let cleanup_controls = v_flex()
+            .gap_2()
+            .child(label("Automatic cleanup"))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .children([(false, "Off"), (true, "On")].map(|(enabled, name)| {
+                        control!(
+                            format!("automatic-cleanup/{name}"),
+                            choice(name, name, automatic_cleanup == enabled)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                if view.persist(
+                                    Preferences {
+                                        automatic_worktree_cleanup: enabled,
+                                        ..view.prefs.clone()
+                                    },
+                                    cx,
+                                ) && enabled
+                                {
+                                    view.cleanup_worktrees(cx);
+                                }
+                            }))
+                        )
+                    })),
+            )
+            .child(hint(
+                "When on, Huggler checks at startup and hourly. Only unused worktrees without files or new commits are removed.",
+                cx,
+            ))
+            .child(control!(
+                "Clean up worktrees now",
+                Button::new("cleanup-worktrees")
+                    .label(if self.cleanup_running {
+                        "Cleaning…"
+                    } else {
+                        "Clean up now"
+                    })
+                    .disabled(self.cleanup_running)
+                    .on_click(cx.listener(|view, _, _, cx| view.cleanup_worktrees(cx)))
+            ))
+            .when_some(self.cleanup_status.clone(), |controls, status| {
+                controls.child(hint(status, cx))
+            });
         let body = v_flex()
             .w_full()
             .max_w(px(720.))
@@ -326,6 +436,15 @@ impl Render for Settings {
                             .child(h_flex().gap_1().flex_wrap().children(providers)),
                     )
                     .child(path_field),
+            )
+            .child(
+                v_flex()
+                    .gap_3()
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(section_title("Storage"))
+                    .child(cleanup_controls),
             )
             .when_some(self.error.clone(), |body, error| {
                 body.child(control!(
