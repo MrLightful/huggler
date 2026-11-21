@@ -34,7 +34,8 @@ actions!(
         Quit,
         OpenSettings,
         NewConversation,
-        NewConversationWithSetup
+        NewConversationWithSetup,
+        FocusMessage
     ]
 );
 
@@ -95,6 +96,7 @@ fn main() -> Result<()> {
             KeyBinding::new("secondary-,", OpenSettings, None),
             KeyBinding::new("secondary-n", NewConversation, None),
             KeyBinding::new("secondary-shift-n", NewConversationWithSetup, None),
+            KeyBinding::new("secondary-l", FocusMessage, None),
         ]);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),
@@ -125,7 +127,7 @@ fn main() -> Result<()> {
         .detach();
 
         let bounds = Bounds::centered(None, size(px(1120.), px(740.)), cx);
-        let _window = cx
+        let window_handle = cx
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -142,12 +144,22 @@ fn main() -> Result<()> {
                 },
             )
             .expect("open Huggler window");
+        cx.on_action(move |_: &FocusMessage, cx| {
+            // A dismissed popover can leave GPUI without a focused element to route through.
+            cx.defer(move |cx| {
+                let _ = window_handle.update(cx, |root, window, cx| {
+                    if let Ok(desktop) = root.view().clone().downcast::<Desktop>() {
+                        desktop.update(cx, |view, cx| view.focus_message(window, cx));
+                    }
+                });
+            });
+        });
         if interactive {
             cx.activate(true);
         }
         #[cfg(all(feature = "qualification", target_os = "macos"))]
         if let Some(driver) = driver {
-            qualification::run(driver, _window.into(), cx);
+            qualification::run(driver, window_handle.into(), cx);
         }
     });
     Ok(())
