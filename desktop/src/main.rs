@@ -27,6 +27,7 @@ fn main() -> Result<()> {
 
     let mut options = HugglerOptions::new(&state);
     options.agent_tools = true;
+    options.prompt_suggestions = std::env::var("HUGGLER_PROMPT_SUGGESTIONS").as_deref() == Ok("1");
     options.codex.request_approvals = true;
     if let Some(path) = std::env::var_os("HUGGLER_CODEX") {
         options.codex.executable = path.into();

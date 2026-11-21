@@ -1,8 +1,19 @@
+mod checkpoints;
+mod command_output;
+mod context;
+#[cfg(test)]
+mod crash_tests;
 mod creation;
+mod history;
+mod imports;
 mod interrupts;
 mod native_children;
 mod questions;
+mod queue;
+mod steering;
 mod tasks;
+mod uploads;
+mod usage_limits;
 use crate::{
     contracts::*,
     providers::{Turn, Update},
@@ -20,6 +31,13 @@ fn new_id() -> String {
 
 pub(crate) type RunJob = (ThreadId, RunId);
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DispatchWork {
+    pub start: Vec<RunJob>,
+    pub stop: Vec<RunId>,
+    pub steer: Option<(RunId, String)>,
+}
+
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/001.sql"),
     include_str!("../migrations/002.sql"),
@@ -34,9 +52,20 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/011.sql"),
     include_str!("../migrations/012.sql"),
     include_str!("../migrations/013.sql"),
+    include_str!("../migrations/014.sql"),
+    include_str!("../migrations/015.sql"),
+    include_str!("../migrations/016.sql"),
+    include_str!("../migrations/017.sql"),
+    include_str!("../migrations/018.sql"),
+    include_str!("../migrations/019.sql"),
+    include_str!("../migrations/020.sql"),
+    include_str!("../migrations/021.sql"),
+    include_str!("../migrations/022.sql"),
+    include_str!("../migrations/023.sql"),
+    include_str!("../migrations/024.sql"),
 ];
 
-const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error";
+const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
     let status: String = row.get(2)?;
@@ -56,6 +85,10 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         status,
         native_turn: row.get::<_, Option<String>>(3)?.map(NativeTurnId),
         error: row.get(4)?,
+        queue_held: row.get(5)?,
+        delivery_slot: row.get(6)?,
+        usage_limit_reset_at: row.get(7)?,
+        prompt_suggestion: row.get(8)?,
     })
 }
 
@@ -122,29 +155,34 @@ fn start_message(
     text: &str,
     model: Option<String>,
     origin: Option<MessageOrigin>,
+    enqueue: bool,
 ) -> Result<(RunId, MessageId, Vec<i64>, PeerDelivery)> {
     if text.trim().is_empty() {
         return Err(Error::Invalid("empty message".into()));
     }
-    let busy: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM run WHERE thread_id=? AND status IN ('starting','running','waiting','queued'))",
-        [&thread.0], |r| r.get(0),
+    let (busy, held): (bool, bool) = tx.query_row(
+        "SELECT count(*) FILTER (WHERE queue_held=0)>0, count(*) FILTER (WHERE queue_held=1)>0
+         FROM run WHERE thread_id=? AND status IN ('starting','running','waiting','queued')",
+        [&thread.0],
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    if busy && origin.is_none() {
+    if (busy || held) && origin.is_none() && !enqueue {
         return Err(Error::Busy);
     }
-    let (status, delivery) = if busy {
+    let (status, delivery) = if busy || (held && enqueue) {
         ("queued", PeerDelivery::Queued)
     } else {
         ("starting", PeerDelivery::Started)
     };
+    tx.execute("DELETE FROM usage_recovery WHERE thread_id=?", [&thread.0])?;
     let id = RunId(new_id());
     tx.execute(
-        "INSERT INTO run(id,thread_id,status,ordinal,task_id)
-         SELECT ?1,?2,?3,COALESCE(MAX(ordinal),0)+1,
-            (SELECT id FROM delegated_task WHERE child_thread=?2 AND request_key IS NOT NULL AND result_run IS NULL)
+        "INSERT INTO run(id,thread_id,status,queue_held,ordinal,task_id)
+         SELECT ?1,?2,?3,?4,COALESCE(MAX(ordinal),0)+1,
+            (SELECT id FROM delegated_task WHERE NOT ?4 AND child_thread=?2 AND request_key IS NOT NULL
+             AND result_run IS NULL AND delivery='pending')
          FROM run WHERE thread_id=?2",
-        params![id.0, thread.0, status],
+        params![id.0, thread.0, status, delivery == PeerDelivery::Queued && held],
     )?;
     let started = run_event(tx, thread, &id)?;
     let (msg, seq) = message(tx, thread, &id, Role::User, origin, text.to_owned())?;
@@ -246,18 +284,24 @@ impl Database {
                 OR id IN (SELECT run_id FROM message WHERE origin IS NOT NULL))", [])?;
         let lost = tx
             .prepare(
-                "SELECT r.id, r.thread_id FROM turn_effect e
+                "SELECT r.id,r.thread_id,e.state FROM turn_effect e
                       JOIN run r ON r.id=e.run_id WHERE r.status != 'queued' ORDER BY r.rowid",
             )?
-            .query_map([], |row| Ok((RunId(row.get(0)?), ThreadId(row.get(1)?))))?
+            .query_map([], |row| {
+                Ok((
+                    RunId(row.get(0)?),
+                    ThreadId(row.get(1)?),
+                    row.get::<_, String>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (id, thread) in lost {
-            Self::finish_tx(
-                &tx,
-                &thread,
-                &id,
-                Err(Error::Provider("runtime exited during turn".into())),
-            )?;
+        for (id, thread, state) in lost {
+            let reason = if state == "claimed" {
+                "runtime exited after provider claim; delivery is uncertain"
+            } else {
+                "runtime exited before provider claim; prompt was not sent"
+            };
+            Self::finish_tx(&tx, &thread, &id, Err(Error::Provider(reason.into())))?;
         }
         native_children::disconnect(&tx, None)?;
         tx.commit()?;
@@ -285,7 +329,7 @@ impl Database {
         })
     }
 
-    pub fn dispatch(&mut self, cmd: &Command) -> Result<(Receipt, bool)> {
+    pub fn dispatch(&mut self, cmd: &Command) -> Result<(Receipt, DispatchWork)> {
         let tx = self.db.transaction()?;
         let action = serde_json::to_string(&cmd.action)?;
         let prior = tx
@@ -304,9 +348,10 @@ impl Database {
                     requested_thread: cmd.thread_id.clone(),
                 });
             }
-            return Ok((receipt, false));
+            return Ok((receipt, DispatchWork::default()));
         }
         let thread = &cmd.thread_id;
+        let mut work = DispatchWork::default();
         if thread.0.trim().is_empty() || cmd.id.0.trim().is_empty() {
             return Err(Error::Invalid("empty thread or command ID".into()));
         }
@@ -326,13 +371,25 @@ impl Database {
             && !matches!(
                 cmd.action,
                 Action::Launch { .. }
+                    | Action::Fork { .. }
                     | Action::LaunchProvider { .. }
                     | Action::LaunchInstance { .. }
             )
         {
             return Err(Error::NotFound(thread.to_string()));
         }
-        match &cmd.action {
+        // Resolve automatic delivery in the receipt transaction. A retry uses
+        // the original intent even if a different turn is now active.
+        let automatic_steer = match &cmd.action {
+            Action::SendAuto { text } => {
+                steering::active_codex_turn(&tx, thread)?.map(|active| Action::Steer {
+                    active,
+                    text: text.clone(),
+                })
+            }
+            _ => None,
+        };
+        match automatic_steer.as_ref().unwrap_or(&cmd.action) {
             Action::Launch {
                 project,
                 name,
@@ -371,6 +428,68 @@ impl Database {
                     .event_sequences
                     .push(event(&tx, thread, Change::Launched)?);
             }
+            Action::CaptureCheckpoint { through } => {
+                checkpoints::capture(&tx, thread, through)?;
+                receipt.run_id = Some(through.clone());
+            }
+            Action::Fork {
+                source,
+                through,
+                name,
+                instance,
+                model,
+                mode,
+                text,
+            } => {
+                if selection.is_some() || name.trim().is_empty() {
+                    return Err(Error::Invalid(
+                        "fork requires a new thread and a name".into(),
+                    ));
+                }
+                let driver = creation::instance_driver(&tx, instance.as_str())?;
+                let history = context::capture(&tx, source, through, *mode, true)?;
+                tx.execute("INSERT INTO thread(id,project,name,provider_instance,provider,model,worktree_path)
+                    SELECT ?1,project,?2,?3,?4,?5,worktree_path FROM thread WHERE id=?6",
+                    params![thread.0,name,instance.as_str(),driver,model,source.0])?;
+                if *mode == ForkMode::Checkpoint {
+                    let (common_dir, commit) = checkpoints::revision(&tx, source, through)?;
+                    let path = self.worktree_dir.join(new_id());
+                    checkpoints::reserve(&tx, thread, &path, &common_dir, &commit)?;
+                }
+                context::save_fork(&tx, thread, &history, instance)?;
+                receipt
+                    .event_sequences
+                    .push(event(&tx, thread, Change::Launched)?);
+                let (run, msg, events, _) =
+                    start_message(&tx, thread, text, model.clone(), None, false)?;
+                work.start.push((thread.clone(), run.clone()));
+                receipt.run_id = Some(run);
+                receipt.message_id = Some(msg);
+                receipt.event_sequences.extend(events);
+            }
+            Action::MergeBack {
+                source,
+                through,
+                text,
+            } => {
+                if !tx
+                    .prepare("SELECT 1 FROM context_fork WHERE thread_id=? AND source=?")?
+                    .exists(params![source.0, thread.0])?
+                {
+                    return Err(Error::Forbidden);
+                }
+                if text.trim().is_empty() {
+                    return Err(Error::Invalid("empty merge prompt".into()));
+                }
+                let history = context::capture(&tx, source, through, ForkMode::Portable, false)?;
+                let prompt = context::prompt(&serde_json::to_string(&history)?, text);
+                let (run, msg, events, _) =
+                    start_message(&tx, thread, &prompt, selection.flatten(), None, false)?;
+                work.start.push((thread.clone(), run.clone()));
+                receipt.run_id = Some(run);
+                receipt.message_id = Some(msg);
+                receipt.event_sequences = events;
+            }
             Action::SetModel { model } => {
                 if selection.as_ref() != Some(model) {
                     tx.execute(
@@ -386,9 +505,33 @@ impl Database {
                     )?);
                 }
             }
-            Action::Send { text } | Action::SendPlan { text } => {
-                let (id, msg, events, _) =
-                    start_message(&tx, thread, text, selection.flatten(), None)?;
+            Action::Send { text }
+            | Action::SendAuto { text }
+            | Action::SendPlan { text }
+            | Action::Enqueue { text }
+            | Action::SendAttachments { text, .. } => {
+                let combined;
+                let text = if let Action::SendAttachments { uploads, .. } = &cmd.action {
+                    if !(1..=8).contains(&uploads.len()) {
+                        return Err(Error::Invalid("send between one and eight uploads".into()));
+                    }
+                    combined = format!(
+                        "{}\n\n{}",
+                        text,
+                        uploads::claim(&tx, thread, uploads)?.join("\n\n")
+                    );
+                    &combined
+                } else {
+                    text
+                };
+                let (id, msg, events, delivery) = start_message(
+                    &tx,
+                    thread,
+                    text,
+                    selection.flatten(),
+                    None,
+                    matches!(cmd.action, Action::Enqueue { .. } | Action::SendAuto { .. }),
+                )?;
                 if matches!(cmd.action, Action::SendPlan { .. })
                     && tx.execute(
                         "UPDATE turn_effect SET plan_mode=1 WHERE run_id=? AND
@@ -398,9 +541,102 @@ impl Database {
                 {
                     return Err(Error::Invalid("plan mode requires Codex".into()));
                 }
+                if delivery == PeerDelivery::Started {
+                    work.start.push((thread.clone(), id.clone()));
+                }
                 receipt.run_id = Some(id);
                 receipt.message_id = Some(msg);
                 receipt.event_sequences = events;
+            }
+            Action::Steer { active, text } => {
+                receipt
+                    .event_sequences
+                    .push(steering::request(&tx, thread, active, &cmd.id, text)?);
+                receipt.run_id = Some(active.clone());
+                work.steer = Some((active.clone(), text.clone()));
+            }
+            Action::Restart { active, text } => {
+                if tx.execute("UPDATE run SET stop_requested=1,stop_reason='Restarted by the host'
+                    WHERE thread_id=? AND id=? AND stop_requested=0 AND status IN ('starting','running')",
+                    params![thread.0,active.0])? == 0 {
+                    return Err(Error::Invalid("expected an active foreground run".into()));
+                }
+                let first = tx
+                    .query_row(
+                        "SELECT id FROM run WHERE thread_id=? AND status='queued'
+                    ORDER BY coalesce(delivery_slot,ordinal) LIMIT 1",
+                        [&thread.0],
+                        |r| Ok(RunId(r.get(0)?)),
+                    )
+                    .optional()?;
+                receipt.event_sequences.push(event(
+                    &tx,
+                    thread,
+                    Change::RunStopRequested {
+                        run_id: active.clone(),
+                    },
+                )?);
+                let (id, msg, events, _) =
+                    start_message(&tx, thread, text, selection.flatten(), None, true)?;
+                receipt.event_sequences.extend(events);
+                if let Some(before) = first {
+                    receipt.event_sequences.extend(queue::move_before(
+                        &tx,
+                        thread,
+                        &id,
+                        Some(&before),
+                    )?);
+                }
+                if tx.execute(
+                    "UPDATE run SET queue_held=0 WHERE id=? AND queue_held=1",
+                    [&id.0],
+                )? != 0
+                {
+                    receipt.event_sequences.push(run_event(&tx, thread, &id)?);
+                }
+                receipt.run_id = Some(id);
+                receipt.message_id = Some(msg);
+                work.stop.push(active.clone());
+            }
+            Action::EditQueued { run, text } => {
+                let (msg, seq) = queue::edit(&tx, thread, run, text)?;
+                receipt.run_id = Some(run.clone());
+                receipt.message_id = Some(msg);
+                receipt.event_sequences.push(seq);
+            }
+            Action::MoveQueued { run, before } => {
+                receipt.event_sequences = queue::move_before(&tx, thread, run, before.as_ref())?;
+                receipt.run_id = Some(run.clone());
+            }
+            Action::CancelQueued { run } => {
+                queue::require_queued(&tx, thread, run)?;
+                Self::finish_tx(&tx, thread, run, Err(Error::Interrupted))?;
+                receipt.event_sequences.push(tx.last_insert_rowid());
+                receipt.run_id = Some(run.clone());
+                tasks::reconcile(&tx, &mut work.start)?;
+            }
+            Action::StopThread | Action::ResumeQueue => {
+                let cursor: i64 = tx.query_row(
+                    "SELECT coalesce(max(sequence),0) FROM event WHERE thread_id=?",
+                    [&thread.0],
+                    |r| r.get(0),
+                )?;
+                if cmd.action == Action::StopThread {
+                    work.stop = interrupts::stop_thread(&tx, thread)?;
+                    // Disposing a held task can release its owner's completion
+                    // even when every worker has already exited.
+                    tasks::reconcile(&tx, &mut work.start)?;
+                } else {
+                    interrupts::set_queue_hold(&tx, thread, false)?;
+                    if let Some(run) = Self::next_queued(&tx, thread)? {
+                        receipt.run_id = Some(run.clone());
+                        work.start.push((thread.clone(), run));
+                    }
+                }
+                receipt.event_sequences = tx.prepare(
+                    "SELECT sequence FROM event WHERE thread_id=? AND sequence>? ORDER BY sequence",
+                )?.query_map(params![thread.0, cursor], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
             }
         }
         tx.execute(
@@ -408,7 +644,7 @@ impl Database {
             params![cmd.id.0, action, serde_json::to_string(&receipt)?],
         )?;
         tx.commit()?;
-        Ok((receipt, true))
+        Ok((receipt, work))
     }
 
     pub fn worktree(&self, thread: &ThreadId) -> Result<Option<Worktree>> {
@@ -438,7 +674,15 @@ impl Database {
 
     pub fn claim(&mut self, id: &RunId) -> Result<Turn> {
         let tx = self.db.transaction()?;
-        let turn = tx.query_row(
+        if tx.execute(
+            "UPDATE turn_effect SET state='claimed' WHERE run_id=?1 AND state='pending'
+             AND EXISTS(SELECT 1 FROM run WHERE id=?1 AND status='starting' AND stop_requested=0)",
+            [&id.0],
+        )? != 1
+        {
+            return Err(Error::Interrupted);
+        }
+        let mut turn = tx.query_row(
             "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode,t.provider_instance FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
@@ -446,6 +690,8 @@ impl Database {
             [&id.0],
             |r| {
                 Ok(Turn {
+                    sample_suggestion: false,
+                    fork: None,
                     plan_mode: r.get(7)?,
                     instance: ProviderInstanceId(r.get(8)?),
                     provider: Provider::from_key(&r.get::<_, String>(5)?)?,
@@ -478,6 +724,8 @@ impl Database {
                     turn.instance
                 ))
             })?;
+        imports::prepare(&tx, id, &mut turn)?;
+        context::prepare(&tx, id, &scope, &mut turn)?;
         if tx.execute(
             "UPDATE thread SET continuation_key=?1 WHERE id=(SELECT thread_id FROM run WHERE id=?2)
             AND (continuation_key IS NULL OR native_thread IS NULL OR continuation_key=?1)",
@@ -489,15 +737,18 @@ impl Database {
                 turn.instance
             )));
         }
-        if tx.execute(
-            "UPDATE turn_effect SET state='claimed' WHERE run_id=? AND state='pending'",
-            [&id.0],
-        )? != 1
-        {
-            return Err(Error::Invalid("turn already claimed".into()));
-        }
         tx.commit()?;
         Ok(turn)
+    }
+
+    pub fn can_sample_suggestion(&self, run: &RunId) -> Result<bool> {
+        Ok(self.db.prepare(
+            "SELECT 1 FROM run r JOIN message m ON m.run_id=r.id
+             WHERE r.id=?1 AND m.role='user' AND m.origin IS NULL AND r.task_id IS NULL
+             AND NOT EXISTS(SELECT 1 FROM delegated_task WHERE child_thread=r.thread_id AND request_key IS NOT NULL)
+             AND NOT EXISTS(SELECT 1 FROM delegated_task WHERE parent_thread=r.thread_id AND wake_run=r.id)
+             AND NOT EXISTS(SELECT 1 FROM run WHERE thread_id=r.thread_id AND status='queued')"
+        )?.exists([&run.0])?)
     }
 
     pub fn usage(&self) -> Result<Vec<crate::ProviderUsage>> {
@@ -521,6 +772,8 @@ impl Database {
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::Steer(command,outcome) => steering::settle(&tx, thread,id,&command,outcome)?,
+            Update::CommandOutput { item, frame } => command_output::record(&tx,thread,id,&item,frame)?,
             Update::Output(text) => {
                 event(&tx, thread, Change::OutputDelta { run_id: id.clone(), text })?;
             }
@@ -544,7 +797,21 @@ impl Database {
                 answered,
             } => questions::close(&tx, thread, id, &request, answered)?,
             Update::NativeChild(child) => native_children::record(&tx, thread, child)?,
+            Update::PromptSuggestion(text) => {
+                if tx.execute(
+                    "UPDATE run SET prompt_suggestion=?3 WHERE thread_id=?1 AND id=?2 AND status='completed'
+                     AND id=(SELECT id FROM run WHERE thread_id=?1 ORDER BY coalesce(delivery_slot,ordinal) DESC LIMIT 1)",
+                    params![thread.0,id.0,text],
+                )? == 1 {
+                    run_event(&tx, thread, id)?;
+                }
+            }
             Update::ForegroundComplete => {
+                // Finalizing committed the answer. Ignore any later callback once its run settles.
+                if !tx.prepare("SELECT 1 FROM run WHERE id=? AND thread_id=? AND status='waiting'")?
+                    .exists(params![id.0, thread.0])? {
+                    return Err(Error::Interrupted);
+                }
                 Self::finish_tx(&tx, thread, id, Ok(()))?;
                 tx.execute("DELETE FROM agent_grant WHERE run_id=?", [&id.0])?;
             }
@@ -558,16 +825,19 @@ impl Database {
                 }
             }
             Update::Started(turn) => {
-                tx.execute(
-                    "UPDATE run SET status='running',native_turn=? WHERE id=?",
-                    params![turn.map(|t| t.0), id.0],
-                )?;
+                if tx.execute(
+                    "UPDATE run SET status='running',native_turn=? WHERE id=? AND thread_id=?
+                     AND status='starting' AND stop_requested=0",
+                    params![turn.map(|t| t.0), id.0, thread.0],
+                )? != 1 {
+                    return Err(Error::Interrupted);
+                }
                 run_event(&tx, thread, id)?;
             }
             Update::Finalizing(text) => {
                 if tx.execute(
-                    "UPDATE run SET status='waiting' WHERE id=? AND stop_requested=0",
-                    [&id.0],
+                    "UPDATE run SET status='waiting' WHERE id=? AND thread_id=? AND status='running' AND stop_requested=0",
+                    params![id.0, thread.0],
                 )? == 0
                 {
                     return Err(Error::Interrupted);
@@ -674,12 +944,16 @@ impl Database {
     ) -> Result<()> {
         Self::expire_permissions(tx, thread, id, None, None)?;
         questions::expire_run(tx, thread, id)?;
+        steering::disconnect(tx, thread, id)?;
         // Waiting and the final answer commit together. A cleanup error or a
         // process exit after this point cannot undo provider completion.
+        if let Err(Error::UsageLimit { reset_at, .. }) = &result {
+            usage_limits::record(tx, thread, id, *reset_at)?;
+        }
         let interrupted = matches!(result, Err(Error::Interrupted));
         let error = result.err().map(|e| e.to_string());
         tx.execute(
-            "UPDATE run SET status=CASE WHEN status='waiting' THEN 'completed' WHEN stop_requested OR ?3 THEN 'interrupted' WHEN ?1 IS NULL THEN 'completed' ELSE 'failed' END,
+            "UPDATE run SET queue_held=0, status=CASE WHEN status='waiting' THEN 'completed' WHEN stop_requested OR ?3 THEN 'interrupted' WHEN ?1 IS NULL THEN 'completed' ELSE 'failed' END,
                  error=CASE WHEN status='waiting' THEN NULL WHEN stop_requested THEN coalesce(stop_reason,'task cancelled') ELSE ?1 END WHERE id=?2",
             params![error, id.0,interrupted],
         )?;
@@ -693,8 +967,8 @@ impl Database {
         native_children::disconnect(&tx, Some(id))?;
         // A foreground turn may have already completed while its native children continued.
         let unfinished: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM turn_effect WHERE run_id=?)",
-            [&id.0],
+            "SELECT EXISTS(SELECT 1 FROM run WHERE id=? AND thread_id=? AND status IN ('starting','running','waiting'))",
+            params![id.0, thread.0],
             |r| r.get(0),
         )?;
         if unfinished {
@@ -707,7 +981,7 @@ impl Database {
     /// Promote the oldest queued message when the previous run has settled.
     fn next_queued(tx: &Transaction, thread: &ThreadId) -> Result<Option<RunId>> {
         let id = tx.query_row(
-            "UPDATE run SET status='starting' WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' ORDER BY ordinal LIMIT 1)
+            "UPDATE run SET status='starting' WHERE id=(SELECT id FROM run WHERE thread_id=?1 AND status='queued' AND queue_held=0 ORDER BY coalesce(delivery_slot,ordinal) LIMIT 1)
              AND NOT EXISTS(SELECT 1 FROM run WHERE thread_id=?1 AND status IN ('starting','running','waiting')) RETURNING id",
             [&thread.0], |r| Ok(RunId(r.get(0)?)),
         ).optional()?;
@@ -722,7 +996,7 @@ impl Database {
     pub fn ready_jobs(&mut self) -> Result<Vec<RunJob>> {
         let tx = self.db.transaction()?;
         let threads = tx
-            .prepare("SELECT DISTINCT thread_id FROM run WHERE status='queued'")?
+            .prepare("SELECT DISTINCT thread_id FROM run WHERE status='queued' AND queue_held=0")?
             .query_map([], |r| Ok(ThreadId(r.get(0)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut jobs = Vec::new();
@@ -820,7 +1094,7 @@ impl Database {
             .ok_or(Error::Forbidden)?;
         if let Some(receipt) = self.peer_receipt(&sender, key)? {
             let original: String = self.db.query_row(
-                "SELECT text FROM message WHERE id=?",
+                "SELECT original_text FROM peer_receipt WHERE message_id=?",
                 [&receipt.message_id.0],
                 |r| r.get(0),
             )?;
@@ -840,7 +1114,7 @@ impl Database {
             request_key: key.into(),
         };
         let (run_id, message_id, _, delivery) =
-            start_message(&tx, target, text, model, Some(origin))?;
+            start_message(&tx, target, text, model, Some(origin), false)?;
         let task_id = tasks::record_followup(&tx, &sender, &sender_run, target, &run_id)?;
         let receipt = PeerReceipt {
             task_id,
@@ -850,12 +1124,12 @@ impl Database {
             delivery,
         };
         tx.execute(
-            "INSERT INTO peer_receipt(sender_thread,request_key,message_id,result) VALUES(?,?,?,?)",
+            "INSERT INTO peer_receipt(sender_thread,request_key,message_id,result,original_text) VALUES(?,?,?,?,?)",
             params![
                 sender.0,
                 key,
                 receipt.message_id.0,
-                serde_json::to_string(&receipt)?
+                serde_json::to_string(&receipt)?,text
             ],
         )?;
         tx.commit()?;
@@ -916,7 +1190,7 @@ impl Database {
         thread.runs = self
             .db
             .prepare(&format!(
-                "SELECT {RUN_FIELDS} FROM run WHERE thread_id=? ORDER BY ordinal"
+                "SELECT {RUN_FIELDS} FROM run WHERE thread_id=? ORDER BY coalesce(delivery_slot,ordinal)"
             ))?
             .query_map([&id.0], run_row)?
             .collect::<rusqlite::Result<_>>()?;
@@ -924,28 +1198,12 @@ impl Database {
             .db
             .prepare(
                 "SELECT m.id,m.run_id,m.role,m.text,m.origin FROM message m JOIN run r ON m.run_id=r.id
-            WHERE r.thread_id=? ORDER BY r.ordinal,m.rowid",
+            WHERE r.thread_id=? ORDER BY coalesce(r.delivery_slot,r.ordinal),m.rowid",
             )?
-            .query_map([&id.0], |r| {
-                Ok(Message {
-                    id: MessageId(r.get(0)?),
-                    run_id: RunId(r.get(1)?),
-                    role: if r.get::<_, String>(2)? == "user" {
-                        Role::User
-                    } else {
-                        Role::Assistant
-                    },
-                    text: r.get(3)?,
-                    origin: r.get::<_,Option<String>>(4)?.map(|s| serde_json::from_str(&s).map_err(|e|rusqlite::Error::FromSqlConversionFailure(4,rusqlite::types::Type::Text,Box::new(e)))).transpose()?,
-                })
-            })?
+            .query_map([&id.0], history::message_row)?
             .collect::<rusqlite::Result<_>>()?;
-        thread.permissions = self.db.prepare("SELECT request FROM permission p JOIN run r ON p.run_id=r.id WHERE r.thread_id=? AND p.expired=0 AND p.decision IS NULL ORDER BY p.rowid")?.query_map([&id.0], |r|r.get::<_,String>(0))?.map(|row|Ok(serde_json::from_str(&row?)?)).collect::<Result<_>>()?;
-        thread.cursor = self.db.query_row(
-            "SELECT coalesce(max(sequence),0) FROM event WHERE thread_id=?",
-            [&id.0],
-            |r| r.get(0),
-        )?;
+        thread.permissions = self.open_permissions(id)?;
+        thread.cursor = self.sequence(id)?;
         Ok(thread)
     }
 
@@ -961,14 +1219,21 @@ impl Database {
     }
 
     pub fn events(&self, thread: &ThreadId, after: i64) -> Result<Vec<Event>> {
+        self.check_replay(thread, after)?;
         let mut statement = self.db.prepare("SELECT sequence,change FROM event WHERE thread_id=? AND sequence>? ORDER BY sequence LIMIT 64")?;
         let mut rows = statement.query(params![thread.0, after])?;
         let mut events = vec![];
+        let mut bytes = 0;
         while let Some(row) = rows.next()? {
+            let change = row.get_ref(1)?.as_str().map_err(rusqlite::Error::from)?;
+            if !events.is_empty() && bytes + change.len() > 256 * 1024 {
+                break;
+            }
+            bytes += change.len();
             events.push(Event {
                 sequence: row.get(0)?,
                 thread_id: thread.clone(),
-                change: serde_json::from_str(&row.get::<_, String>(1)?)?,
+                change: serde_json::from_str(change)?,
             });
         }
         Ok(events)
@@ -1006,7 +1271,9 @@ mod tests {
             INSERT INTO thread(id,project,name) VALUES('t','p','legacy');
             INSERT INTO run(id,thread_id,ordinal,status) VALUES('r','t',1,'completed');
             INSERT INTO message VALUES('m','r','assistant','legacy answer');
-            INSERT INTO event(thread_id,change) VALUES('t','{"type":"message","message":{"id":"m","run_id":"r","role":"assistant","text":"legacy answer"}}');"#)?;
+            INSERT INTO event(thread_id,change) VALUES
+                ('t','{"type":"message","message":{"id":"m","run_id":"r","role":"assistant","text":"legacy answer"}}'),
+                ('t','{"type":"run","run":{"id":"r","ordinal":1,"status":"completed","native_turn":null,"error":null}}');"#)?;
         drop(conn);
         let thread = ThreadId("t".into());
         let db = Database::open(dir.path())?;
@@ -1014,9 +1281,12 @@ mod tests {
         assert!(snapshot.worktree_path.is_none());
         assert_eq!(snapshot.messages[0].text, "legacy answer");
         assert_eq!(snapshot.messages[0].origin, None);
+        let events = db.events(&thread, 0)?;
         assert!(
-            matches!(&db.events(&thread,0)?[0].change, Change::Message {message} if message == &snapshot.messages[0])
+            matches!(&events[0].change, Change::Message {message} if message == &snapshot.messages[0])
         );
+        assert!(!snapshot.runs[0].queue_held);
+        assert!(matches!(&events[1].change, Change::Run {run} if run == &snapshot.runs[0]));
         Ok(())
     }
 
@@ -1075,8 +1345,8 @@ mod tests {
             thread_id: thread.clone(),
             action: Action::Send { text: text.into() },
         };
-        let (prior, fresh) = db.dispatch(&send("send", "original"))?;
-        assert!(!fresh);
+        let (prior, work) = db.dispatch(&send("send", "original"))?;
+        assert_eq!(work, DispatchWork::default());
         assert_eq!(prior.run_id.as_ref(), Some(&snapshot.runs[0].id));
         assert_eq!(prior.message_id.as_ref(), Some(&snapshot.messages[0].id));
         assert_eq!(prior.event_sequences, [42]);
@@ -1218,7 +1488,10 @@ mod tests {
             assert!(
                 matches!(events.as_slice(), [Event { change: Change::Run { run }, .. }] if run.status == RunStatus::Completed)
             );
-            assert_eq!(recovered.dispatch(&send)?, (receipt.clone(), false));
+            assert_eq!(
+                recovered.dispatch(&send)?,
+                (receipt.clone(), DispatchWork::default())
+            );
         }
         Ok(())
     }

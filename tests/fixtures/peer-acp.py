@@ -152,6 +152,9 @@ for line in sys.stdin:
                 assert respond()["code"] == "already_answered"
                 assert pending("list", **target) == {"requestIds": []}
             finish("Checked question")
+        elif text == "start branch review":
+            delegate("branch review", "branch")
+            finish("Delegated for review")
         elif text.startswith("delegate "):
             action = text.removeprefix("delegate ")
             child = {"nested": "delegate leaf", "subtree": "branch review",
@@ -237,6 +240,10 @@ for line in sys.stdin:
         elif text.startswith("Huggler delegated task results\n"):
             results = json.loads(text.split("\n", 1)[1])
             finish("Received: " + ", ".join(r["result"] for r in results))
+        elif text.startswith("echo "):
+            with Path("delivery-log").open("a") as log:
+                print(text, file=log)
+            finish(text)
         elif text == "hold":
             hold()
         elif text == "queue-two":

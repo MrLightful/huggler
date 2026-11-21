@@ -28,6 +28,10 @@ pub struct HugglerOptions {
     pub state_dir: PathBuf,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
+    /// Continue an idle independent Codex thread after a provider-reported quota reset.
+    pub auto_resume_usage_limits: bool,
+    /// Ask Codex for an optional follow-up after eligible independent conversations.
+    pub prompt_suggestions: bool,
     pub instances: Vec<crate::providers::registry::ProviderInstance>,
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,
@@ -37,6 +41,8 @@ impl HugglerOptions {
         Self {
             state_dir: state_dir.into(),
             agent_tools: false,
+            auto_resume_usage_limits: false,
+            prompt_suggestions: false,
             instances: vec![],
             codex: CodexOptions::default(),
             claude_agent: ClaudeAgentOptions::default(),
@@ -45,6 +51,7 @@ impl HugglerOptions {
 }
 
 pub(crate) struct Shared {
+    prompt_suggestions: bool,
     registry: crate::providers::registry::Registry,
     endpoint: Option<String>,
     handle: Handle,
@@ -55,6 +62,7 @@ pub(crate) struct Shared {
     decisions: Mutex<HashMap<RunId, mpsc::UnboundedSender<(RequestId, String)>>>,
     fault: Mutex<Option<String>>,
     changed: watch::Sender<()>,
+    limit_reset: tokio::sync::Notify,
     stop: watch::Sender<bool>,
 }
 
@@ -181,14 +189,18 @@ impl Shared {
     ) -> Result<DelegatedTask> {
         self.schedule(|db| {
             let (task, runs) = db.cancel_task(token, id, key)?;
-            let stops = self.run_stops.lock().unwrap();
-            for id in runs {
-                if let Some(stop) = stops.get(&id) {
-                    stop.send_replace(true);
-                }
-            }
+            self.stop_runs(&runs);
             Ok((task, None))
         })
+    }
+
+    fn stop_runs(&self, runs: &[RunId]) {
+        let stops = self.run_stops.lock().unwrap();
+        for id in runs {
+            if let Some(stop) = stops.get(id) {
+                stop.send_replace(true);
+            }
+        }
     }
 
     pub(crate) fn interrupt_run(
@@ -223,9 +235,32 @@ impl Shared {
     async fn work(self: Arc<Self>, thread: ThreadId, run: RunId, stopped: watch::Receiver<bool>) {
         let result = self.execute(&thread, &run, stopped).await;
         self.run_stops.lock().unwrap().remove(&run);
+        let limited = matches!(result, Err(Error::UsageLimit { .. }));
         if let Err(error) = self.advance(|db| db.finish(&thread, &run, result)) {
             *self.fault.lock().unwrap() = Some(error.to_string());
             self.changed.send_replace(());
+        } else if limited {
+            self.limit_reset.notify_one();
+        }
+    }
+
+    async fn recover_limits(self: Arc<Self>, mut stop: watch::Receiver<bool>) {
+        loop {
+            let delay = match self.schedule(Database::resume_limited) {
+                Ok(seconds) => seconds,
+                Err(Error::Closed) => return,
+                Err(error) => {
+                    *self.fault.lock().unwrap() = Some(error.to_string());
+                    self.changed.send_replace(());
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = stop.wait_for(|stopped| *stopped) => return,
+                _ = self.limit_reset.notified() => (),
+                // Recheck wall time periodically while a recovery is armed.
+                _ = tokio::time::sleep(std::time::Duration::from_secs(delay.unwrap_or(0).min(3600))), if delay.is_some() => (),
+            }
         }
     }
 
@@ -264,6 +299,9 @@ impl Shared {
         }
         let turn = self.access(|db| {
             let mut turn = db.claim(run)?;
+            turn.sample_suggestion = self.prompt_suggestions
+                && turn.provider == Provider::Codex
+                && db.can_sample_suggestion(run)?;
             if let Some(url) = &self.endpoint {
                 turn.agent_tools = Some(crate::providers::AgentTools {
                     url: url.clone(),
@@ -350,12 +388,14 @@ impl Huggler {
             .transpose()?;
         let jobs = db.ready_jobs()?;
         let shared = Arc::new(Shared {
+            prompt_suggestions: options.prompt_suggestions,
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
             run_stops: Mutex::default(),
             controls: Mutex::default(),
             fault: Mutex::default(),
             changed: watch::channel(()).0,
+            limit_reset: tokio::sync::Notify::new(),
             stop: watch::channel(false).0,
             registry,
             endpoint,
@@ -383,6 +423,11 @@ impl Huggler {
         {
             let shared = &runtime.shared;
             let mut gate = shared.workers.lock().unwrap();
+            if options.auto_resume_usage_limits {
+                gate.as_mut()
+                    .unwrap()
+                    .spawn(shared.clone().recover_limits(shared.stop.subscribe()));
+            }
             for (thread, run) in jobs {
                 shared.spawn(gate.as_mut().unwrap(), thread, run);
             }
@@ -406,18 +451,78 @@ impl Huggler {
         self.shared.access(|db| db.project(&root))
     }
 
-    /// Commit a launch, model selection or message. Reusing the same command
+    /// Copy a selected transcript or load an ACP Registry session into a new thread.
+    /// Repeating an identical snapshot at the same destination preserves its history.
+    pub async fn import_history(
+        &self,
+        project: &ProjectId,
+        thread: &ThreadId,
+        name: &str,
+        instance: &ProviderInstanceId,
+        source: ImportSource,
+    ) -> Result<ImportProvenance> {
+        let cwd = self.shared.access(|db| db.project_root(project))?;
+        let provider = self
+            .shared
+            .registry
+            .get(instance.as_str())
+            .ok_or_else(|| Error::NotFound(instance.to_string()))?;
+        let snapshot = match source {
+            ImportSource::AcpRegistry(native) => {
+                claude_agent::load_history(provider, &cwd, native).await?
+            }
+            file => tokio::task::spawn_blocking(move || crate::imports::read_file(file))
+                .await
+                .map_err(|e| Error::Worker(e.to_string()))??,
+        };
+        self.shared
+            .schedule(|db| Ok((db.import(project, thread, name, instance, snapshot)?, [])))
+    }
+
+    pub fn import_source(&self, thread: &ThreadId) -> Result<Option<ImportProvenance>> {
+        self.shared.access(|db| db.import_source(thread))
+    }
+
+    /// Commit a host command. Reusing the same command
     /// identity and payload returns the original receipt, including after reopen.
     pub fn dispatch(&self, command: Command) -> Result<Receipt> {
         self.shared.schedule(|db| {
-            let (receipt, fresh) = db.dispatch(&command)?;
-            let job = receipt
-                .run_id
-                .clone()
-                .filter(|_| fresh)
-                .map(|run| (command.thread_id, run));
-            Ok((receipt, job))
+            let (receipt, work) = db.dispatch(&command)?;
+            self.shared.stop_runs(&work.stop);
+            if let Some((run, text)) = work.steer {
+                let sent = self
+                    .shared
+                    .controls
+                    .lock()
+                    .unwrap()
+                    .get(&(command.thread_id.clone(), run.clone()))
+                    .is_some_and(|tx| {
+                        tx.send(Control::Steer {
+                            command: command.id.clone(),
+                            text,
+                        })
+                        .is_ok()
+                    });
+                if !sent {
+                    db.update(
+                        &command.thread_id,
+                        &run,
+                        crate::providers::Update::Steer(
+                            command.id.clone(),
+                            SteerOutcome::Rejected(
+                                "foreground session closed before delivery".into(),
+                            ),
+                        ),
+                    )?;
+                }
+            }
+            Ok((receipt, work.start))
         })
+    }
+
+    /// Read the durable acknowledgement of a steering command, including after reopen.
+    pub fn steer_outcome(&self, thread: &ThreadId, command: &CommandId) -> Result<SteerOutcome> {
+        self.shared.access(|db| db.steer_outcome(thread, command))
     }
 
     pub fn launch(
@@ -443,6 +548,24 @@ impl Huggler {
             id,
             thread_id: thread,
             action: Action::Send { text },
+        })
+    }
+    /// Request interruption of current work on the thread and its owned descendants.
+    /// Observe worker outcomes with `wait` or `subscribe`.
+    pub fn stop_thread(&self, id: CommandId, thread: ThreadId) -> Result<Receipt> {
+        self.dispatch(Command {
+            id,
+            thread_id: thread,
+            action: Action::StopThread,
+        })
+    }
+
+    /// Release the held queue on this thread. Descendants have their own queues.
+    pub fn resume_queue(&self, id: CommandId, thread: ThreadId) -> Result<Receipt> {
+        self.dispatch(Command {
+            id,
+            thread_id: thread,
+            action: Action::ResumeQueue,
         })
     }
     /// Answer one live provider request on its owning thread and run.
@@ -583,6 +706,102 @@ impl Huggler {
         self.shared.access(|db| db.read(id))
     }
 
+    /// Read up to 100 message previews, applying an optional ASCII case-insensitive literal search.
+    /// A change to the conversation invalidates its history cursor.
+    pub fn detail(
+        &self,
+        thread: &ThreadId,
+        before: Option<&HistoryCursor>,
+        query: &str,
+        limit: usize,
+    ) -> Result<ConversationDetail> {
+        self.shared
+            .access(|db| db.detail(thread, before, query, limit))
+    }
+
+    /// Codex command item IDs observed on one application run, in discovery order.
+    pub fn command_items(&self, thread: &ThreadId, run: &RunId) -> Result<Vec<String>> {
+        self.shared.access(|db| db.command_items(thread, run))
+    }
+
+    /// Read one bounded command tail. Pass its revision to wait for newer output or closure.
+    pub async fn command_output(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        item: &str,
+        after: Option<i64>,
+    ) -> Result<CommandOutput> {
+        let mut changed = self.shared.changed.subscribe();
+        loop {
+            let output = self
+                .shared
+                .access(|db| db.command_output(thread, run, item))?;
+            if after.is_some_and(|r| r < 0 || r > output.revision) {
+                return Err(Error::Invalid("cursor outside command output".into()));
+            }
+            if after != Some(output.revision) || output.closed {
+                return Ok(output);
+            }
+            changed.changed().await.map_err(|_| Error::Closed)?;
+        }
+    }
+
+    /// Stage up to 64 KiB of UTF-8 plain text for one thread.
+    pub fn prepare_upload(
+        &self,
+        thread: &ThreadId,
+        name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<UploadId> {
+        self.shared
+            .access(|db| db.prepare_upload(thread, name, mime, bytes))
+    }
+    /// Discard an unclaimed upload. Repeated cleanup is safe.
+    pub fn discard_upload(&self, thread: &ThreadId, id: &UploadId) -> Result<()> {
+        self.shared.access(|db| db.discard_upload(thread, id))
+    }
+
+    /// Unified Git diff between two explicit checkpoints on the same thread, up to 1 MiB.
+    pub fn checkpoint_diff(&self, thread: &ThreadId, from: &RunId, to: &RunId) -> Result<String> {
+        let (repository, base, head) = self
+            .shared
+            .access(|db| db.checkpoint_pair(thread, from, to))?;
+        crate::worktree::diff(Path::new(&repository), &base, &head)
+    }
+
+    /// Read the immutable bounded prefix captured at fork creation.
+    pub fn fork_history(&self, thread: &ThreadId) -> Result<Option<ForkHistory>> {
+        self.shared.access(|db| db.fork_history(thread))
+    }
+
+    /// Expand a message preview to its complete stored text.
+    pub fn read_message(&self, thread: &ThreadId, id: &MessageId) -> Result<Message> {
+        self.shared.access(|db| db.read_message(thread, id))
+    }
+
+    /// Keep the most recent `count` replay events. Receipts and projections outlive the replay window.
+    pub fn retain_events(&self, thread: &ThreadId, count: u32) -> Result<()> {
+        self.shared.access(|db| db.retain_events(thread, count))
+    }
+
+    /// Coalesced notification for snapshot consumers. Returns the current high-water mark.
+    pub async fn wait_for_change(&self, thread: &ThreadId, after: i64) -> Result<i64> {
+        let mut changed = self.shared.changed.subscribe();
+        self.shared.access(|db| db.thread_position(thread))?;
+        loop {
+            let cursor = self.shared.access(|db| db.sequence(thread))?;
+            if after < 0 || after > cursor {
+                return Err(Error::Invalid("cursor outside thread snapshot".into()));
+            }
+            if cursor > after {
+                return Ok(cursor);
+            }
+            changed.changed().await.map_err(|_| Error::Closed)?;
+        }
+    }
+
     /// Wait for one specific application run. Dropping or timing out the future
     /// releases the observer while the provider continues.
     pub async fn wait(&self, thread: &ThreadId, run: &RunId) -> Result<Run> {
@@ -599,7 +818,15 @@ impl Huggler {
     /// Subscribe from a consistent snapshot, or replay events strictly after a saved cursor.
     pub fn subscribe(&self, id: &ThreadId, after: Option<i64>) -> Result<(Thread, Subscription)> {
         let changed = self.shared.changed.subscribe();
-        let snapshot = self.read(id)?;
+        let snapshot = self.shared.access(|db| {
+            if let Some(cursor) = after
+                && cursor >= 0
+            {
+                db.thread_position(id)?;
+                db.check_replay(id, cursor)?;
+            }
+            db.read(id)
+        })?;
         let cursor = after.unwrap_or(snapshot.cursor);
         if cursor < 0 || cursor > snapshot.cursor {
             return Err(Error::Invalid("cursor outside thread snapshot".into()));

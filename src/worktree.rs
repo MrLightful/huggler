@@ -2,18 +2,21 @@
 use crate::{Error, Result};
 use std::{fs, path::Path, process::Command};
 
-fn git(cwd: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .current_dir(cwd)
+fn command(cwd: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_INDEX_FILE")
         // Checkout preparation belongs to the host, before the provider starts.
         .args(["-c", "core.hooksPath=/dev/null"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .args(args)
-        .output()?;
+        .env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
+fn git(cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = command(cwd).args(args).output()?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
             "git {} in {}: {}",
@@ -54,6 +57,66 @@ pub(crate) fn base(cwd: &Path) -> Result<(String, String)> {
         .and_then(|s| s.rsplit_once('\n'))
         .ok_or_else(|| Error::Invalid("expected a Git checkout root with a commit".into()))?;
     Ok((repository.into(), commit.into()))
+}
+
+pub(crate) fn clean_base(cwd: &Path) -> Result<(String, String)> {
+    let revision = base(cwd)?;
+    if !git(
+        cwd,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        ],
+    )?
+    .is_empty()
+        || base(cwd)? != revision
+    {
+        return Err(Error::Invalid(
+            "checkpoint requires a clean, stable Git checkout".into(),
+        ));
+    }
+    Ok(revision)
+}
+
+pub(crate) fn diff(cwd: &Path, base: &str, head: &str) -> Result<String> {
+    use std::{io::Read, process::Stdio};
+    const LIMIT: u64 = 1024 * 1024;
+    let mut child = command(cwd)
+        .args([
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            base,
+            head,
+            "--",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut bytes = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .unwrap()
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() as u64 > LIMIT {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    read?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(Error::Invalid("checkpoint diff exceeds 1 MiB".into()));
+    }
+    if !status.success() {
+        return Err(Error::Invalid(
+            "Git could not compare the captured commits".into(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 pub(crate) struct Worktree {

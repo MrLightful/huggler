@@ -19,10 +19,14 @@ pub(crate) struct ChildInterrupt {
 }
 
 pub(crate) enum Control {
+    Steer {
+        command: crate::CommandId,
+        text: String,
+    },
     Interrupt(ChildInterrupt),
     Answer {
         id: RequestId,
-        answers: UserAnswers,
+        answers: Option<UserAnswers>,
         reply: oneshot::Sender<Result<()>>,
     },
 }
@@ -33,6 +37,8 @@ pub(crate) struct AgentTools {
 }
 
 pub(crate) struct Turn {
+    pub sample_suggestion: bool,
+    pub fork: Option<(NativeThreadId, NativeTurnId)>,
     pub plan_mode: bool,
     pub agent_tools: Option<AgentTools>,
     pub provider: Provider,
@@ -44,7 +50,20 @@ pub(crate) struct Turn {
     pub resume: Option<NativeThreadId>,
 }
 
+pub(crate) enum CommandFrame {
+    Append(String),
+    Snapshot {
+        output: Option<String>,
+        finished: bool,
+    },
+}
+
 pub(crate) enum Update {
+    CommandOutput {
+        item: String,
+        frame: CommandFrame,
+    },
+    Steer(crate::CommandId, crate::SteerOutcome),
     Output(String),
     Usage {
         input: i64,
@@ -59,8 +78,9 @@ pub(crate) enum Update {
     Bound(NativeThreadId),
     Started(Option<NativeTurnId>),
     Finalizing(String),
-    /// The foreground has returned its answer and this worker has background children.
+    /// Settle the foreground while this worker finishes background work.
     ForegroundComplete,
+    PromptSuggestion(String),
     NativeChild(crate::NativeChild),
 }
 

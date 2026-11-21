@@ -2,7 +2,7 @@
 mod children;
 use super::registry::ProviderInstance;
 use super::{
-    ChildInterrupt, Control, Permissions, Turn, Update,
+    ChildInterrupt, CommandFrame, Control, Permissions, Turn, Update,
     rpc::{Rpc, protocol},
 };
 use crate::{
@@ -52,6 +52,17 @@ struct Client {
     early: VecDeque<Value>,
 }
 
+/// Every exhausted window must have reset before the next prompt is eligible.
+fn quota_reset_at(limits: &Value) -> Option<i64> {
+    let mut resets = Vec::new();
+    for window in [&limits["primary"], &limits["secondary"]] {
+        if window["usedPercent"].as_f64().is_some_and(|v| v >= 100.0) {
+            resets.push(window["resetsAt"].as_i64()?);
+        }
+    }
+    resets.into_iter().max()
+}
+
 impl Client {
     async fn read(&mut self) -> Result<Value> {
         loop {
@@ -95,12 +106,14 @@ impl Client {
                     .cloned()
                     .ok_or_else(|| protocol(format!("missing {method} result")));
             }
-            if frame["method"] == "thread/tokenUsage/updated"
+            if frame["method"] == "account/rateLimits/updated"
+                || frame["method"] == "thread/tokenUsage/updated"
                 || method == "turn/start"
                     && matches!(
                         frame["method"].as_str(),
                         Some(
                             "item/started"
+                                | "item/commandExecution/outputDelta"
                                 | "item/agentMessage/delta"
                                 | "item/completed"
                                 | "turn/started"
@@ -116,6 +129,20 @@ impl Client {
                 self.early.push_back(frame);
             }
         }
+    }
+
+    async fn sample_suggestion(&mut self, thread: &str, turn: &str) -> Option<String> {
+        let request = self.request("thread/sample", json!({
+            "threadId": thread, "expectedTurnId": turn, "effort": "low",
+            "prompt": "Suggest one short follow-up the user might type next. Return only that message, or empty text if none is useful."
+        }));
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+            .await
+            .ok()?
+            .ok()?;
+        let text = response["text"].as_str()?.trim();
+        (!text.is_empty() && text.len() <= 1024 && !text.starts_with("Delegated task"))
+            .then(|| text.to_owned())
     }
 
     async fn write_answers(&mut self, wire_id: Value, answers: UserAnswers) -> Result<()> {
@@ -197,13 +224,19 @@ impl Client {
         if let Some(model) = model {
             session["model"] = json!(model);
         }
-        let method = match &turn.resume {
-            Some(id) => {
+        let method = match (&turn.resume, &turn.fork) {
+            (_, Some((parent, through))) => {
+                session["threadId"] = json!(parent);
+                session["lastTurnId"] = json!(through);
+                session["excludeTurns"] = json!(true);
+                "thread/fork"
+            }
+            (Some(id), None) => {
                 session["threadId"] = json!(id);
                 session["excludeTurns"] = json!(true);
                 "thread/resume"
             }
-            None => "thread/start",
+            (None, None) => "thread/start",
         };
         let response = self.request(method, session).await?;
         let thread = response
@@ -212,6 +245,22 @@ impl Client {
             .ok_or_else(|| protocol("missing native thread ID"))?;
         if turn.resume.as_ref().is_some_and(|id| id.0 != thread) {
             return Err(protocol("resume returned a different native thread"));
+        }
+        if let Some((parent, through)) = &turn.fork {
+            let fork = &response["thread"];
+            // Paginated servers omit turn history when excludeTurns is set.
+            let page = self
+                .request("thread/turns/list", json!({"threadId":thread,"limit":1}))
+                .await?;
+            let last = page["data"].as_array().and_then(|turns| turns.first());
+            if thread == parent.0
+                || fork["forkedFromId"].as_str() != Some(&parent.0)
+                || last.and_then(|t| t["id"].as_str()) != Some(&through.0)
+            {
+                return Err(protocol(
+                    "fork returned a different parent or turn boundary",
+                ));
+            }
         }
         update(Update::Bound(NativeThreadId(thread.to_owned())))?;
         self.request(
@@ -239,7 +288,7 @@ impl Client {
             .ok_or_else(|| protocol("missing native turn ID"))?;
         // Resume can emit the preceding turn's cumulative counters before acknowledging
         // turn/start. Without that baseline, the thread total cannot be attributed to this run.
-        let baseline = if turn.resume.is_none() {
+        let baseline = if turn.resume.is_none() && turn.fork.is_none() {
             Some((0, 0))
         } else {
             self.early
@@ -263,6 +312,8 @@ impl Client {
         let mut questions = HashMap::<RequestId, Value>::new();
         let mut children = Children::default();
         let mut foreground_complete = false;
+        let mut reset_at = None;
+        let mut steers = HashMap::new();
         let mut interrupt_replies = HashMap::<u64, oneshot::Sender<Result<()>>>::new();
         loop {
             if foreground_complete && !children.active() && interrupt_replies.is_empty() {
@@ -274,13 +325,25 @@ impl Client {
                     frame = self.read() => frame?,
                     control = controls.recv() => {
                         match control.ok_or(Error::Closed)? {
+                            Control::Steer { command, text } => {
+                                if foreground_complete {
+                                    update(Update::Steer(command,crate::SteerOutcome::Rejected("foreground turn completed".into())))?;
+                                } else {
+                                    let wire_id=self.next_id;
+                                    self.next_id+=1;
+                                    self.rpc.write(json!({"id":wire_id,"method":"turn/steer","params":{"threadId":thread,
+                                        "expectedTurnId":id,"input":[{"type":"text","text":text}]}})).await?;
+                                    steers.insert(wire_id,command);
+                                }
+                            }
                             Control::Interrupt(request) => {
                                 self.interrupt_child(request, &children, &mut interrupt_replies).await?;
                             }
                             Control::Answer { id, answers, reply } => {
                                 if let Some(wire_id) = questions.remove(&id) {
-                                    self.write_answers(wire_id, answers).await?;
-                                    update(Update::QuestionClosed { id, answered: true })?;
+                                    let answered = answers.is_some();
+                                    self.write_answers(wire_id, answers.unwrap_or_default()).await?;
+                                    update(Update::QuestionClosed { id, answered })?;
                                     let _ = reply.send(Ok(()));
                                 } else {
                                     let _ = reply.send(Err(Error::NotFound("live user-input request".into())));
@@ -323,6 +386,18 @@ impl Client {
             }
             if let Some(wire_id) = frame.get("id") {
                 if frame.get("method").is_none() {
+                    if let Some(command) = wire_id.as_u64().and_then(|id| steers.remove(&id)) {
+                        let outcome = if let Some(error) = frame.get("error") {
+                            crate::SteerOutcome::Rejected(error.to_string())
+                        } else if frame.pointer("/result/turnId").and_then(Value::as_str)
+                            == Some(id)
+                        {
+                            crate::SteerOutcome::Accepted
+                        } else {
+                            crate::SteerOutcome::Uncertain
+                        };
+                        update(Update::Steer(command, outcome))?;
+                    }
                     if let Some(reply) = wire_id
                         .as_u64()
                         .and_then(|id| interrupt_replies.remove(&id))
@@ -446,10 +521,39 @@ impl Client {
                     })
                 });
             }
+            if frame["method"] == "account/rateLimits/updated" {
+                let limits = &p["rateLimits"];
+                if limits["limitId"].is_null() || limits["limitId"] == "codex" {
+                    reset_at = quota_reset_at(limits);
+                }
+                continue;
+            }
             if foreground_complete || p["threadId"] != thread {
                 continue;
             }
             match frame["method"].as_str() {
+                Some("item/commandExecution/outputDelta") if p["turnId"] == id => {
+                    if let (Some(item), Some(delta)) = (p["itemId"].as_str(), p["delta"].as_str()) {
+                        update(Update::CommandOutput {
+                            item: item.into(),
+                            frame: CommandFrame::Append(delta.into()),
+                        })?;
+                    }
+                }
+                Some(method @ ("item/started" | "item/completed"))
+                    if p["turnId"] == id && p["item"]["type"] == "commandExecution" =>
+                {
+                    if let Some(item) = p["item"]["id"].as_str() {
+                        let output = p["item"]["aggregatedOutput"].as_str().map(str::to_owned);
+                        update(Update::CommandOutput {
+                            item: item.into(),
+                            frame: CommandFrame::Snapshot {
+                                output,
+                                finished: method == "item/completed",
+                            },
+                        })?;
+                    }
+                }
                 Some("item/agentMessage/delta") if p["turnId"] == id => {
                     if let Some(delta) = p["delta"].as_str() {
                         update(Update::Output(delta.into()))?;
@@ -479,6 +583,17 @@ impl Client {
                     if p["turn"]["status"] == "interrupted" {
                         return Err(Error::Interrupted);
                     }
+                    if p["turn"]["status"] == "failed"
+                        && p["turn"]["error"]["codexErrorInfo"] == "usageLimitExceeded"
+                    {
+                        return Err(Error::UsageLimit {
+                            message: p["turn"]["error"]["message"]
+                                .as_str()
+                                .unwrap_or("usage limit exceeded")
+                                .into(),
+                            reset_at,
+                        });
+                    }
                     if p["turn"]["status"] != "completed" {
                         return Err(protocol(format!(
                             "turn {}: {}",
@@ -490,6 +605,12 @@ impl Client {
                         .ok_or_else(|| protocol("completed turn has no final answer"))?;
                     update(Update::Finalizing(text))?;
                     if !children.active() && interrupt_replies.is_empty() {
+                        if turn.sample_suggestion {
+                            update(Update::ForegroundComplete)?;
+                            if let Some(text) = self.sample_suggestion(thread, id).await {
+                                update(Update::PromptSuggestion(text))?;
+                            }
+                        }
                         return Ok(());
                     }
                     update(Update::ForegroundComplete)?;

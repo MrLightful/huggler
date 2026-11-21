@@ -41,8 +41,9 @@ struct PriorCreation {
 fn prior_creations(tx: &Transaction, caller: &ThreadId, key: &str) -> Result<Vec<PriorCreation>> {
     Ok(tx
         .prepare(
-            "SELECT c.thread_id,c.initial_run,c.requested_title,c.requested_provider,m.text
-             FROM peer_creation c LEFT JOIN message m ON m.run_id=c.initial_run AND m.role='user'
+            "SELECT c.thread_id,c.initial_run,c.requested_title,c.requested_provider,
+                (SELECT text FROM message WHERE run_id=c.initial_run AND role='user' ORDER BY rowid LIMIT 1)
+             FROM peer_creation c
              WHERE c.caller_thread=? AND c.request_key=? ORDER BY c.position",
         )?
         .query_map(params![caller.0, key], |r| {
@@ -153,7 +154,7 @@ impl Database {
                     request_key: key.clone(),
                 };
                 let (run, _, _, delivery) =
-                    start_message(&tx, &peer.thread_id, prompt, model, Some(origin))?;
+                    start_message(&tx, &peer.thread_id, prompt, model, Some(origin), false)?;
                 if delivery == PeerDelivery::Queued {
                     return Err(Error::Busy);
                 }

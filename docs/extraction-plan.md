@@ -6,11 +6,11 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Stage 4 passed on macOS arm64.** A signed-in Codex instance completed a cloud turn while an ACP executable was missing. Installed Muse resumed a deterministic echo session across reopen. Cursor and Antigravity negotiated ACP v1 and returned login challenges in fresh homes. Their authenticated turns use scripted peers. Two Pi fixtures resumed independently with the same native identity. A GPUI qualification build displayed discovery results for working and missing instances. The driver matrix records the evidence and limits for all eleven driver kinds. [Stage 4 evidence and reproduction](stage-4.md)
+**Stage 5 passed.** Through the public Rust API, stopping a delegation tree held its queues across reopen, a portable fork preserved the selected turn boundary, and recovery after external I/O produced one outbound prompt across restart and retry. The release GPUI app passed recorded approval and peer exchange checks. Its history window paged and searched 1,000 messages. The independent Cargo consumer and all three pinned upstream stream suites passed. [Stage 5 outcomes, limits and reproduction commands](stage-5.md)
 
-**Next action for Stage 5.** Stop a thread with queued work and a live child. Verify that the child stops and the queue stays held until explicit resume. [Stage 5 acceptance](#5-complete-control-history-and-recovery)
+**First Stage 6 action.** Start two runtimes with independent state, exercise approved read and operate grants, reconnect to the same remote thread and verify denial of sibling reads, read-only writes and revoked writes. The remote thread must keep its identity through reconnect, accept an authorized write and show zero state changes from the rejected operations. [Full application profile](#6-assemble-the-full-application-profile)
 
-**Branch recommendation.** Merge Stage 4. The independent Cargo consumer passed, the desktop exposed instance-specific failures, and the driver matrix identifies which operations Stage 5 can rely on.
+**Branch recommendation.** Merge Stage 5. Each acceptance row has reproducible evidence and documented provider or host limits. Begin Stage 6 on a new branch after merge.
 
 ### Maintaining the handoff
 
@@ -27,7 +27,7 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 | [2. Run one durable thread](#2-build-the-rust-core-and-run-one-durable-thread) | The reference case is reproducible | [Packaged-crate replay, receipt races, recovery and installed desktop results](stage-2.md). |
 | [3. Connect two harnesses](#3-prove-agent-to-agent-operation-with-two-harnesses) | One driver works through the public API | [Peer reply, delegated completion, desktop permissions and native children](stage-3.md). |
 | [4. Qualify all drivers](#4-qualify-every-provider-instance-and-capability) | Two harnesses share a conformance suite | [Instance configuration, live and fixture results, usage and transport limitations](stage-4.md). |
-| [5. Complete runtime behavior](#5-complete-control-history-and-recovery) | Stage 2 works, with qualified drivers available for provider-specific cases | Results for history, commands, requests, stream recovery, process loss and migration. |
+| [5. Complete runtime behavior](#5-complete-control-history-and-recovery) | Stage 2 works, with qualified drivers available for provider-specific cases | [Runtime controls, context, bounded history, crash recovery and import results](stage-5.md). |
 | [6. Assemble the full profile](#6-assemble-the-full-application-profile) | Agent tools and runtime controls work | An authorized second application completes a workflow with the host integrations enabled. |
 | [7. Qualify a release](#7-validate-cargo-and-desktop-releases) | Begin Cargo packaging and desktop install checks in stage 2 | Build and upgrade results for the crate and installed app, plus a comparison to the reviewed upstream SHA. |
 

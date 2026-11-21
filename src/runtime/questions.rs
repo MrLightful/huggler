@@ -19,15 +19,21 @@ impl Shared {
         id: &RequestId,
         answers: UserAnswers,
     ) -> Result<()> {
-        self.answer_question(Responder::Agent { token, target }, id, answers)
-            .await
+        self.answer_question(
+            Responder::Agent { token, target },
+            id,
+            Some(answers),
+            &QuestionAttachments::new(),
+        )
+        .await
     }
 
     async fn answer_question(
         &self,
         caller: Responder<'_>,
         id: &RequestId,
-        answers: UserAnswers,
+        mut answers: Option<UserAnswers>,
+        attachments: &QuestionAttachments,
     ) -> Result<()> {
         let mut changes = self.changed.subscribe();
         loop {
@@ -43,11 +49,12 @@ impl Shared {
                 if answering {
                     return Ok(None);
                 }
-                if answers.len() != request.questions.len()
-                    || request
-                        .questions
-                        .iter()
-                        .any(|q| !answers.contains_key(&q.id))
+                if let Some(answers) = &answers
+                    && (answers.len() != request.questions.len()
+                        || request
+                            .questions
+                            .iter()
+                            .any(|q| !answers.contains_key(&q.id)))
                 {
                     return Err(Error::Invalid(
                         "provide an answer for each question ID".into(),
@@ -55,10 +62,10 @@ impl Shared {
                 }
                 let controls = self.controls.lock().unwrap();
                 let tx = controls
-                    .get(&(target, request.run_id))
+                    .get(&(target.clone(), request.run_id))
                     .filter(|tx| !tx.is_closed())
                     .ok_or_else(|| Error::NotFound("live question responder".into()))?;
-                db.claim_question(id, responder.as_ref())?;
+                db.claim_question(id, responder.as_ref(), &target, &mut answers, attachments)?;
                 Ok(Some(tx.clone()))
             })?;
             if let Some(tx) = sender {
@@ -88,7 +95,49 @@ impl Huggler {
         answers: UserAnswers,
     ) -> Result<()> {
         self.shared
-            .answer_question(Responder::Host { thread, run }, id, answers)
+            .answer_question(
+                Responder::Host { thread, run },
+                id,
+                Some(answers),
+                &QuestionAttachments::new(),
+            )
+            .await
+    }
+}
+
+impl Huggler {
+    /// Include staged text files in the corresponding provider question answers.
+    pub async fn respond_with_attachments(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        id: &RequestId,
+        answers: UserAnswers,
+        attachments: &QuestionAttachments,
+    ) -> Result<()> {
+        self.shared
+            .answer_question(
+                Responder::Host { thread, run },
+                id,
+                Some(answers),
+                attachments,
+            )
+            .await
+    }
+    /// Resolve the live input callback with an empty answer map.
+    pub async fn dismiss_question(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        id: &RequestId,
+    ) -> Result<()> {
+        self.shared
+            .answer_question(
+                Responder::Host { thread, run },
+                id,
+                None,
+                &QuestionAttachments::new(),
+            )
             .await
     }
 }

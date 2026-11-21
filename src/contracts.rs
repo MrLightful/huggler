@@ -20,6 +20,7 @@ id!(CommandId);
 id!(ThreadId);
 id!(RunId);
 id!(MessageId);
+id!(UploadId);
 id!(TaskId);
 id!(ProjectId);
 id!(RequestId);
@@ -155,13 +156,15 @@ pub struct UserInputOption {
     pub extensions: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize, rmcp::schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(untagged)]
 pub enum UserAnswer {
     Text(String),
     Choices(Vec<String>),
 }
+
+pub type QuestionAttachments = std::collections::BTreeMap<String, Vec<UploadId>>;
 
 pub type UserAnswers = std::collections::BTreeMap<String, UserAnswer>;
 
@@ -176,6 +179,44 @@ pub struct NativeChildTurn {
 pub struct Project {
     pub id: ProjectId,
     pub root: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForkMode {
+    Native,
+    Portable,
+    /// Portable conversation prefix and a new detached checkout of the captured commit.
+    Checkpoint,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForkHistory {
+    pub source: ThreadId,
+    pub through: RunId,
+    pub mode: ForkMode,
+    /// Most recent messages through the boundary, in delivery order.
+    pub messages: Vec<Message>,
+    /// Earlier messages or portions of their text exceeded the history budget.
+    pub truncated: bool,
+}
+
+/// Origin of an immutable imported conversation. File transcripts use portable continuation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportSource {
+    Claude(PathBuf),
+    Codex(PathBuf),
+    Pi(PathBuf),
+    /// Load an existing session on the destination ACP Registry instance.
+    AcpRegistry(NativeThreadId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportProvenance {
+    pub source: ImportSource,
+    pub native_session: Option<NativeThreadId>,
+    /// SHA-256 of the original file or of the loaded ACP conversation.
+    pub digest: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -198,17 +239,85 @@ pub enum Action {
         model: Option<String>,
         instance: ProviderInstanceId,
     },
+    /// Record the current clean Git HEAD at the thread's latest completed turn.
+    CaptureCheckpoint {
+        through: RunId,
+    },
+    /// Create a new thread at a completed source run and send its first prompt.
+    Fork {
+        source: ThreadId,
+        through: RunId,
+        name: String,
+        instance: ProviderInstanceId,
+        model: Option<String>,
+        mode: ForkMode,
+        text: String,
+    },
+    /// Send a bounded account of completed branch work to its direct parent.
+    MergeBack {
+        source: ThreadId,
+        through: RunId,
+        text: String,
+    },
     Send {
         text: String,
+    },
+    /// Steer an active Codex turn, or enqueue when the foreground cannot accept input.
+    /// On an idle thread the message starts immediately.
+    SendAuto {
+        text: String,
+    },
+    SendAttachments {
+        text: String,
+        uploads: Vec<UploadId>,
     },
     /// Send one message in Codex plan mode.
     SendPlan {
         text: String,
     },
+    /// Start immediately when idle, or append to the thread's queue.
+    Enqueue {
+        text: String,
+    },
+    /// Send text into the expected live Codex turn. Read its acknowledgement with steer_outcome.
+    Steer {
+        active: RunId,
+        text: String,
+    },
+    /// Interrupt the expected foreground run, then deliver the replacement before queued work.
+    Restart {
+        active: RunId,
+        text: String,
+    },
+    EditQueued {
+        run: RunId,
+        text: String,
+    },
+    /// Move a queued run before another, or to the end.
+    MoveQueued {
+        run: RunId,
+        before: Option<RunId>,
+    },
+    CancelQueued {
+        run: RunId,
+    },
+    /// Hold queued runs and stop current work throughout the owned delegation tree.
+    StopThread,
+    /// Release queued runs on this thread in delivery order.
+    ResumeQueue,
     SetModel {
         model: Option<String>,
     },
 }
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerOutcome {
+    Pending,
+    Accepted,
+    Rejected(String),
+    Uncertain,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Command {
     pub id: CommandId,
@@ -247,7 +356,19 @@ pub struct Run {
     pub id: RunId,
     pub ordinal: i64,
     pub status: RunStatus,
+    /// Explicit queue resume is required before this run can start.
+    #[serde(default)]
+    pub queue_held: bool,
+    /// Delivery order when the host has moved this run from its creation ordinal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_slot: Option<i64>,
     pub native_turn: Option<NativeTurnId>,
+    /// Unix seconds reported for an exhausted Codex quota window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit_reset_at: Option<i64>,
+    /// Optional provider-generated follow-up for this completed run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_suggestion: Option<String>,
     pub error: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +412,51 @@ pub struct Message {
     pub origin: Option<MessageOrigin>,
     pub text: String,
 }
+/// Latest 32 KiB of one provider command's output. Replace the previous view on each read.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub text: String,
+    pub revision: i64,
+    pub truncated: bool,
+    /// The command or its owning turn has ended.
+    pub closed: bool,
+}
+
+/// Continue a history query on the same thread, filter and snapshot.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryCursor {
+    pub(crate) query: String,
+    pub(crate) thread: ThreadId,
+    pub sequence: i64,
+    pub before: MessageId,
+}
+
+/// A bounded message preview. Fetch the original with `Huggler::read_message`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryItem {
+    pub message: Message,
+    pub truncated: bool,
+}
+
+/// Messages appear in delivery order. Pages are fetched from newest to oldest.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoryPage {
+    pub messages: Vec<HistoryItem>,
+    pub older: Option<HistoryCursor>,
+    pub sequence: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConversationDetail {
+    pub id: ThreadId,
+    pub name: String,
+    pub provider_instance: ProviderInstanceId,
+    pub latest_run: Option<Run>,
+    pub permissions: Vec<PermissionRequest>,
+    pub native_children: Vec<NativeChild>,
+    pub history: HistoryPage,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThreadSummary {
     pub id: ThreadId,
@@ -441,6 +607,24 @@ impl From<ThreadSnapshot> for Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    /// An item can now be expanded through the scoped command-output API.
+    CommandOutputAvailable {
+        run_id: RunId,
+        item: String,
+    },
+    UsageLimitContinuation {
+        failed: RunId,
+        run_id: RunId,
+    },
+    Steer {
+        run_id: RunId,
+        command_id: CommandId,
+        outcome: SteerOutcome,
+    },
+    /// The host requested that the worker for this run stop.
+    RunStopRequested {
+        run_id: RunId,
+    },
     /// Text as received, before the final assistant message is committed.
     OutputDelta {
         run_id: RunId,
@@ -536,12 +720,18 @@ pub enum Error {
         original_thread: ThreadId,
         requested_thread: ThreadId,
     },
+    #[error("event cursor expired; read a fresh snapshot")]
+    CursorExpired,
+    #[error("history changed; restart paging from the newest page")]
+    HistoryChanged,
     #[error("unknown {0}")]
     NotFound(String),
     #[error("thread already has an active run")]
     Busy,
     #[error("invalid request: {0}")]
     Invalid(String),
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
     #[error("unsupported state schema version {0}")]
     SchemaVersion(i64),
     #[error("storage: {0}")]
@@ -562,6 +752,11 @@ pub enum Error {
         #[serde(serialize_with = "display_error")]
         std::io::Error,
     ),
+    #[error("provider usage limit exceeded: {message}")]
+    UsageLimit {
+        message: String,
+        reset_at: Option<i64>,
+    },
     #[error("provider: {0}")]
     Provider(String),
     #[error("worker: {0}")]

@@ -7,8 +7,8 @@ use gpui_component::{
     v_flex,
 };
 use huggler::{
-    Action, Command, CommandId, Huggler, PermissionRequest, ProviderInstanceId, Role, Thread,
-    ThreadId, ThreadSummary,
+    Action, Command, CommandId, ConversationDetail, HistoryCursor, Huggler, PermissionRequest,
+    ProviderInstanceId, Role, ThreadId, ThreadSummary,
 };
 use std::{fs, path::PathBuf, sync::Arc};
 use uuid::Uuid;
@@ -17,7 +17,10 @@ pub struct Desktop {
     runtime: Arc<Huggler>,
     selection_file: PathBuf,
     threads: Vec<ThreadSummary>,
-    current: Option<Thread>,
+    current: Option<ConversationDetail>,
+    before: Option<HistoryCursor>,
+    search: Entity<InputState>,
+    query: String,
     subscription: Option<Task<()>>,
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
@@ -73,6 +76,9 @@ impl Desktop {
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
             current: None,
+            before: None,
+            search: cx.new(|cx| InputState::new(window, cx).placeholder("Search messages")),
+            query: String::new(),
             subscription: None,
             thread_updates: None,
             history_scroll: ScrollHandle::new(),
@@ -149,37 +155,36 @@ impl Desktop {
         if self.current.as_ref().is_some_and(|thread| thread.id == id) {
             return Ok(());
         }
-        let (snapshot, mut stream) = self.runtime.subscribe(&id, None)?;
+        let snapshot = self.runtime.detail(&id, None, "", 32)?;
+        let mut cursor = snapshot.history.sequence;
         self.current = Some(snapshot);
+        self.before = None;
+        self.query.clear();
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.prompt
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.prompt.focus_handle(cx).focus(window);
         self.history_scroll.scroll_to_bottom();
-        // Replacing the GPUI task drops the old stream. Re-read once per burst,
-        // using the snapshot cursor to skip events already reflected in the view.
+        let runtime = self.runtime.clone();
+        let selected = id.clone();
         self.subscription = Some(cx.spawn(async move |view, cx| {
             loop {
-                let event = stream.next().await;
-                let done = event.is_err();
-                if view
-                    .update(cx, |view, cx| match event {
-                        Ok(event)
-                            if view.current.as_ref().is_some_and(|thread| {
-                                thread.id == event.thread_id && thread.cursor < event.sequence
-                            }) =>
-                        {
-                            if let Err(error) = view.refresh() {
-                                view.error = Some(error.to_string());
-                            }
-                            cx.notify();
-                        }
-                        Err(error) => view.report(Err(error), cx),
-                        _ => {}
-                    })
-                    .is_err()
-                    || done
-                {
-                    break;
+                let change = runtime.wait_for_change(&selected, cursor).await;
+                match view.update(cx, |view, cx| -> Option<i64> {
+                    if view.current.as_ref()?.id != selected {
+                        return None;
+                    }
+                    let result = change.and_then(|_| view.refresh());
+                    if let Err(error) = result {
+                        view.report(Err(error), cx);
+                        return None;
+                    }
+                    cx.notify();
+                    Some(view.current.as_ref()?.history.sequence)
+                }) {
+                    Ok(Some(next)) => cursor = next,
+                    _ => break,
                 }
             }
         }));
@@ -189,8 +194,20 @@ impl Desktop {
 
     fn refresh(&mut self) -> huggler::Result<()> {
         if let Some(old) = &self.current {
-            let thread = self.runtime.read(&old.id)?;
-            if thread.messages.len() != old.messages.len() {
+            let thread = match self
+                .runtime
+                .detail(&old.id, self.before.as_ref(), &self.query, 32)
+            {
+                Err(huggler::Error::HistoryChanged) => {
+                    self.before = None;
+                    self.runtime.detail(&old.id, None, &self.query, 32)?
+                }
+                result => result?,
+            };
+            if self.before.is_none()
+                && thread.history.messages.last().map(|m| &m.message.id)
+                    != old.history.messages.last().map(|m| &m.message.id)
+            {
                 self.history_scroll.scroll_to_bottom();
             }
             self.current = Some(thread);
@@ -348,7 +365,11 @@ impl Desktop {
             ))
     }
 
-    fn permission(thread: &Thread, request: &PermissionRequest, cx: &Context<Self>) -> Div {
+    fn permission(
+        thread: &ConversationDetail,
+        request: &PermissionRequest,
+        cx: &Context<Self>,
+    ) -> Div {
         let mut title = request.tool_call["title"]
             .as_str()
             .unwrap_or("Tool permission")
@@ -410,9 +431,9 @@ impl Desktop {
             )
     }
 
-    fn conversation(&self, thread: &Thread, cx: &Context<Self>) -> Div {
+    fn conversation(&self, thread: &ConversationDetail, cx: &Context<Self>) -> Div {
         let provider = provider_name(thread.provider_instance.as_str()).to_owned();
-        let last_run = thread.runs.last();
+        let last_run = thread.latest_run.as_ref();
         let status = last_run.map_or_else(|| "Ready".to_owned(), |run| format!("{:?}", run.status));
         v_flex()
             .size_full()
@@ -431,6 +452,52 @@ impl Desktop {
                     ),
             )
             .child(
+                h_flex()
+                    .px_5()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(control!("Search messages", Input::new(&self.search))),
+                    )
+                    .child(control!(
+                        "Search",
+                        Button::new("search").label("Search").on_click(cx.listener(
+                            |view, _, _, cx| {
+                                view.query = view.search.read(cx).value().to_string();
+                                view.before = None;
+                                let result = view.refresh();
+                                view.report(result, cx);
+                            }
+                        ))
+                    ))
+                    .when_some(thread.history.older.clone(), |row, older| {
+                        row.child(control!(
+                            "Older",
+                            Button::new("older").label("Older").on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.before = Some(older.clone());
+                                    let result = view.refresh();
+                                    view.report(result, cx);
+                                }
+                            ))
+                        ))
+                    })
+                    .when(self.before.is_some(), |row| {
+                        row.child(control!(
+                            "Newest",
+                            Button::new("newest").label("Newest").on_click(cx.listener(
+                                |view, _, _, cx| {
+                                    view.before = None;
+                                    let result = view.refresh();
+                                    view.report(result, cx);
+                                }
+                            ))
+                        ))
+                    }),
+            )
+            .child(
                 div()
                     .id("history")
                     .track_scroll(&self.history_scroll)
@@ -438,7 +505,8 @@ impl Desktop {
                     .min_h_0()
                     .overflow_y_scroll()
                     .px_5()
-                    .children(thread.messages.iter().map(|message| {
+                    .children(thread.history.messages.iter().map(|item| {
+                        let message = &item.message;
                         let role = match (&message.origin, message.role) {
                             (Some(sender), _) => self
                                 .threads
@@ -461,6 +529,35 @@ impl Desktop {
                                 format!("{role}/{}", message.text),
                                 message.text.clone(),
                             ))
+                            .when(item.truncated, |row| {
+                                let id = message.id.clone();
+                                row.child(control!(
+                                    format!("expand/{id}"),
+                                    Button::new(SharedString::from(format!("full-{id}")))
+                                        .label("Show full message")
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            if let Some(detail) = &mut view.current {
+                                                match view.runtime.read_message(&detail.id, &id) {
+                                                    Ok(message) => {
+                                                        if let Some(item) = detail
+                                                            .history
+                                                            .messages
+                                                            .iter_mut()
+                                                            .find(|item| item.message.id == id)
+                                                        {
+                                                            item.message = message;
+                                                            item.truncated = false;
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        view.error = Some(error.to_string())
+                                                    }
+                                                }
+                                                cx.notify();
+                                            }
+                                        })),
+                                ))
+                            })
                     })),
             )
             .when(!thread.permissions.is_empty(), |view| {
@@ -484,6 +581,24 @@ impl Desktop {
                     .gap_2()
                     .border_t_1()
                     .border_color(cx.theme().border)
+                    .when_some(
+                        last_run.and_then(|run| run.prompt_suggestion.clone()),
+                        |row, hint| {
+                            row.child(control!(
+                                "Suggested reply",
+                                Button::new("suggestion").label(hint.clone()).on_click(
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.prompt.read(cx).value().is_empty() {
+                                            view.prompt.update(cx, |input, cx| {
+                                                input.set_value(hint.clone(), window, cx)
+                                            });
+                                            view.prompt.focus_handle(cx).focus(window);
+                                        }
+                                    })
+                                )
+                            ))
+                        },
+                    )
                     .child(field("Message", &self.prompt))
                     .child(
                         h_flex()

@@ -579,6 +579,154 @@ async fn nested_results_wake_only_the_followup_that_requested_them() {
 }
 
 #[tokio::test]
+async fn stop_thread_holds_owned_queues_across_reopen_until_each_resumes() {
+    timeout(Duration::from_secs(20), async {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        checkout(&repo);
+        let options = options(&dir.path().join("state"));
+        let rt = Huggler::open(options.clone()).await.unwrap();
+        let project = rt.open_project(&repo).unwrap();
+        let parent = launch(&rt, &project, "author", Provider::ClaudeAgent);
+        let peer = launch(&rt, &project, "peer", Provider::ClaudeAgent);
+        let send = |target: &ThreadId, key: &str, prompt: &str| {
+            rt.send(CommandId(key.into()), target.clone(), prompt.into())
+                .unwrap()
+                .run_id
+                .unwrap()
+        };
+
+        let first = send(&parent, "branch", "start branch review");
+        completed(&rt, &parent, &first).await;
+        let branch = task(&rt, &parent, 0, |_| true).await;
+        let child = &branch.child_thread_id;
+        let leaf = task(&rt, child, 0, |_| true).await;
+        let grandchild = &leaf.child_thread_id;
+        permission(&rt, child).await;
+        permission(&rt, grandchild).await;
+        let revision = rt.peer_receipt(child, "revise").unwrap().unwrap().run_id;
+
+        // The stop must reach the first turn's descendants and preserve a
+        // completed result awaiting delivery to the active second turn.
+        let active = send(&parent, "settled", "delegate settled");
+        permission(&rt, &parent).await;
+        let review = task(&rt, &parent, 1, |t| t.status.terminal()).await;
+        assert_eq!(review.delivery, CompletionDelivery::Pending);
+        let peer_run = send(&peer, "queue", "queue-two");
+        let peer_request = permission(&rt, &peer).await;
+        let queued =
+            ["first", "second"].map(|key| rt.peer_receipt(&peer, key).unwrap().unwrap().run_id);
+        let old_resume = rt
+            .resume_queue(CommandId("early".into()), parent.clone())
+            .unwrap();
+        let stop = rt
+            .stop_thread(CommandId("stop".into()), parent.clone())
+            .unwrap();
+        for (owner, run) in [
+            (&parent, &active),
+            (child, &branch.child_run_id),
+            (grandchild, &leaf.child_run_id),
+        ] {
+            let result = rt.wait(owner, run).await.unwrap();
+            assert_eq!(result.status, RunStatus::Interrupted);
+            assert_eq!(result.error.as_deref(), Some("Stopped by the host"));
+            assert!(rt.read(owner).unwrap().permissions.is_empty());
+        }
+        let peer_snapshot = rt.read(&peer).unwrap();
+        assert!(matches!(peer_snapshot.permissions.as_slice(), [request] if request.id == peer_request.id && request.run_id == peer_run));
+        rt.revoke_agent_tools(&peer, &peer_run).unwrap();
+        release(&rt, &peer, None).await;
+        completed(&rt, &peer, &peer_run).await;
+
+        let saved = rt.read(&parent).unwrap();
+        assert_eq!(saved.runs.len(), 4);
+        assert_eq!(saved.runs[0].status, RunStatus::Completed);
+        assert_eq!(
+            saved.tasks[0].result_run_id.as_ref(),
+            Some(&branch.child_run_id)
+        );
+        assert_eq!(saved.tasks[0].status, RunStatus::Interrupted);
+        assert_eq!(saved.tasks[1].result_run_id, review.result_run_id);
+        assert_eq!(saved.tasks[1].result.as_deref(), Some("2+2=4"));
+        assert!(
+            saved
+                .tasks
+                .iter()
+                .all(|t| t.delivery == CompletionDelivery::Disposed && t.wake_run_id.is_none())
+        );
+        let nested = rt.read(child).unwrap().tasks.remove(0);
+        assert_eq!(nested.result_run_id.as_ref(), Some(&leaf.child_run_id));
+        assert_eq!(nested.delivery, CompletionDelivery::Disposed);
+        rt.close().await.unwrap();
+
+        let rt = Huggler::open(options).await.unwrap();
+        assert_eq!(
+            rt.resume_queue(old_resume.command_id.clone(), parent.clone())
+                .unwrap(),
+            old_resume
+        );
+        let reopened = rt.read(&parent).unwrap();
+        assert_eq!(reopened.cursor, saved.cursor);
+        for (run, expected) in reopened.runs[2..].iter().zip(&queued) {
+            assert_eq!(&run.id, expected);
+            assert!(run.queue_held && run.status == RunStatus::Queued);
+        }
+        let resume = rt
+            .resume_queue(CommandId("resume".into()), parent.clone())
+            .unwrap();
+        assert_eq!(resume.run_id.as_ref(), Some(&queued[0]));
+        for run in &queued {
+            completed(&rt, &parent, run).await;
+        }
+        let resumed = rt.read(&parent).unwrap();
+        let answers: Vec<_> = resumed
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Assistant && queued.contains(&m.run_id))
+            .map(|m| (&m.run_id, m.text.as_str()))
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                (&queued[0], "Received first"),
+                (&queued[1], "Received second")
+            ]
+        );
+        assert_eq!(resumed.tasks, saved.tasks);
+        assert_eq!(resumed.runs.len(), 4);
+        let held = rt.read(grandchild).unwrap().runs.pop().unwrap();
+        assert_eq!(held.id, revision);
+        assert!(held.queue_held && held.status == RunStatus::Queued);
+
+        let later = rt
+            .send(CommandId("later".into()), parent.clone(), "hold".into())
+            .unwrap()
+            .run_id
+            .unwrap();
+        permission(&rt, &parent).await;
+        assert_eq!(
+            rt.stop_thread(stop.command_id.clone(), parent.clone())
+                .unwrap(),
+            stop
+        );
+        release(&rt, &parent, None).await;
+        completed(&rt, &parent, &later).await;
+        rt.resume_queue(CommandId("revise".into()), grandchild.clone())
+            .unwrap();
+        completed(&rt, grandchild, &revision).await;
+        assert_eq!(
+            rt.read(grandchild).unwrap().messages.last().unwrap().text,
+            "Received revised finding"
+        );
+        assert_eq!(rt.read(child).unwrap().tasks, [nested]);
+        assert_eq!(rt.read(&parent).unwrap().tasks, saved.tasks);
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn cancellation_reaches_grandchildren_and_queued_work_even_after_a_result() {
     for mode in ["subtree", "settled"] {
         timeout(Duration::from_secs(8), async {
@@ -1138,6 +1286,21 @@ async fn exercise_worktree_delegation() {
         RunStatus::Failed
     );
     assert!(!nested_path.exists());
+    std::fs::rename(dir.path().join("moved"), &nested_path).unwrap();
+    assert_eq!(
+        acp_prompt(
+            &rt,
+            &nested.child_thread_id,
+            "repair",
+            "edit tracked repaired"
+        )
+        .await,
+        "isolated"
+    );
+    assert_eq!(
+        std::fs::read_to_string(nested_path.join("tracked.txt")).unwrap(),
+        "repaired"
+    );
     assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "shared");
     rt.close().await.unwrap();
 }
@@ -1147,4 +1310,108 @@ async fn worktree_delegation_keeps_the_callers_checkout_and_retries_after_reopen
     timeout(Duration::from_secs(30), exercise_worktree_delegation())
         .await
         .expect("worktree delegation");
+}
+
+#[tokio::test]
+async fn host_queue_edits_survive_reopen_in_delivery_order() {
+    timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        checkout(&repo);
+        let config = options(&dir.path().join("state"));
+        let rt = Huggler::open(config.clone()).await.unwrap();
+        let project = rt.open_project(&repo).unwrap();
+        let thread = launch(&rt, &project, "queue", Provider::ClaudeAgent);
+        let cmd = |id: &str, action| Command {
+            id: CommandId(id.into()),
+            thread_id: thread.clone(),
+            action,
+        };
+        let enqueue = |text: &str| cmd(text, Action::Enqueue { text: text.into() });
+        let active = rt.dispatch(enqueue("hold")).unwrap().run_id.unwrap();
+        permission(&rt, &thread).await;
+        assert!(matches!(
+            rt.dispatch(cmd(
+                "busy",
+                Action::Send {
+                    text: "busy".into()
+                }
+            )),
+            Err(Error::Busy)
+        ));
+        let automatic = cmd(
+            "auto",
+            Action::SendAuto {
+                text: "echo first".into(),
+            },
+        );
+        let received = rt.dispatch(automatic.clone()).unwrap();
+        let a = received.run_id.clone().unwrap();
+        assert_eq!(
+            rt.read(&thread).unwrap().runs.last().unwrap().status,
+            RunStatus::Queued
+        );
+        let b = rt.dispatch(enqueue("echo second")).unwrap().run_id.unwrap();
+        rt.dispatch(cmd("stop", Action::StopThread)).unwrap();
+        assert_eq!(
+            rt.wait(&thread, &active).await.unwrap().status,
+            RunStatus::Interrupted
+        );
+        let c = rt
+            .dispatch(enqueue("echo cancelled"))
+            .unwrap()
+            .run_id
+            .unwrap();
+        rt.dispatch(cmd("cancel", Action::CancelQueued { run: c.clone() }))
+            .unwrap();
+        assert_eq!(
+            rt.wait(&thread, &c).await.unwrap().status,
+            RunStatus::Interrupted
+        );
+        let edit = cmd(
+            "edit",
+            Action::EditQueued {
+                run: b.clone(),
+                text: "echo changed".into(),
+            },
+        );
+        let moved = cmd(
+            "move",
+            Action::MoveQueued {
+                run: b.clone(),
+                before: Some(a.clone()),
+            },
+        );
+        let edited = rt.dispatch(edit.clone()).unwrap();
+        rt.dispatch(moved.clone()).unwrap();
+        rt.close().await.unwrap();
+        let rt = Huggler::open(config).await.unwrap();
+        assert_eq!(rt.dispatch(edit).unwrap(), edited);
+        assert_eq!(
+            rt.dispatch(cmd("resume", Action::ResumeQueue))
+                .unwrap()
+                .run_id,
+            Some(b.clone())
+        );
+        completed(&rt, &thread, &a).await;
+        assert_eq!(rt.dispatch(automatic).unwrap(), received);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("delivery-log")).unwrap(),
+            "echo changed\necho first\n"
+        );
+        assert!(matches!(
+            rt.dispatch(cmd(
+                "late",
+                Action::MoveQueued {
+                    run: b,
+                    before: None
+                }
+            )),
+            Err(Error::Invalid(_))
+        ));
+        rt.dispatch(moved).unwrap();
+        rt.close().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
