@@ -63,9 +63,11 @@ On macOS, install the Rust license documentation and notice generator, fetch the
 
 ```sh
 rustup component add rust-docs
-cargo install --locked cargo-about --version 0.9.1
+cargo install --locked cargo-about --version 0.9.1 --features cli
 cargo fetch --locked --manifest-path desktop/Cargo.toml
 python3 scripts/check-desktop-release.py target/distribution
 ```
 
 The checker creates the app and Pi extension ZIPs, verifies the bundle signature and launches the extracted app with a fresh home and a system-only PATH. The 0.0.1 check ran on an Apple Silicon development Mac. Qualification on a separate clean Mac, the macOS deployment floor and Gatekeeper assessment of a notarized download remain open. [Production checker](../scripts/check-desktop-release.py) · [0.0.1 qualification](https://github.com/MrLightful/huggler/blob/ef2ffe78541842fe3b13d7468e8fd330b0e674d4/docs/stage-7.md)
+
+Run **Release candidates** from the GitHub Actions tab to download the verified crate and archive inventory, along with the ad-hoc signed macOS app and Pi extension ZIPs. The macOS job uses `--package-only`. Run the command above in a macOS GUI session to also verify launch, database creation, and quit. [Release candidates workflow](../.github/workflows/release-candidates.yml)

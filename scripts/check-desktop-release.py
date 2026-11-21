@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Archive the production app and optional Pi extension separately, then launch the unpacked app."""
+"""Verify separate archives for the production app and Pi extension, with an optional app launch."""
 import argparse
 from pathlib import Path
 import plistlib
@@ -53,7 +53,7 @@ def launch_and_quit(app, case):
         print("Production app opened default state and quit, schema", schema)
 
 
-def check(output):
+def check(output, *, package_only=False):
     output.mkdir(parents=True, exist_ok=True)
     with (tempfile.TemporaryDirectory(prefix="huggler release ") as tmp,
           tempfile.TemporaryDirectory(dir=output) as staging):
@@ -91,12 +91,15 @@ def check(output):
             assert z.read("huggler.mjs") == (ROOT / "adapters/pi/huggler.mjs").read_bytes()
             assert z.read("LICENSE") == (ROOT / "LICENSE").read_bytes()
             print(f"{bridge.name}: {bridge.stat().st_size} zipped, {sum(p.file_size for p in z.infolist())} installed bytes")
-        launch_and_quit(installed, case)
+        if not package_only:
+            launch_and_quit(installed, case)
         for artifact in (archive, bridge):
             artifact.replace(output / artifact.name)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--package-only", action="store_true", help="verify archives without launching the app")
     parser.add_argument("output", type=Path, help="directory for the release ZIPs")
-    check(parser.parse_args().output.resolve())
+    options = parser.parse_args()
+    check(options.output.resolve(), package_only=options.package_only)

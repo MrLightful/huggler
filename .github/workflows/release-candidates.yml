@@ -1,0 +1,63 @@
+name: Release candidates
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: '1.94.1'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  crate:
+    name: Cargo package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Verify the crate with an independent Cargo consumer
+        run: python3 scripts/check-package.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: huggler-crate-${{ github.run_attempt }}
+          path: |
+            target/package/huggler-*.crate
+            target/package/huggler-*.contents.txt
+          if-no-files-found: error
+
+  desktop:
+    name: Desktop and Pi packages (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+      - name: Install Rust and the license notice generator
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-docs
+          cargo install --locked cargo-about --version 0.9.1 --features cli
+          cargo about --version
+      - name: Build and verify the release archives
+        run: |
+          cargo fetch --locked --manifest-path desktop/Cargo.toml
+          python3 scripts/check-desktop-release.py --package-only target/distribution
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: huggler-desktop-and-pi-${{ github.run_attempt }}
+          path: target/distribution/huggler-*.zip
+          compression-level: 0
+          if-no-files-found: error

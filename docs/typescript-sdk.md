@@ -17,7 +17,7 @@ For distributable packages, install the Rust license documentation and notice ge
 
 ```sh
 rustup component add rust-docs
-cargo install --locked cargo-about --version 0.9.1
+cargo install --locked cargo-about --version 0.9.1 --features cli
 npm run pack:local
 npm test -- packages/huggler-sdk-0.0.1-preview.0.tgz packages/huggler-sdk-darwin-arm64-0.0.1-preview.0.tgz
 ```
@@ -30,7 +30,7 @@ The preview is distributed as local tarballs. For a registry release, confirm ac
 
 ## Verified workflows
 
-The consumer installs both tarballs offline with install scripts disabled. It compiles ESM and CommonJS consumers against the installed SDK and checks native response samples against its TypeScript declarations. [Consumer test](../bindings/node/tests/consumer/consumer.mts) · [CI workflow](../.github/workflows/node-bindings.yml)
+The consumer installs both tarballs offline with install scripts disabled. It compiles ESM and CommonJS consumers against the installed SDK and checks native response samples against its TypeScript declarations. Successful **Node bindings** runs attach the tested SDK and native tarballs for each platform to the workflow run. [Consumer test](../bindings/node/tests/consumer/consumer.mts) · [CI workflow](../.github/workflows/node-bindings.yml)
 
 | Workflow | Harness and prerequisites | Observed outcome |
 | --- | --- | --- |

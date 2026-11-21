@@ -87,7 +87,7 @@ From a Huggler checkout containing `bindings/node`, build on the same platform a
 ```sh
 cd bindings/node
 rustup component add rust-docs
-cargo install --locked cargo-about --version 0.9.1
+cargo install --locked cargo-about --version 0.9.1 --features cli
 npm ci --ignore-scripts
 npm run pack:local
 ```
