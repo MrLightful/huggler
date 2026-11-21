@@ -1,5 +1,9 @@
 //! Run-scoped agent tools on the runtime's loopback listener.
-use crate::{Error, Provider, Result as HostResult, RunId, TaskId, ThreadId, runtime::Shared};
+use crate::{
+    Error, Result as HostResult, TaskId, ThreadId,
+    contracts::agent_commands::{CreateThreads, Delegation},
+    runtime::Shared,
+};
 use axum::{
     Router,
     extract::{Request, State},
@@ -63,69 +67,23 @@ enum DeliveryMode {
     Auto,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Delegation {
-    pub task: String,
-    pub client_request_id: String,
-    /// Omit to use the parent's configured provider.
-    pub target: Option<Target>,
-    pub title: Option<String>,
-    pub role: Option<String>,
+struct DelegateTask {
+    #[serde(flatten)]
+    delegation: Delegation,
     #[serde(default)]
     mode: TaskMode,
     /// Maximum time in milliseconds for wait mode. Defaults to 30 seconds, capped at 45 seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub isolation: Isolation,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Target {
-    pub provider_instance_id: Provider,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreateThreads {
-    pub client_request_id: String,
-    #[schemars(length(min = 1, max = 20))]
-    pub threads: Vec<CreatePeer>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreatePeer {
-    pub title: Option<String>,
-    /// Omit to inherit the caller's provider.
-    pub target: Option<Target>,
-    /// Omit to create an idle peer.
-    pub prompt: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CreatedPeer {
-    pub thread_id: ThreadId,
-    pub run_id: Option<RunId>,
-}
-
-#[derive(Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum TaskMode {
     #[default]
     Async,
     Wait,
-}
-
-#[derive(Default, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Isolation {
-    #[default]
-    Shared,
-    Worktree,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -234,20 +192,18 @@ impl AgentServer {
     async fn delegate_task(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(mut input): Parameters<Delegation>,
+        Parameters(input): Parameters<DelegateTask>,
     ) -> CallToolResult {
         let result: HostResult<_> = async {
             let token = bearer(&parts.headers)?;
             // Waiting is a property of this call. A retry may observe the same
             // child with a different timeout or return immediately.
-            let mode = std::mem::take(&mut input.mode);
-            let timeout = input.timeout_ms.take();
-            let task = self.0.delegate(token, input)?;
-            match mode {
+            let task = self.0.delegate(token, input.delegation)?;
+            match input.mode {
                 TaskMode::Async => Ok(json!(task)),
                 TaskMode::Wait => {
                     let limit = std::time::Duration::from_millis(
-                        timeout.unwrap_or(30_000).clamp(1, 45_000),
+                        input.timeout_ms.unwrap_or(30_000).clamp(1, 45_000),
                     );
                     Ok(json!(
                         self.0.wait_for_task(token, &task.task_id, limit).await?
@@ -383,4 +339,33 @@ pub(crate) async fn serve(
             cancel.cancel();
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delegation_schema_and_parser_expose_the_same_flat_command() {
+        let schema = serde_json::to_value(schemars::schema_for!(DelegateTask)).unwrap();
+        let properties = schema["properties"].as_object().unwrap();
+        for field in [
+            "task",
+            "clientRequestId",
+            "target",
+            "title",
+            "role",
+            "isolation",
+            "mode",
+            "timeoutMs",
+        ] {
+            assert!(properties.contains_key(field), "missing {field}");
+        }
+        assert_eq!(schema["additionalProperties"], false);
+        let mut args =
+            json!({"task":"review", "clientRequestId":"key", "mode":"wait", "timeoutMs":100});
+        assert!(serde_json::from_value::<DelegateTask>(args.clone()).is_ok());
+        args["typo"] = json!(true);
+        assert!(serde_json::from_value::<DelegateTask>(args).is_err());
+    }
 }

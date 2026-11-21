@@ -48,7 +48,7 @@ impl<'a> Children<'a> {
     }
 
     /// A load replays complete transcripts, followed by a current-state update
-    /// even for long-idle children. Remember only lineage until work resumes.
+    /// even for long-idle children. Retain metadata until live work resumes.
     pub fn announcement(
         &mut self,
         root: &str,
@@ -90,6 +90,9 @@ impl<'a> Children<'a> {
         if let Some(title) = update.get("title") {
             child.view.path = title.as_str().unwrap_or(id).to_owned();
         }
+        if let Some(capabilities) = update.get("capabilities") {
+            child.cancel = capabilities["cancel"].is_object();
+        }
         if history {
             return None;
         }
@@ -107,9 +110,6 @@ impl<'a> Children<'a> {
             None if update.get("state").is_some() => Status::Unknown,
             None => child.view.status,
         };
-        if let Some(capabilities) = update.get("capabilities") {
-            child.cancel = capabilities["cancel"].is_object();
-        }
         if !child.observed && !status.working() {
             return None;
         }

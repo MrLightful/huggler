@@ -1,6 +1,9 @@
 mod questions;
 use crate::{
-    contracts::*,
+    contracts::{
+        agent_commands::{CreateThreads, CreatedPeer, Delegation},
+        *,
+    },
     providers::{
         ChildInterrupt, Control,
         claude_agent::{self, ClaudeAgentOptions},
@@ -98,8 +101,8 @@ impl Shared {
     pub(crate) fn create_threads(
         self: &Arc<Self>,
         token: &str,
-        input: crate::mcp::CreateThreads,
-    ) -> Result<Vec<crate::mcp::CreatedPeer>> {
+        input: CreateThreads,
+    ) -> Result<Vec<CreatedPeer>> {
         self.schedule(|db| db.create_threads(token, input))
     }
 
@@ -121,7 +124,7 @@ impl Shared {
     pub(crate) fn delegate(
         self: &Arc<Self>,
         token: &str,
-        input: crate::mcp::Delegation,
+        input: Delegation,
     ) -> Result<DelegatedTask> {
         self.schedule(|db| {
             let (task, fresh) = db.delegate(token, input)?;
@@ -499,7 +502,27 @@ impl Huggler {
     }
 
     pub fn threads(&self) -> Result<Vec<ThreadSummary>> {
-        self.shared.access(|db| db.threads())
+        self.shared.access(|db| db.threads_after(0))
+    }
+
+    /// Wait for conversations created after the last thread seen in creation order.
+    /// Pass `None` for an empty list. An unknown thread ID returns `Error::NotFound`.
+    pub async fn wait_for_threads_after(
+        &self,
+        last: Option<&ThreadId>,
+    ) -> Result<Vec<ThreadSummary>> {
+        let mut changed = self.shared.changed.subscribe();
+        let position = match last {
+            Some(id) => self.shared.access(|db| db.thread_position(id))?,
+            None => 0,
+        };
+        loop {
+            let threads = self.shared.access(|db| db.threads_after(position))?;
+            if !threads.is_empty() {
+                return Ok(threads);
+            }
+            changed.changed().await.map_err(|_| Error::Closed)?;
+        }
     }
 
     pub fn read(&self, id: &ThreadId) -> Result<Thread> {

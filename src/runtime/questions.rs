@@ -44,11 +44,10 @@ impl Shared {
                     return Ok(None);
                 }
                 if answers.len() != request.questions.len()
-                    || request.questions.iter().any(|q| {
-                        !q["id"]
-                            .as_str()
-                            .is_some_and(|key| answers.contains_key(key))
-                    })
+                    || request
+                        .questions
+                        .iter()
+                        .any(|q| !answers.contains_key(&q.id))
                 {
                     return Err(Error::Invalid(
                         "provide an answer for each question ID".into(),

@@ -26,6 +26,7 @@ fn main() -> Result<()> {
     let interactive = true;
 
     let mut options = HugglerOptions::new(&state);
+    options.agent_tools = true;
     options.codex.request_approvals = true;
     if let Some(path) = std::env::var_os("HUGGLER_CODEX") {
         options.codex.executable = path.into();

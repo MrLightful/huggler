@@ -19,6 +19,7 @@ pub struct Desktop {
     threads: Vec<ThreadSummary>,
     current: Option<Thread>,
     subscription: Option<Task<()>>,
+    thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
     checkout: Entity<InputState>,
     name: Entity<InputState>,
@@ -66,6 +67,7 @@ impl Desktop {
             threads: Vec::new(),
             current: None,
             subscription: None,
+            thread_updates: None,
             history_scroll: ScrollHandle::new(),
             checkout: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/project")),
             name: cx.new(|cx| InputState::new(window, cx)),
@@ -74,6 +76,30 @@ impl Desktop {
             error: None,
         };
         let restored = view.restore(window, cx);
+        if restored.is_ok() {
+            let runtime = view.runtime.clone();
+            let mut last = view.threads.last().map(|t| t.id.clone());
+            view.thread_updates = Some(cx.spawn(async move |view, cx| {
+                loop {
+                    let result = runtime.wait_for_threads_after(last.as_ref()).await;
+                    let done = result.is_err();
+                    if view
+                        .update(cx, |view, cx| match result {
+                            Ok(added) => {
+                                last = added.last().map(|t| t.id.clone());
+                                view.threads.extend(added);
+                                cx.notify();
+                            }
+                            Err(error) => view.report(Err(error), cx),
+                        })
+                        .is_err()
+                        || done
+                    {
+                        break;
+                    }
+                }
+            }));
+        }
         view.report(restored, cx);
         view
     }
@@ -185,7 +211,6 @@ impl Desktop {
                 model: None,
             },
         })?;
-        self.threads = self.runtime.threads()?;
         self.select(id, window, cx)
     }
 
@@ -337,10 +362,14 @@ impl Desktop {
                     .overflow_y_scroll()
                     .px_5()
                     .children(thread.messages.iter().map(|message| {
-                        let role = if message.role == Role::User {
-                            "You"
-                        } else {
-                            provider
+                        let role = match (&message.origin, message.role) {
+                            (Some(sender), _) => self
+                                .threads
+                                .iter()
+                                .find(|t| t.id == sender.thread_id)
+                                .map_or(sender.thread_id.0.as_str(), |t| t.name.as_str()),
+                            (None, Role::User) => "You",
+                            (None, Role::Assistant) => provider,
                         };
                         v_flex()
                             .py_3()
@@ -349,7 +378,7 @@ impl Desktop {
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(role),
+                                    .child(role.to_owned()),
                             )
                             .child(control!(
                                 format!("{role}/{}", message.text),

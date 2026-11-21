@@ -201,7 +201,20 @@ async fn resumed_child_keeps_its_lineage_and_each_runs_own_answer() {
         agents::completed(&rt, &thread, &first).await;
         rt.close().await.unwrap();
         let rt = Huggler::open(options).await.unwrap();
+        let (_, mut events) = rt.subscribe(&thread, None).unwrap();
         let second = send(&rt, &thread, "resume");
+        let inspect = permission(&mut events, "inspect resumed writer").await;
+        let state = rt.read(&thread).unwrap();
+        let writer = state
+            .native_children
+            .iter()
+            .find(|c| c.run_id == second)
+            .unwrap();
+        assert_eq!(writer.thread_id.0, WRITER);
+        assert_eq!(writer.status, NativeChildStatus::Running);
+        assert!(writer.can_interrupt);
+        rt.respond_to_permission(&thread, &second, &inspect.id, "yes".into())
+            .unwrap();
         agents::completed(&rt, &thread, &second).await;
         let state = rt.read(&thread).unwrap();
         assert_eq!(state.messages.len(), 4);

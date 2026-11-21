@@ -69,9 +69,9 @@ impl Rpc {
     }
 
     pub async fn finish(&mut self, outcome: Result<()>) -> Result<()> {
-        // On a host stop, a launcher can exit on EOF and leave its helpers running.
+        // On failure, stop helpers while the unreaped launcher still owns its PID.
         #[cfg(unix)]
-        if matches!(outcome, Err(Error::Closed)) {
+        if outcome.is_err() {
             self.kill_process_group();
         }
         self.input.take();

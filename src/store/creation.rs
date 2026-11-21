@@ -1,5 +1,5 @@
 use super::*;
-use crate::mcp::{CreateThreads, CreatedPeer};
+use crate::contracts::agent_commands::{CreateThreads, CreatedPeer};
 
 /// Agent-created threads inherit their caller's checkout. A different provider
 /// starts with its own default model.
@@ -191,6 +191,51 @@ mod tests {
     }
 
     #[test]
+    fn peer_delivery_recovers_until_claimed_and_keeps_its_receipt() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut db, token) = setup(dir.path())?;
+        let (peers, _) = db.create_threads(&token, batch(json!([{}])))?;
+        let target = &peers[0].thread_id;
+        let (first, _) = db.send_peer(&token, target, "first", "Review")?;
+        let (second, _) = db.send_peer(&token, target, "second", "Follow up")?;
+        assert_eq!(first.delivery, PeerDelivery::Started);
+        assert_eq!(second.delivery, PeerDelivery::Queued);
+        drop(db);
+
+        let mut db = Database::open(dir.path())?;
+        assert_eq!(db.ready_jobs()?, [(target.clone(), first.run_id.clone())]);
+        db.claim(&first.run_id)?;
+        drop(db);
+
+        let mut db = Database::open(dir.path())?;
+        assert_eq!(
+            db.find_run(target, &first.run_id)?.status,
+            RunStatus::Failed
+        );
+        assert_eq!(db.ready_jobs()?, [(target.clone(), second.run_id.clone())]);
+        drop(db);
+
+        // The queued follow-up was promoted, but its worker hadn't claimed it.
+        let mut db = Database::open(dir.path())?;
+        assert_eq!(db.ready_jobs()?, [(target.clone(), second.run_id.clone())]);
+        let (retry, _) = db.dispatch(&Command {
+            id: CommandId("retry".into()),
+            thread_id: ThreadId("caller".into()),
+            action: Action::Send {
+                text: "retry delivery".into(),
+            },
+        })?;
+        let token = db.grant(&retry.run_id.unwrap())?;
+        assert_eq!(
+            db.send_peer(&token, target, "second", "Follow up")?,
+            (second.clone(), false)
+        );
+        assert!(db.claim(&second.run_id)?.text.ends_with("Follow up"));
+        assert_eq!(db.read(target)?.runs.len(), 2);
+        Ok(())
+    }
+
+    #[test]
     fn batch_recovery_starts_only_unclaimed_prompts() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let (mut db, token) = setup(dir.path())?;
@@ -226,7 +271,7 @@ mod tests {
             db.create_threads(&token, invalid),
             Err(Error::Invalid(_))
         ));
-        assert_eq!(db.threads()?.len(), 1);
+        assert_eq!(db.threads_after(0)?.len(), 1);
         let (peers, jobs) = db.create_threads(&token, batch(json!([{}, {"prompt":"original"}])))?;
         assert_eq!(jobs.len(), 1);
         for entries in [

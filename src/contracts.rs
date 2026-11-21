@@ -1,4 +1,6 @@
 //! Serializable application commands, projections and thread-scoped stream frames.
+pub(crate) mod agent_commands;
+
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
@@ -69,13 +71,40 @@ pub struct PermissionRequest {
     pub options: Vec<PermissionOption>,
 }
 
-/// Structured questions from a provider turn. Each question has a provider-local
-/// string `id`. The provider's option descriptions and previews are retained.
+/// Structured questions from a provider turn, keyed by their provider-local IDs.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct UserInputRequest {
     pub id: RequestId,
     pub run_id: RunId,
-    pub questions: Vec<serde_json::Value>,
+    pub questions: Vec<UserInputQuestion>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputQuestion {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub is_other: bool,
+    #[serde(default)]
+    pub is_secret: bool,
+    pub options: Option<Vec<UserInputOption>>,
+    #[serde(flatten)]
+    pub extensions: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct UserInputOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(flatten)]
+    pub extensions: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize, rmcp::schemars::JsonSchema)]

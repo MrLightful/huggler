@@ -206,12 +206,12 @@ impl Database {
         tx.execute_batch(
             "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
         )?;
-        // Queue unclaimed task launches, wakes and peer creations for a new worker.
+        // Queue unclaimed task launches, wakes and peer messages for a new worker.
         // A claimed effect may already have reached the provider.
         tx.execute("UPDATE run SET status='queued' WHERE status='starting' AND stop_requested=0
             AND id IN (SELECT run_id FROM turn_effect WHERE state='pending')
             AND (id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task)
-                OR id IN (SELECT initial_run FROM peer_creation))", [])?;
+                OR id IN (SELECT run_id FROM message WHERE origin IS NOT NULL))", [])?;
         let lost = tx
             .prepare(
                 "SELECT r.id, r.thread_id FROM turn_effect e
@@ -765,11 +765,18 @@ impl Database {
         Ok((receipt, true))
     }
 
-    pub fn threads(&self) -> Result<Vec<ThreadSummary>> {
+    pub fn thread_position(&self, id: &ThreadId) -> Result<i64> {
+        self.db
+            .query_row("SELECT rowid FROM thread WHERE id=?", [&id.0], |r| r.get(0))
+            .optional()?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    pub fn threads_after(&self, position: i64) -> Result<Vec<ThreadSummary>> {
         Ok(self
             .db
-            .prepare("SELECT id,name FROM thread ORDER BY rowid")?
-            .query_map([], |r| {
+            .prepare("SELECT id,name FROM thread WHERE rowid>? ORDER BY rowid")?
+            .query_map([position], |r| {
                 Ok(ThreadSummary {
                     id: ThreadId(r.get(0)?),
                     name: r.get(1)?,
@@ -931,7 +938,9 @@ mod tests {
                 ('input','revision','user','revise'),('answer','revision','assistant','revised'),
                 ('sibling-answer','sibling-run','assistant','pending at restart');
             INSERT INTO delegated_task(id,parent_thread,parent_run,request_key,intent,child_thread,child_run,result_run,delivery)
-                VALUES('task','owner','sender','original','{}','child','first','revision','disposed'),
+                VALUES('task','owner','sender','original',
+                       '{"task":"review","clientRequestId":"original","target":null,"title":null,"role":null,"mode":"async","isolation":"shared"}',
+                       'child','first','revision','disposed'),
                       ('sibling','owner','sender','sibling','{}','later','sibling-run',NULL,'pending');
             INSERT INTO task_cancel_receipt VALUES('task','request:stop');
             INSERT INTO peer_receipt VALUES('owner','old-send','input',
@@ -953,6 +962,19 @@ mod tests {
         assert_eq!(tasks[0].result.as_deref(), Some("revised"));
         assert_eq!(tasks[0].delivery, CompletionDelivery::Disposed);
         assert_eq!(tasks[1].result.as_deref(), Some("pending at restart"));
+
+        let retry = |task| {
+            serde_json::from_value(serde_json::json!({
+                "clientRequestId": "original", "task": task,
+            }))
+        };
+        let (original, fresh) = db.delegate(&token, retry("review")?)?;
+        assert!(!fresh);
+        assert_eq!(original, tasks[0]);
+        assert!(matches!(
+            db.delegate(&token, retry("changed")?),
+            Err(Error::Conflict { .. })
+        ));
 
         let (old, fresh) = db.send_peer(&token, &child, "old-send", "revise")?;
         assert!(!fresh && old.task_id.is_none());

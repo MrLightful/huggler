@@ -139,7 +139,9 @@ elif scenario in ("first", "resume"):
         announce()
         child(ROOT, RELAY, state=DONE)
     else:
-        child(RELAY, WRITER, state=RUNNING, capabilities=CANCEL)
+        child(RELAY, WRITER, state=RUNNING)
+        permission(ROOT, "inspect resumed writer")
+        expect_selected("inspect resumed writer")
     chunk(WRITER, "earlier progress", message="progress")
     chunk(WRITER, scenario + " ")
     chunk(WRITER, "finding")

@@ -27,3 +27,6 @@ for line in sys.stdin:
                     os._exit(0)
         result = {"turn": {"id": "accepted"}}
     print(json.dumps({"id": frame["id"], "result": result}), flush=True)
+    if frame["method"] == "turn/start" and Path("invalid-frame").exists():
+        print("invalid frame", flush=True)
+        break

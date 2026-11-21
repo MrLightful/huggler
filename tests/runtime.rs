@@ -155,6 +155,22 @@ fn wait_for_helper_exit(lease: &fs::File) {
 }
 
 #[tokio::test]
+async fn protocol_failure_releases_the_provider_helpers_lock() {
+    let dir = tempdir().unwrap();
+    let lease = fs::File::create(dir.path().join("model.lock")).unwrap();
+    fs::write(dir.path().join("invalid-frame"), "").unwrap();
+    let (rt, receipt) = start_stalled(dir.path()).await;
+    let run = rt
+        .wait(&receipt.thread_id, receipt.run_id.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(run.status, RunStatus::Failed);
+    assert!(run.error.unwrap().contains("invalid JSON-RPC frame"));
+    wait_for_helper_exit(&lease);
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn close_reaps_an_active_child_with_observers_still_attached() {
     let dir = tempdir().unwrap();
     let lease = fs::File::create(dir.path().join("model.lock")).unwrap();

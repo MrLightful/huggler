@@ -188,6 +188,7 @@ async fn early_question_preserves_previews_and_expires_on_provider_loss() {
         let mut early = rows.remove(request_at);
         early["frame"]["params"]["questions"][0]["options"][0]["preview"] =
             json!("Proposed schema");
+        early["frame"]["params"]["questions"][0]["vendorField"] = json!({"version": 2});
         let start = index(&rows, "emit_inbound", "turn/start");
         rows.insert(start, early);
         let response_at = index(&rows, "expect_outbound", "item/tool/requestUserInput");
@@ -196,10 +197,11 @@ async fn early_question_preserves_previews_and_expires_on_provider_loss() {
         rows.push(json!({"type":"runtime_exit"}));
         let (options, rt, _, thread, run, mut events) = plan(dir.path(), &rows, false).await;
         let request = requested(&mut events).await;
-        assert_eq!(
-            request.questions[0]["options"][0]["preview"],
-            "Proposed schema"
-        );
+        let question = &request.questions[0];
+        assert_eq!(question.id, "schema_preference");
+        assert_eq!(question.extensions["vendorField"], json!({"version": 2}));
+        let option = &question.options.as_ref().unwrap()[0];
+        assert_eq!(option.preview.as_deref(), Some("Proposed schema"));
         fs::write(dir.path().join("release"), "").unwrap();
         assert_eq!(
             rt.wait(&thread, &run).await.unwrap().status,

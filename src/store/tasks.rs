@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    mcp::{Delegation, Isolation},
+    contracts::agent_commands::{Delegation, Isolation},
     worktree,
 };
 
@@ -108,7 +108,6 @@ impl Database {
         if input.client_request_id.trim().is_empty() || input.task.trim().is_empty() {
             return Err(Error::Invalid("expected a task and clientRequestId".into()));
         }
-        let intent = serde_json::to_string(&input)?;
         let tx = self.db.transaction()?;
         let previous = tx
             .query_row(
@@ -118,7 +117,8 @@ impl Database {
             )
             .optional()?;
         if let Some((id, original)) = previous {
-            if intent != original {
+            // Older receipts also serialized the MCP call's wait mode.
+            if input != serde_json::from_str::<Delegation>(&original)? {
                 return Err(Error::Conflict {
                     command: CommandId(input.client_request_id),
                     original_thread: parent.clone(),
@@ -127,6 +127,7 @@ impl Database {
             }
             return Ok((owned(&tx, &parent, &id)?, false));
         }
+        let intent = serde_json::to_string(&input)?;
         let id = TaskId(new_id());
         let provider = input.target.map(|t| t.provider_instance_id);
         let name = input.title.as_deref().unwrap_or("Delegated task");

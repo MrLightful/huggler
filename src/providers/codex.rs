@@ -6,9 +6,10 @@ use super::{
 };
 use crate::{
     Error, NativeChildTurn, NativeThreadId, NativeTurnId, PermissionOption, PermissionRequest,
-    RequestId, Result, UserAnswer, UserAnswers, UserInputRequest,
+    RequestId, Result, UserAnswer, UserAnswers, UserInputQuestion, UserInputRequest,
 };
 use children::Children;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -310,16 +311,13 @@ impl Client {
                 let root_request =
                     !foreground_complete && p["threadId"] == thread && p["turnId"] == id;
                 if frame["method"] == "item/tool/requestUserInput" && root_request {
-                    let Some(items) = p["questions"].as_array() else {
-                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"Missing questions"}})).await?;
+                    let Ok(items) = Vec::<UserInputQuestion>::deserialize(&p["questions"]) else {
+                        self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"Invalid questions"}})).await?;
                         continue;
                     };
-                    let ids: HashSet<_> = items
-                        .iter()
-                        .filter_map(|item| item["id"].as_str().filter(|id| !id.is_empty()))
-                        .collect();
+                    let mut ids = HashSet::new();
                     if items.is_empty()
-                        || ids.len() != items.len()
+                        || items.iter().any(|q| q.id.is_empty() || !ids.insert(&q.id))
                         || questions.values().any(|id| id == wire_id)
                     {
                         self.rpc.write(json!({"id":wire_id,"error":{"code":-32602,"message":"Invalid question IDs"}})).await?;
@@ -330,7 +328,7 @@ impl Client {
                     update(Update::Question(UserInputRequest {
                         id,
                         run_id: permissions.run.clone(),
-                        questions: items.clone(),
+                        questions: items,
                     }))?;
                     continue;
                 }
