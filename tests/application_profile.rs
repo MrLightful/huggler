@@ -613,7 +613,34 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
             Err(Error::Forbidden)
         ));
     }
-    let project = rt.allocate_workspace(&cloned.id)?;
+    let run_git = |root: &Path, args: &[&str]| -> Result<String> {
+        let output = std::process::Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)
+            .unwrap()
+            .trim_end()
+            .to_owned())
+    };
+    run_git(&cloned.root, &["branch", "fixture-base"])?;
+    let original = run_git(&cloned.root, &["rev-parse", "HEAD"])?;
+    run_git(
+        &cloned.root,
+        &["symbolic-ref", "HEAD", "refs/heads/fixture-unborn"],
+    )?;
+    assert!(
+        rt.allocate_workspace_at(&cloned.id, "refs/heads/missing")
+            .is_err()
+    );
+    assert!(rt.allocated_workspaces(&cloned.id)?.is_empty());
+    let project = rt.allocate_workspace_at(&cloned.id, "refs/heads/fixture-base")?;
+    assert_eq!(run_git(&project.root, &["rev-parse", "HEAD"])?, original);
     assert_eq!(project.root.parent().unwrap(), pool.canonicalize()?);
     rt.close().await?;
     opts.storage.worktree_root = WorktreeRoot::Shared("new pool".into());

@@ -45,7 +45,12 @@ impl Huggler {
     }
     /// Allocate a detached checkout of the project's current HEAD.
     pub fn allocate_workspace(&self, source: &ProjectId) -> Result<Project> {
-        self.shared.access(|db| db.allocate_workspace(source))
+        self.allocate_workspace_at(source, "HEAD")
+    }
+    /// Resolve a Git revision in the source repository and allocate a detached checkout of its commit.
+    pub fn allocate_workspace_at(&self, source: &ProjectId, revision: &str) -> Result<Project> {
+        self.shared
+            .access(|db| db.allocate_workspace(source, revision))
     }
     /// Enumerate managed checkout reservations in the same Git repository as the source.
     pub fn allocated_workspaces(&self, source: &ProjectId) -> Result<Vec<Project>> {

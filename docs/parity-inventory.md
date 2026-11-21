@@ -15,7 +15,7 @@ Check Huggler’s public interface and tests for current support. Record provide
 
 ## Composer suggestions
 
-The desktop owns trigger detection, file search, selection, and draft edits. For `@`, it searches tracked and non-ignored untracked files in the selected checkout, or files in a scratch conversation. The selected relative path is sent as a Markdown link in the existing message. This follows T3 Code's file reference format. [T3 Code menu and selection](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/ChatComposer.tsx) · [T3 Code workspace search regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/workspace/WorkspaceEntries.test.ts)
+The desktop owns trigger detection, file search, selection, and draft edits. For `@`, it searches the target branch before creating a worktree or switching the current checkout. Otherwise, it searches tracked and non-ignored untracked files in the current checkout or files in a scratch conversation. The selected relative path is sent as a Markdown link in the existing message. This follows T3 Code's file reference format. [T3 Code menu and selection](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/ChatComposer.tsx) · [T3 Code workspace search regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/workspace/WorkspaceEntries.test.ts)
 
 | Harness | Version and transport | Skill discovery and delivery |
 | --- | --- | --- |
@@ -23,6 +23,12 @@ The desktop owns trigger detection, file search, selection, and draft edits. For
 | Other adapters | See [driver source map](upstream-watch-guide.md#locate-a-harness-change) | Skill discovery is unavailable in the desktop. |
 
 The [provider fixture test](../tests/provider_instances.rs) verifies checkout scope, disabled skills, same-named skills, and independent model discovery. The [macOS qualification check](../scripts/check-provider-desktop.py) drives the composer with keyboard and mouse and inspects the resulting Codex `turn/start` input. The live protocol check used `skills/list` only.
+
+## Desktop conversation checkout
+
+Desktop owns the workspace mode and the searchable branch picker. It follows T3 Code's rule that a default worktree base must resolve to a commit. Desktop reads Git's cached remote default at launch, prefers `origin` when present, and falls back to `main`, `master`, the current commit, or another available branch. The worktree picker includes local and remote-tracking refs. **Current checkout** uses the chosen directory and can switch to a selected local branch at launch. Git refuses switches that would overwrite local files or use a branch checked out in another worktree. A repository without a base commit falls back to **Current checkout**. Remote-tracking refs reflect the last Git fetch. [T3 Code default branch regression](https://github.com/pingdotgg/t3code/commit/bc7fe11002aaa29a98d7429eb765765bc366b59d) · [Desktop workflow](../scripts/check-desktop-coding.py)
+
+The Rust allocator resolves the chosen ref to an immutable commit before reserving a managed checkout. The desktop check verifies the provider's working directory and the worktree's starting commit using a scripted Codex app-server peer over stdio. [Rust workspace API](../src/workspace.rs) · [Allocation and release check](../tests/application_profile.rs)
 
 ## Desktop storage layout
 
