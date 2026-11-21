@@ -245,6 +245,13 @@ async fn process_loss_recovers_a_claimed_turn_without_reissuing_it() {
     );
     assert_eq!(state.runs.len(), 1);
     assert_eq!(state.runs[0].status, RunStatus::Failed);
+    assert!(
+        state.runs[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("delivery is uncertain")
+    );
     assert_eq!(
         state.runs[0].native_turn,
         Some(NativeTurnId("accepted".into()))

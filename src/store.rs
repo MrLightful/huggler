@@ -1,4 +1,6 @@
 mod context;
+#[cfg(test)]
+mod crash_tests;
 mod creation;
 mod history;
 mod interrupts;
@@ -267,18 +269,24 @@ impl Database {
                 OR id IN (SELECT run_id FROM message WHERE origin IS NOT NULL))", [])?;
         let lost = tx
             .prepare(
-                "SELECT r.id, r.thread_id FROM turn_effect e
+                "SELECT r.id,r.thread_id,e.state FROM turn_effect e
                       JOIN run r ON r.id=e.run_id WHERE r.status != 'queued' ORDER BY r.rowid",
             )?
-            .query_map([], |row| Ok((RunId(row.get(0)?), ThreadId(row.get(1)?))))?
+            .query_map([], |row| {
+                Ok((
+                    RunId(row.get(0)?),
+                    ThreadId(row.get(1)?),
+                    row.get::<_, String>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (id, thread) in lost {
-            Self::finish_tx(
-                &tx,
-                &thread,
-                &id,
-                Err(Error::Provider("runtime exited during turn".into())),
-            )?;
+        for (id, thread, state) in lost {
+            let reason = if state == "claimed" {
+                "runtime exited after provider claim; delivery is uncertain"
+            } else {
+                "runtime exited before provider claim; prompt was not sent"
+            };
+            Self::finish_tx(&tx, &thread, &id, Err(Error::Provider(reason.into())))?;
         }
         native_children::disconnect(&tx, None)?;
         tx.commit()?;
