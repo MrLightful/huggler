@@ -1,64 +1,30 @@
 ---
 title: Control threads
-description: Submit, observe, and interrupt turns while handling provider callbacks.
+description: Submit a turn, render live output, and resolve provider requests from your host.
 ---
+
+## Implementation by language
+<BindingLinks topic="control-threads" />
 
 ## Choose how input is delivered
 
-Both hosts create a thread with a launch command, then submit the first prompt with a separate send. In TypeScript, pass `providerInstanceId` to `host.launch` and use `host.send` on an idle thread. Set `mode: "plan"` for a Codex planning turn. A busy thread rejects an ordinary send with `HugglerError.code` equal to `busy`.
+Launch a thread first, then send its first prompt as a separate command. A regular send starts a run on an idle thread. For busy threads, use the binding’s queue or steering support where available. For a Codex planning turn, select plan mode when sending.
 
-In Rust, use `launch` for the default Codex instance or dispatch `Action::LaunchInstance` for a named one. Rust hosts can also choose a delivery policy or edit the queue through the following actions.
-
-| Action | Behavior |
-| --- | --- |
-| `Send` | Starts an idle thread or returns `Error::Busy`. The `send` helper uses this action. |
-| `Enqueue` | Starts an idle thread or appends a run to the queue. |
-| `SendAuto` | Starts an idle thread, steers a bound running Codex turn, or queues behind outstanding work. |
-| `Steer` | Targets an expected live Codex `RunId`. Poll `steer_outcome` for the provider acknowledgement. |
-| `Restart` | Stops the expected foreground run and gives the replacement priority over older queued messages. |
-| `SendPlan` | Submits a turn in Codex plan mode. |
-| `SetModel` | Selects the model for future submissions. |
-
-Supply a fresh `CommandId` for a new intent. Retain that ID and the original payload to retry. The returned `Receipt` records acceptance. Check the resulting `Run` for completion, interruption, or failure.
-
-Use `EditQueued`, `MoveQueued`, or `CancelQueued` with the queued run’s ID. `MoveQueued` takes an optional `before` run. Pass `None` to move the item to the end. `stop_thread` interrupts current work in the thread and its owned delegation tree and holds their queues. Call `resume_queue` on each thread whose queue you want to release.
+Use a fresh command ID for each new action. Keep the original ID and payload to retry. The receipt reports acceptance. Read the associated run to see whether the provider completed, failed, or was interrupted.
 
 ## Stream output and reconcile the final reply
 
-In Rust, call `subscribe(&thread, None)` to get a snapshot and the stream after its cursor. In your host’s event loop, consume `Subscription::next().await`. Render `Change::OutputDelta` as provisional output keyed by its run ID. Replace provisional output with the committed `Change::Message` or a fresh snapshot. Some providers deliver only final text.
+Subscribe to the thread and render the returned snapshot. Group live output by run ID and replace provisional text with the committed assistant message when it arrives. Some providers supply only final text.
 
-In TypeScript, use `for await` on the subscription. This observer prints committed assistant messages from the snapshot and then follows new ones until the caller aborts the signal. For live typing, also handle `outputDelta` and group partial text by `change.runId`.
-
-```ts
-import type { Huggler, ThreadId } from "@huggler/sdk"
-
-async function followReplies(host: Huggler, thread: ThreadId, signal: AbortSignal) {
-  const { snapshot, events } = await host.subscribe(thread, { signal })
-  for (const message of snapshot.messages) {
-    if (message.role === "assistant") console.log(message.text)
-  }
-  for await (const { change } of events) {
-    if (change.type === "message" && change.message.role === "assistant") {
-      console.log(change.message.text)
-    }
-  }
-}
-```
-
-Wait for a terminal state with Rust’s `wait(&thread, &run_id)` or TypeScript’s `await host.wait(thread, runId)`. Aborting a TypeScript wait or subscription detaches the observer. To interrupt the work, use `host.stopThread({ commandId, threadId })` or Rust’s `stop_thread`. For Codex command output in Rust, call `command_items` then `command_output` with an item ID. Pass the previous revision to wait for a newer tail or closure.
+Keep consuming events while the run is active. A wait for terminal status may remain pending while the provider is waiting for user input. To stop the work, use the binding’s interruption command. [Durability and recovery](/concepts/durability/#recover-a-view-from-its-cursor)
 
 ## Answer permissions and questions
 
-Read the snapshot’s `permissions` and `questions` on startup. Continue handling requests while the run is active so the provider can finish the turn.
-
-In TypeScript, handle `permissionRequested` and `questionRequested` in `event.change`. Both carry a `request`. Pass `{ threadId: event.threadId, runId: request.runId, requestId: request.id }` with the user's response. For `host.respondToPermission`, add `option` with the user's chosen `request.options` entry's `optionId`. For `host.respondToQuestion`, add `answers` mapping each question ID to a string or array of strings. Clear the corresponding UI on `permissionClosed` or `questionClosed`.
-
-In Rust, handle `Change::PermissionRequested` and `Change::QuestionRequested` as they arrive.
-
-- For a permission, pass the owning thread, run, request ID and one provider-supplied option ID to `respond_to_permission`. If the request came from a native child, use the owning application run reported with that request.
-- For a question, call `respond_to_question` with `UserAnswers` keyed by the supplied question IDs. Use `respond_with_attachments` for uploads keyed by question ID, or `dismiss_question` when the provider supports dismissal.
-- Remove closed requests from the host UI. Provider loss can close an unanswered request. Refresh the thread when a response races with closure.
+1. On startup, show pending permissions and questions from the snapshot.
+2. Listen for new requests. Present the provider’s options and preserve its request, thread, and owning run identifiers.
+3. Submit the option or answers chosen by the user. Use the provider’s option and question IDs.
+4. Remove the request when it closes. If the provider exits or a response races with closure, refresh the thread before continuing.
 
 ## Attach text to a message
 
-In Rust, call `prepare_upload(&thread, name, "text/plain", bytes)` for UTF-8 text of up to 64 KiB. Submit up to eight staged uploads in one `SendAttachments` command. A successful send claims the files for that message. Use `discard_upload` to clean up files that were staged and left unused.
+Where the binding supports uploads, stage a UTF-8 text file on the target thread and submit it with the message. Discard any staged file you decide to leave unused. [Attach text in Rust](/bindings/rust/control-threads/#attach-text-to-a-message)

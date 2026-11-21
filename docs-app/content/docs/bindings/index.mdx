@@ -1,0 +1,22 @@
+---
+title: Binding directory
+description: Choose a language and check which workflows its API exposes.
+---
+
+<BindingDirectory />
+
+## Feature availability
+
+| Host workflow | Rust | TypeScript preview |
+| --- | --- | --- |
+| Register a project, launch a thread, and send a turn | Available | Available |
+| Read snapshots, search history, and replay events | Available | Available |
+| Answer provider approvals and questions, or stop a thread | Available | Available |
+| Submit Codex planning turns | Available | Available |
+| Queue and steer turns, attach text, or inspect Codex command output | Available | Unavailable |
+| Import transcripts, fork threads, and capture checkpoints | Available | Unavailable |
+| Configure collaboration tools and interrupt provider-native children | Available | Can observe stored tasks, native children, and events |
+| Connect peers across hosts and share threads with guests | Available | Unavailable |
+| Manage workspaces, schedules, repository bindings, and host services | Optional `application` feature | Unavailable |
+
+Provider support can vary within an available host workflow. For example, streaming depends on the adapter and the installed agent. [Provider transports](/reference/providers/)

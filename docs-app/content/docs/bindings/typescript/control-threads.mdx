@@ -1,0 +1,38 @@
+---
+title: Control threads in TypeScript
+description: Follow asynchronous events, respond to provider requests, and interrupt a turn.
+---
+
+## Choose how input is delivered
+
+Pass `providerInstanceId` to `host.launch`, then call `host.send` on the idle thread. Set `mode: "plan"` for a Codex planning turn. A busy thread rejects an ordinary send with `HugglerError.code` equal to `busy`. Queue and steering controls are unavailable in the preview.
+
+## Stream output and reconcile the final reply
+
+Use `for await` on the subscription. This observer prints committed assistant messages from the snapshot and then follows new ones until the caller aborts the signal. For live typing, also handle `outputDelta` and group partial text by `change.runId`.
+
+```ts
+import type { Huggler, ThreadId } from "@huggler/sdk"
+
+async function followReplies(host: Huggler, thread: ThreadId, signal: AbortSignal) {
+  const { snapshot, events } = await host.subscribe(thread, { signal })
+  for (const message of snapshot.messages) {
+    if (message.role === "assistant") console.log(message.text)
+  }
+  for await (const { change } of events) {
+    if (change.type === "message" && change.message.role === "assistant") {
+      console.log(change.message.text)
+    }
+  }
+}
+```
+
+Use `await host.wait(thread, runId)` for terminal status. Aborting a wait or a subscription detaches that observer. To interrupt the turn itself, call `host.stopThread({ commandId, threadId: thread })` with a fresh command ID.
+
+## Answer permissions and questions
+
+Start with pending requests from the snapshot. Handle `permissionRequested` and `questionRequested` in `event.change`. Both carry a `request`. Pass `{ threadId: event.threadId, runId: request.runId, requestId: request.id }` with the user's response. For `host.respondToPermission`, add `option` with the user's chosen `request.options` entry's `optionId`. For `host.respondToQuestion`, add `answers` mapping each question ID to a string or array of strings. Clear the corresponding UI on `permissionClosed` or `questionClosed`.
+
+## Resume a subscription
+
+Pass `{ after: eventCursor(savedSequence) }` to `host.subscribe` to replay from a saved sequence. Keep sequence values as strings. On `cursor_expired`, start a fresh subscription. [Durability and recovery](/concepts/durability/#recover-a-view-from-its-cursor)

@@ -3,7 +3,7 @@ title: TypeScript SDK
 description: Options, methods, and error handling for @huggler/sdk in Node.js.
 ---
 
-Import `Huggler` and the ID helpers from `@huggler/sdk`. The package includes TypeScript declarations and supports ESM and CommonJS. Each runtime method returns a promise. [Install the preview and run a turn](/typescript-quickstart/)
+Import `Huggler` and the ID helpers from `@huggler/sdk`. The package includes TypeScript declarations and supports ESM and CommonJS. Each runtime method returns a promise. [Install the preview and run a turn](/bindings/typescript/quickstart/)
 
 ## Open and configure
 
@@ -12,7 +12,7 @@ Import `Huggler` and the ID helpers from `@huggler/sdk`. The package includes Ty
 | `stateDir` | Required. Huggler creates its SQLite database here by default. |
 | `instances` | Additional named provider installations. Each needs an `id`, `driver`, and `executable`. Launch accepts the built-in IDs `"codex"` and `"claudeAgent"` or a registered ID made with `providerInstanceId()`. |
 | `storage` | Override `databasePath` or configure the worktree layout. Threads launched through the preview run in the registered project's root checkout. |
-| `output` | Set the host's `name`, `title`, `version`, `instructions`, and provider labels. |
+| `output` | Set the host's `name`, `title`, `version`, `instructions`, provider labels, and tool presentation overrides. |
 
 ## Run a conversation
 
@@ -40,7 +40,7 @@ Use `threadId("…")` and `commandId("…")` for application-owned IDs. Save com
 | `readMessage(threadId, messageId)` | Loads the full message when a history preview is truncated. |
 | `readProviderUsage()` | Returns reported run and token totals grouped by provider instance. |
 
-Keep cursors and 64-bit counts as strings across storage and serialization. See [Manage history and context](/guides/history-and-context/) for paging and [Durability and recovery](/concepts/durability/) for replay after a restart.
+Keep cursors and 64-bit counts as strings across storage and serialization. See [Manage history and context](/bindings/typescript/history-and-context/) for paging and [Durability and recovery](/concepts/durability/) for replay after a restart.
 
 ## Handle errors
 

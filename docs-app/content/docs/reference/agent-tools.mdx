@@ -3,7 +3,7 @@ title: Agent tools
 description: Built-in MCP tools, caller scope, and request identity.
 ---
 
-With `HugglerOptions.agent_tools` enabled, supported providers receive a loopback Streamable HTTP MCP connection at `/mcp`. The connection is scoped to an active caller run. The Rust host can revoke it using `revoke_agent_tools`. Host permission decisions remain on the Rust API.
+When the host enables agent tools, supported providers receive a loopback Streamable HTTP MCP connection at `/mcp`. The connection is scoped to an active caller run. The host can revoke the connection or answer provider requests using a binding that exposes those controls. [Collaboration APIs by language](/guides/collaboration/#collaboration-apis-by-language)
 
 ## Tool catalog
 
@@ -22,10 +22,10 @@ With `HugglerOptions.agent_tools` enabled, supported providers receive a loopbac
 | `task_status` | Read an owned task and acknowledge a terminal result. |
 | `task_cancel` | Stop current and queued work in an owned child’s subtree. Completed results remain readable. |
 
-Use the tool schemas exposed by MCP for arguments. Fields such as `threadId`, `runId`, and `clientRequestId` are camelCase. Retain a stable `clientRequestId` for retries of the same write and use a new one for a new intent. The host can inspect local delivery receipts with `peer_receipt`.
+Use the tool schemas exposed by MCP for arguments. Fields such as `threadId`, `runId`, and `clientRequestId` are camelCase. Retain a stable `clientRequestId` for retries of the same write and use a new one for a new intent.
 
 ## Scope and policy
 
-Use `AgentPolicy.allowed_tools` to restrict built-in keys and `defer_tools` to use discovery. `AgentOutput.tools` can change the name exposed to agents. Stored policy and discovery state use the built-in key. See [Coordinate agents](/guides/collaboration/) for the collaboration workflow.
+The host can limit which built-in tools a run can use and which are exposed through discovery. Policies and stored discovery state use the built-in tool key even when a host changes its advertised name.
 
-When secret requests are enabled, the host can approve or deny through `answer_secret` or use `approve_onepassword` with the path of an authenticated 1Password CLI and a host-selected reference. Secret bytes live in process memory. `consume_secret` redeems the reference once in the owning project.
+When enabled, secret requests can produce a one-use reference scoped to the owning project. Secret bytes live in process memory. [Host policy in Rust](/bindings/rust/collaboration/#scope-and-policy)

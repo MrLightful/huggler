@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let reopened = Huggler::open(options).await?;
     for message in reopened.read(&thread)?.messages {
-        if matches!(message.role, Role::Assistant) {
+        if message.run_id == run_id && matches!(message.role, Role::Assistant) {
             println!("{}", message.text);
         }
     }
@@ -78,6 +78,10 @@ The program prints the stored assistant reply after opening the same database a 
 
 - If Codex is missing from PATH, set `options.codex.executable` to the absolute path of the Codex binary before opening Huggler.
 - To check the executable, login, and model catalog without sending a prompt, call `huggler.probe_provider("codex", &project.root).await`.
-- For a turn that requires user input, drive the [permission and question callbacks](/guides/control-threads/#answer-permissions-and-questions) while the run is active.
+- For a turn that requires user input, drive the [permission and question callbacks](/bindings/rust/control-threads/#answer-permissions-and-questions) while the run is active.
 
 For the recorded resume scenario, run `cargo test --locked --test resume` from the Huggler checkout. The test uses a replay fixture and requires no model account.
+
+## Next steps
+
+[Configure a named provider](/bindings/rust/configure-providers/) or explore the [Rust API](/bindings/rust/api/).

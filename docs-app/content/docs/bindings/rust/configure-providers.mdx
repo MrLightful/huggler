@@ -1,0 +1,53 @@
+---
+title: Configure providers in Rust
+description: Register a provider instance and select its model with the huggler crate.
+---
+
+Use `options.codex.executable` or `options.claude_agent.executable` to override a built-in executable. To use a separate Codex home, add a named instance before opening the runtime.
+
+## Register an installation
+
+```rust
+use huggler::{HugglerOptions, Provider, ProviderInstance};
+
+let mut options = HugglerOptions::new("/path/to/app-state");
+let mut work = ProviderInstance::new("work-codex", Provider::Codex, "codex");
+work.home = Some("/path/to/codex-work-home".into());
+work.request_approvals = true;
+options.instances.push(work);
+```
+
+## Probe and select
+
+List the configured instances with `provider_instances()`. With an open runtime and a registered project, probe the named instance and choose a model when the provider reports one.
+
+```rust
+use huggler::{Action, Command, CommandId, ThreadId};
+
+let report = huggler.probe_provider("work-codex", &project.root).await?;
+let thread = ThreadId("work-review".into());
+
+huggler.dispatch(Command {
+    id: CommandId("launch-work-review".into()),
+    thread_id: thread.clone(),
+    action: Action::LaunchInstance {
+        project: project.id,
+        name: "Work review".into(),
+        instance: "work-codex".into(),
+        model: report.models.first().cloned(),
+    },
+})?;
+```
+
+The thread snapshot records the chosen instance in `provider_instance`. The built-in `launch` helper selects Codex. Use `Action::LaunchInstance` when you want to name the instance explicitly.
+
+## Diagnose discovery failures
+
+| Error | Meaning |
+| --- | --- |
+| `MissingExecutable` | The configured executable could not be found. |
+| `LoginRequired` | The instance requires authentication. |
+| `ServerAccessDenied` | The external OpenCode server rejected access. |
+| `IncompatibleProvider` | Discovery could not negotiate the expected provider behavior. |
+
+See the [shared provider guide](/guides/configure-providers/) for registry rules and the [adapter reference](/reference/providers/) for driver settings.

@@ -1,0 +1,42 @@
+---
+title: Control threads in Rust
+description: Choose a delivery policy, follow thread events, and answer provider requests.
+---
+
+## Choose how input is delivered
+
+Use `launch` for the built-in Codex instance or dispatch `Action::LaunchInstance` for a named instance. Use `send` for an ordinary prompt or dispatch an action for other delivery policies.
+
+| Action | Behavior |
+| --- | --- |
+| `Send` | Starts an idle thread or returns `Error::Busy`. The `send` helper uses this action. |
+| `Enqueue` | Starts an idle thread or appends a run to the queue. |
+| `SendAuto` | Starts an idle thread, steers a bound running Codex turn, or queues behind outstanding work. |
+| `Steer` | Targets an expected live Codex `RunId`. Poll `steer_outcome` for the provider acknowledgement. |
+| `Restart` | Stops the expected foreground run and gives the replacement priority over older queued messages. |
+| `SendPlan` | Submits a turn in Codex plan mode. |
+| `SetModel` | Selects the model for future submissions. |
+
+Use `EditQueued`, `MoveQueued`, or `CancelQueued` with the queued run’s ID. `MoveQueued` takes an optional `before` run. Pass `None` to move the item to the end. `stop_thread` interrupts current work in the thread and its owned delegation tree and holds their queues. Call `resume_queue` on each thread whose queue you want to release.
+
+## Stream output and reconcile the final reply
+
+Call `subscribe(&thread, None)` and render the returned snapshot. In your host’s event loop, consume `Subscription::next().await`. Render `Change::OutputDelta` as provisional output keyed by run ID. Use the committed `Change::Message` or a fresh snapshot for the final reply.
+
+Use `wait(&thread, &run_id).await` for terminal status. For Codex command output, use `command_items` followed by `command_output` with an item ID. Pass the previous revision to wait for a newer tail or closure.
+
+## Answer permissions and questions
+
+Start with pending requests from the snapshot. Handle `Change::PermissionRequested` and `Change::QuestionRequested` as they arrive.
+
+- For a permission, pass the owning thread, run, request ID and one provider-supplied option ID to `respond_to_permission`. If the request came from a native child, use the owning application run reported with that request.
+- For a question, call `respond_to_question` with `UserAnswers` keyed by the supplied question IDs. Use `respond_with_attachments` for uploads keyed by question ID, or `dismiss_question` when the provider supports dismissal.
+- Remove closed requests from the host UI. Provider loss can close an unanswered request. Refresh the thread when a response races with closure.
+
+## Attach text to a message
+
+Call `prepare_upload(&thread, name, "text/plain", bytes)` for UTF-8 text of up to 64 KiB. Submit up to eight staged uploads in one `SendAttachments` command. A successful send claims the files for that message. Use `discard_upload` to clean up files that were staged and left unused.
+
+## Resume a subscription
+
+Use `subscribe(&thread, Some(cursor))` with the last sequence your view processed. Start a fresh subscription on `Error::CursorExpired`. [Durability and recovery](/concepts/durability/#recover-a-view-from-its-cursor)
