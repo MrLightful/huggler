@@ -180,8 +180,17 @@ fn start_message(
     if text.trim().is_empty() {
         return Err(Error::Invalid("empty message".into()));
     }
-    if tx.prepare("SELECT 1 FROM workspace_setup s JOIN thread t ON t.project=s.project WHERE t.id=? AND s.state!='ready'")?.exists([&thread.0])? {
-        return Err(Error::Invalid("workspace setup must succeed before starting a run".into()));
+    if tx
+        .prepare(
+            "SELECT 1 FROM thread t JOIN project p ON p.id=t.project
+         JOIN project checkout ON checkout.root=coalesce(t.worktree_path,p.root)
+         JOIN workspace_setup s ON s.project=checkout.id WHERE t.id=? AND s.state!='ready'",
+        )?
+        .exists([&thread.0])?
+    {
+        return Err(Error::Invalid(
+            "workspace setup must succeed before starting a run".into(),
+        ));
     }
     let (busy, held): (bool, bool) = tx.query_row(
         "SELECT count(*) FILTER (WHERE queue_held=0)>0, count(*) FILTER (WHERE queue_held=1)>0

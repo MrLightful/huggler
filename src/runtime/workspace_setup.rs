@@ -3,7 +3,9 @@ use crate::workspace::SetupStatus;
 use std::process::Stdio;
 
 impl Huggler {
-    /// Prepare an idle project with an explicit host command. Failed setup gates new runs
+    /// Prepare the project's checkout with an explicit host command. For an isolated
+    /// thread, register its worktree path with `open_project` and use that project ID.
+    /// An active run in the checkout blocks setup. Failed setup gates new runs there
     /// until a successful retry. Shutdown stops an active command before releasing the database.
     pub async fn setup_workspace(
         &self,

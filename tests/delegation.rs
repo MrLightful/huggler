@@ -1211,6 +1211,47 @@ async fn exercise_worktree_delegation() {
     );
     assert_eq!(rt.read(child).unwrap().worktree_path.as_ref(), Some(&path));
     assert_eq!(rt.read(child).unwrap().runs.len(), 1);
+    #[cfg(feature = "application")]
+    {
+        use workspace::SetupStatus;
+        let checkout = rt.open_project(&path).unwrap();
+        let fail = Path::new("/usr/bin/false");
+        let pass = Path::new("/usr/bin/true");
+        assert!(matches!(
+            rt.setup_workspace(&checkout.id, fail, &[]).await.unwrap(),
+            SetupStatus::Failed(_)
+        ));
+        assert!(matches!(
+            rt.send(CommandId("blocked".into()), child.clone(), "hold".into()),
+            Err(Error::Invalid(_))
+        ));
+        acp_prompt(&rt, &author, "root-ready", "echo ready").await;
+        assert_eq!(
+            rt.setup_workspace(&checkout.id, pass, &[]).await.unwrap(),
+            SetupStatus::Ready
+        );
+        let run = rt
+            .send(CommandId("blocked".into()), child.clone(), "hold".into())
+            .unwrap()
+            .run_id
+            .unwrap();
+        permission(&rt, child).await;
+        assert!(matches!(
+            rt.setup_workspace(&checkout.id, pass, &[]).await,
+            Err(Error::Busy)
+        ));
+        assert!(matches!(
+            rt.setup_workspace(&project.id, fail, &[]).await.unwrap(),
+            SetupStatus::Failed(_)
+        ));
+        release(&rt, child, None).await;
+        completed(&rt, child, &run).await;
+        acp_prompt(&rt, child, "child-ready", "echo ready").await;
+        assert_eq!(
+            rt.setup_workspace(&project.id, pass, &[]).await.unwrap(),
+            SetupStatus::Ready
+        );
+    }
     assert_eq!(
         acp_prompt(&rt, child, "continue", "edit tracked resumed").await,
         "isolated"

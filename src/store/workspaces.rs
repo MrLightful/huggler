@@ -109,10 +109,10 @@ impl Database {
         let has_runs = self
             .db
             .prepare(
-                "SELECT 1 FROM run r JOIN thread t ON t.id=r.thread_id
-             WHERE t.project=? AND r.status IN ('queued','starting','running','waiting')",
+                "SELECT 1 FROM run r JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
+                 WHERE coalesce(t.worktree_path,p.root)=? AND r.status IN ('queued','starting','running','waiting')",
             )?
-            .exists([&project.0])?;
+            .exists([path.to_str()])?;
         if has_runs {
             return Err(Error::Busy);
         }
