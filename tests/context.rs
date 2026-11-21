@@ -283,3 +283,158 @@ async fn attachments_are_claimed_once_and_answers_reach_the_owning_callback() ->
     );
     rt.close().await
 }
+
+#[tokio::test]
+async fn imports_copy_visible_history_and_continue_after_reopen() -> Result<()> {
+    use serde_json::json;
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let mut opts = options(&dir.path().join("state"));
+    opts.instances.push(ProviderInstance::new(
+        "registry-test",
+        Provider::AcpRegistry,
+        opts.codex.executable.clone(),
+    ));
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&repo)?.id;
+    let mut cases = vec![];
+    for (name, rows) in [
+        (
+            "claude",
+            vec![
+                json!({"type":"user","sessionId":"archived","message":{"content":"old question"}}),
+                json!({"type":"assistant","isSidechain":true,"message":{"content":"hidden"}}),
+                json!({"type":"assistant","message":{"content":[{"type":"thinking","thinking":"private"},{"type":"text","text":"old answer"}]}}),
+            ],
+        ),
+        (
+            "codex",
+            vec![
+                json!({"type":"session_meta","payload":{"id":"archived"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"old question"}]}}),
+                json!({"type":"event_msg","payload":{"type":"user_message","message":"old question"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"old answer"}]}}),
+            ],
+        ),
+        (
+            "pi",
+            vec![
+                json!({"type":"session","id":"archived"}),
+                json!({"type":"message","id":"one","parentId":null,"message":{"role":"user","content":"old question"}}),
+                json!({"type":"message","id":"abandoned","parentId":"one","message":{"role":"assistant","content":"hidden"}}),
+                json!({"type":"message","id":"chosen","parentId":"one","message":{"role":"assistant","content":"old answer"}}),
+            ],
+        ),
+        ("registry", vec![]),
+    ] {
+        let file = repo.join(name);
+        fs::write(
+            &file,
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )?;
+        let source = match name {
+            "claude" => ImportSource::Claude(file.clone()),
+            "codex" => ImportSource::Codex(file.clone()),
+            "pi" => ImportSource::Pi(file.clone()),
+            _ => ImportSource::AcpRegistry(NativeThreadId("archived".into())),
+        };
+        let thread = ThreadId(name.into());
+        let native = name == "registry";
+        let instance = ProviderInstanceId::from(if native { "registry-test" } else { "alternate" });
+        let result = rt
+            .import_history(&project, &thread, name, &instance, source.clone())
+            .await?;
+        assert_eq!(
+            result.native_session,
+            Some(NativeThreadId("archived".into()))
+        );
+        assert_eq!(
+            rt.import_history(&project, &thread, name, &instance, source.clone())
+                .await?,
+            result
+        );
+        if native {
+            assert!(matches!(
+                rt.import_history(
+                    &project,
+                    &ThreadId("alias".into()),
+                    name,
+                    &instance,
+                    source.clone()
+                )
+                .await,
+                Err(Error::Invalid(_))
+            ));
+            fs::write(repo.join("changed"), "")?
+        } else {
+            use std::io::Write;
+            writeln!(fs::OpenOptions::new().append(true).open(&file)?)?;
+        }
+        assert!(matches!(
+            rt.import_history(&project, &thread, name, &instance, source.clone())
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        if native {
+            fs::write(repo.join("removed"), "")?
+        } else {
+            fs::remove_file(file)?;
+        }
+        assert!(
+            rt.import_history(&project, &thread, name, &instance, source)
+                .await
+                .is_err()
+        );
+        cases.push((thread, result, native));
+    }
+    rt.close().await?;
+    let rt = Huggler::open(opts).await?;
+    for (thread, result, native) in cases {
+        assert_eq!(rt.import_source(&thread)?, Some(result));
+        assert_eq!(
+            rt.read(&thread)?
+                .messages
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>(),
+            ["old question", "old answer"]
+        );
+        let send = rt.send(
+            CommandId(format!("continue-{thread}")),
+            thread.clone(),
+            "next".into(),
+        )?;
+        if native {
+            assert_eq!(
+                rt.wait(&thread, send.run_id.as_ref().unwrap())
+                    .await?
+                    .status,
+                RunStatus::Failed
+            );
+            assert!(frames(&repo, "session/prompt").is_empty());
+            fs::remove_file(repo.join("removed"))?;
+            fs::remove_file(repo.join("changed"))?;
+            let retry = rt.send(CommandId("restored".into()), thread.clone(), "next".into())?;
+            completed(&rt, &thread, retry.run_id.as_ref().unwrap()).await;
+            let frames = frames(&repo, "session/prompt");
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0]["sessionId"], "archived");
+            assert_eq!(frames[0]["prompt"][0]["text"], "next");
+        } else {
+            completed(&rt, &thread, send.run_id.as_ref().unwrap()).await;
+            let frame = frames(&repo, "turn/start").pop().unwrap();
+            let prompt = frame["input"][0]["text"].as_str().unwrap();
+            assert!(
+                prompt.contains("old question")
+                    && prompt.contains("old answer")
+                    && prompt.ends_with("next")
+            );
+            assert!(!prompt.contains("hidden"));
+        }
+    }
+    rt.close().await
+}

@@ -410,6 +410,38 @@ impl Huggler {
         self.shared.access(|db| db.project(&root))
     }
 
+    /// Copy a selected transcript or load an ACP Registry session into a new thread.
+    /// Repeating an identical snapshot at the same destination preserves its history.
+    pub async fn import_history(
+        &self,
+        project: &ProjectId,
+        thread: &ThreadId,
+        name: &str,
+        instance: &ProviderInstanceId,
+        source: ImportSource,
+    ) -> Result<ImportProvenance> {
+        let cwd = self.shared.access(|db| db.project_root(project))?;
+        let provider = self
+            .shared
+            .registry
+            .get(instance.as_str())
+            .ok_or_else(|| Error::NotFound(instance.to_string()))?;
+        let snapshot = match source {
+            ImportSource::AcpRegistry(native) => {
+                claude_agent::load_history(provider, &cwd, native).await?
+            }
+            file => tokio::task::spawn_blocking(move || crate::imports::read_file(file))
+                .await
+                .map_err(|e| Error::Worker(e.to_string()))??,
+        };
+        self.shared
+            .schedule(|db| Ok((db.import(project, thread, name, instance, snapshot)?, [])))
+    }
+
+    pub fn import_source(&self, thread: &ThreadId) -> Result<Option<ImportProvenance>> {
+        self.shared.access(|db| db.import_source(thread))
+    }
+
     /// Commit a host command. Reusing the same command
     /// identity and payload returns the original receipt, including after reopen.
     pub fn dispatch(&self, command: Command) -> Result<Receipt> {

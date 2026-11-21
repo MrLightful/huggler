@@ -37,6 +37,16 @@ for line in sys.stdin:
     elif method in ("thread/start", "session/new", "thread/resume", "session/load", "thread/fork"):
         session = str(uuid4()) if method in ("thread/fork", "thread/start", "session/new") else params.get("threadId", params.get("sessionId"))
         result = {"sessionId": session} if acp else {"thread": {"id": session}}
+        if method == "session/load" and session == "archived":
+            if Path("removed").exists():
+                emit(id=frame["id"], error={"code": -32602, "message": "unknown session"})
+                continue
+            for role, text in [("user", "old question"), ("agent", "old "), ("agent", "answer")]:
+                emit(method="session/update", params={"sessionId": session, "update": {
+                    "sessionUpdate": role + "_message_chunk", "content": {"type": "text", "text": text}}})
+            if Path("changed").exists():
+                emit(method="session/update", params={"sessionId": session, "update": {
+                    "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": " changed"}}})
         if method == "thread/fork":
             boundary = "wrong" if Path("bad-boundary").exists() else params["lastTurnId"]
             result["thread"].update(forkedFromId=params["threadId"], turns=[{"id": boundary}])

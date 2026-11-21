@@ -199,6 +199,24 @@ pub struct ForkHistory {
     pub truncated: bool,
 }
 
+/// Origin of an immutable imported conversation. File transcripts use portable continuation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportSource {
+    Claude(PathBuf),
+    Codex(PathBuf),
+    Pi(PathBuf),
+    /// Load an existing session on the destination ACP Registry instance.
+    AcpRegistry(NativeThreadId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportProvenance {
+    pub source: ImportSource,
+    pub native_session: Option<NativeThreadId>,
+    /// SHA-256 of the original file or of the loaded ACP conversation.
+    pub digest: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {

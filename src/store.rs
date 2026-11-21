@@ -3,6 +3,7 @@ mod context;
 mod crash_tests;
 mod creation;
 mod history;
+mod imports;
 mod interrupts;
 mod native_children;
 mod questions;
@@ -51,6 +52,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/016.sql"),
     include_str!("../migrations/017.sql"),
     include_str!("../migrations/018.sql"),
+    include_str!("../migrations/019.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
@@ -637,6 +639,7 @@ impl Database {
                     turn.instance
                 ))
             })?;
+        imports::prepare(&tx, id, &mut turn)?;
         context::prepare(&tx, id, &scope, &mut turn)?;
         if tx.execute(
             "UPDATE thread SET continuation_key=?1 WHERE id=(SELECT thread_id FROM run WHERE id=?2)

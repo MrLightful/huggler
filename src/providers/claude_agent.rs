@@ -407,3 +407,96 @@ pub(crate) async fn execute(
     };
     rpc.finish(outcome).await
 }
+
+/// Load visible history before the host creates a durable binding. This operation sends no prompt.
+pub(crate) async fn load_history(
+    instance: &ProviderInstance,
+    cwd: &std::path::Path,
+    native: NativeThreadId,
+) -> Result<crate::imports::Snapshot> {
+    use crate::{
+        ImportProvenance, ImportSource, Role,
+        imports::{MAX_BYTES, Messages, Snapshot},
+    };
+    if native.0.trim().is_empty() || instance.driver != Provider::AcpRegistry {
+        return Err(Error::Unsupported(
+            "native import requires an ACP Registry session".into(),
+        ));
+    }
+    let mut rpc = Rpc::open(instance.command(), cwd)?;
+    let mut messages = Messages::new();
+    let history = async {
+        let init = initialize(&mut rpc, instance.driver).await?;
+        if init["agentCapabilities"]["loadSession"] != true {
+            return Err(Error::Unsupported(
+                "ACP instance does not advertise session/load".into(),
+            ));
+        }
+        let mut size = 0;
+        let mut last_id = None;
+        rpc.write(json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"cwd":cwd,"sessionId":native,"mcpServers":[]}})).await?;
+        loop {
+            let frame = rpc.read().await?;
+            if frame.get("method").is_none() {
+                let info = result(&frame, 2, "session/load")?;
+                if info["sessionId"].as_str().is_some_and(|id| id != native.0) {
+                    return Err(protocol("ACP returned a different session"));
+                }
+                break;
+            }
+            if let Some(id) = frame.get("id") {
+                rpc.write(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported during history import"}})).await?;
+                continue;
+            }
+            let params = &frame["params"];
+            if frame["method"] != "session/update"
+                || params["sessionId"].as_str() != Some(native.0.as_str())
+            {
+                continue;
+            }
+            let update = &params["update"];
+            let role = match update["sessionUpdate"].as_str() {
+                Some("user_message_chunk") => Role::User,
+                Some("agent_message_chunk") => Role::Assistant,
+                _ => continue,
+            };
+            if update["content"]["type"] != "text" {
+                continue;
+            }
+            let Some(chunk) = update["content"]["text"].as_str().filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            size += chunk.len();
+            if size > MAX_BYTES {
+                return Err(Error::Invalid("ACP history exceeds 8 MiB".into()));
+            }
+            let id = update["messageId"].as_str();
+            if let Some((prev, text)) = messages.last_mut()
+                && *prev == role
+                && last_id.as_deref() == id
+            {
+                text.push_str(chunk);
+            } else {
+                if messages.len() >= 32768 {
+                    return Err(Error::Invalid("too many ACP messages".into()));
+                }
+                messages.push((role, chunk.into()));
+            }
+            last_id = id.map(str::to_owned);
+        }
+        Ok(())
+    };
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), history)
+        .await
+        .unwrap_or_else(|_| Err(protocol("ACP history load timed out")));
+    rpc.finish(outcome).await?;
+    let digest = crate::imports::digest(&serde_json::to_vec(&messages)?);
+    Ok(Snapshot {
+        provenance: ImportProvenance {
+            source: ImportSource::AcpRegistry(native.clone()),
+            native_session: Some(native),
+            digest,
+        },
+        messages,
+    })
+}
