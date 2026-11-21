@@ -122,6 +122,33 @@ async fn approved_hosts_resume_one_remote_delegation_and_revoke_access() -> Resu
     assert_eq!(origin.environment_id.as_ref(), Some(&sender.environment));
     assert_eq!((&origin.thread_id, &origin.run_id), (&parent, &run));
     // A definitive rejection leaves the key free to use with corrected intent.
+    #[cfg(feature = "application")]
+    {
+        assert!(matches!(
+            host.setup_workspace(&project.id, Path::new("/usr/bin/false"), &[])
+                .await?,
+            workspace::SetupStatus::Failed(_)
+        ));
+        assert!(matches!(
+            local
+                .delegate_remote(
+                    &operator,
+                    address.clone(),
+                    &parent,
+                    &run,
+                    "review",
+                    "before setup".into()
+                )
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(host.threads()?.len(), 2);
+        assert_eq!(
+            host.setup_workspace(&project.id, Path::new("/usr/bin/true"), &[])
+                .await?,
+            workspace::SetupStatus::Ready
+        );
+    }
     assert!(matches!(
         local
             .delegate_remote(

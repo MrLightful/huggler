@@ -98,15 +98,19 @@ impl Peer {
             bearer,
         })
     }
-    pub async fn request(&self, request: Request) -> Result<Reply> {
-        let response = self
-            .client
+    async fn send(&self, request: Request) -> Result<reqwest::Response> {
+        self.client
             .post(&self.url)
             .bearer_auth(&self.bearer)
             .json(&request)
             .send()
             .await
-            .map_err(transport)?;
+            .map_err(transport)
+    }
+    pub async fn request(&self, request: Request) -> Result<Reply> {
+        Self::reply(self.send(request).await?).await
+    }
+    async fn reply(response: reqwest::Response) -> Result<Reply> {
         match response.status() {
             StatusCode::FORBIDDEN => Err(Error::Forbidden),
             StatusCode::NOT_IMPLEMENTED => {
@@ -199,8 +203,8 @@ impl Huggler {
         {
             return Ok(child);
         }
-        let result = peer
-            .request(Request::Write {
+        let response = peer
+            .send(Request::Write {
                 target: target.clone(),
                 sender_run: run.clone(),
                 key: key.into(),
@@ -209,12 +213,17 @@ impl Huggler {
                     worktree: false,
                 },
             })
-            .await;
-        if matches!(result, Err(Error::Forbidden | Error::Unsupported(_))) {
+            .await?;
+        // These responses reject this attempt before commit. Other failures may
+        // have lost a receipt, so preserve the original intent for a retry.
+        if matches!(
+            response.status(),
+            StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN | StatusCode::NOT_IMPLEMENTED
+        ) {
             self.shared
                 .access(|db| db.remote_request_denied(run, key))?;
         }
-        let Reply::Accepted { address, receipt } = result? else {
+        let Reply::Accepted { address, receipt } = Peer::reply(response).await? else {
             return Err(Error::Invalid("expected a delegation receipt".into()));
         };
         if address.environment != target.environment || receipt.thread_id != address.thread {
