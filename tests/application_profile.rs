@@ -245,3 +245,119 @@ async fn single_use_guest_invite_and_moderated_inbox() -> Result<()> {
     server.abort();
     rt.close().await
 }
+
+#[cfg(feature = "application")]
+#[tokio::test]
+async fn durable_clock_and_signed_delivery() -> Result<()> {
+    use automation::{Destination::*, Schedule, Trigger::*};
+    use hmac::{Hmac, Mac};
+    let dir = tempfile::tempdir()?;
+    let config = options(&dir.path().join("state"));
+    let rt = Huggler::open(config.clone()).await?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let thread = launch(&rt, &rt.open_project(&repo)?, "clock", Provider::Codex);
+    let spec = |trigger, destination| Schedule {
+        trigger,
+        destination,
+        prompt: "scheduled review".into(),
+    };
+    let once = rt.create_schedule(&thread, spec(Once { at: 10 }, Continue), 0, None)?;
+    let interval = rt.create_schedule(
+        &thread,
+        spec(
+            Interval {
+                first: 20,
+                seconds: 10,
+            },
+            Continue,
+        ),
+        0,
+        None,
+    )?;
+    let daily = rt.create_schedule(
+        &thread,
+        spec(
+            Daily {
+                zone: "Europe/Oslo".into(),
+                hour: 2,
+                minute: 30,
+            },
+            FreshSession,
+        ),
+        1774656000,
+        None,
+    )?;
+    assert!(rt.tick_schedule(&once, 9)?.is_none());
+    let one = rt.tick_schedule(&once, 10)?.unwrap();
+    completed(&rt, &thread, &one.run).await;
+    let session = rt.read(&thread)?.native_thread.unwrap();
+    rt.close().await?;
+    let rt = Huggler::open(config).await?;
+    assert!(rt.tick_schedule(&once, 100)?.is_none());
+    let two = rt.tick_schedule(&interval, 55)?.unwrap();
+    completed(&rt, &thread, &two.run).await;
+    assert_eq!(rt.read(&thread)?.native_thread.as_ref(), Some(&session));
+    assert!(rt.tick_schedule(&interval, 59)?.is_none());
+    let utc = |date: &str| {
+        chrono::DateTime::parse_from_rfc3339(date)
+            .unwrap()
+            .timestamp()
+    };
+    let three = rt
+        .tick_schedule(&daily, utc("2026-03-28T01:30:00Z"))?
+        .unwrap();
+    completed(&rt, &thread, &three.run).await;
+    assert_ne!(rt.read(&thread)?.native_thread.unwrap(), session);
+    assert_eq!(
+        rt.schedules(&thread)?
+            .iter()
+            .find(|row| row.0 == daily)
+            .unwrap()
+            .2,
+        Some(utc("2026-03-30T00:30:00Z"))
+    );
+    let key = b"fixture signing key";
+    let hook = rt.create_schedule(
+        &thread,
+        spec(
+            Webhook {
+                event: "opened".into(),
+            },
+            NewThread,
+        ),
+        0,
+        Some(key),
+    )?;
+    let signed = |key: &[u8], body: &[u8]| {
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).unwrap();
+        mac.update(body);
+        hex::encode(mac.finalize().into_bytes())
+    };
+    let body = br#"{"id":"delivery","event":"opened"}"#;
+    let filtered = br#"{"id":"other","event":"closed"}"#;
+    let other = b"other signing key";
+    assert!(matches!(
+        rt.deliver_webhook(&hook, other, &signed(other, body), body),
+        Err(Error::Forbidden)
+    ));
+    assert!(matches!(
+        rt.deliver_webhook(&hook, key, "00", body),
+        Err(Error::Forbidden)
+    ));
+    assert!(
+        rt.deliver_webhook(&hook, key, &signed(key, filtered), filtered)?
+            .is_none()
+    );
+    let fire = || rt.deliver_webhook(&hook, key, &signed(key, body), body);
+    let child = fire()?.unwrap();
+    assert_ne!(child.thread, thread);
+    assert_eq!(fire()?.as_ref(), Some(&child));
+    completed(&rt, &child.thread, &child.run).await;
+    assert_eq!(rt.schedule_history(&hook)?, [child.clone()]);
+    rt.delete_thread(&thread)?;
+    assert!(rt.schedule_history(&hook)?.is_empty());
+    assert!(matches!(fire(), Err(Error::Forbidden)));
+    assert_eq!(rt.read(&child.thread)?.runs.len(), 1);
+    rt.close().await
+}

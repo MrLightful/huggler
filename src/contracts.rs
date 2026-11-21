@@ -660,6 +660,7 @@ pub enum Change {
         task: DelegatedTask,
     },
     Launched,
+    SessionReset,
     PermissionRequested {
         request: PermissionRequest,
     },

@@ -1,3 +1,5 @@
+#[cfg(feature = "application")]
+mod automation;
 mod checkpoints;
 mod command_output;
 mod context;
@@ -67,6 +69,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/024.sql"),
     include_str!("../migrations/025.sql"),
     include_str!("../migrations/026.sql"),
+    include_str!("../migrations/027.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -284,7 +287,7 @@ impl Database {
         // A claimed effect may already have reached the provider.
         tx.execute("UPDATE run SET status='queued' WHERE status='starting' AND stop_requested=0
             AND id IN (SELECT run_id FROM turn_effect WHERE state='pending')
-            AND (id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task)
+            AND (id IN (SELECT run_id FROM turn_effect WHERE durable_launch=1) OR id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task)
                 OR id IN (SELECT run_id FROM message WHERE origin IS NOT NULL))", [])?;
         let lost = tx
             .prepare(
@@ -728,8 +731,29 @@ impl Database {
                     turn.instance
                 ))
             })?;
-        imports::prepare(&tx, id, &mut turn)?;
-        context::prepare(&tx, id, &scope, &mut turn)?;
+        let thread = tx
+            .query_row(
+                "UPDATE thread SET native_thread=NULL, continuation_key=NULL, session_reset=session_reset+1
+             WHERE id=(SELECT r.thread_id FROM run r JOIN turn_effect e ON e.run_id=r.id
+                       WHERE r.id=? AND e.fresh_session=1) RETURNING id",
+                [&id.0],
+                |row| Ok(ThreadId(row.get(0)?)),
+            )
+            .optional()?;
+        if let Some(thread) = thread {
+            turn.resume = None;
+            event(&tx, &thread, Change::SessionReset)?;
+        } else if !tx
+            .prepare(
+                "SELECT 1 FROM thread t JOIN run r ON r.thread_id=t.id
+                               WHERE r.id=? AND t.session_reset>0",
+            )?
+            .exists([&id.0])?
+        {
+            imports::prepare(&tx, id, &mut turn)?;
+            context::prepare(&tx, id, &scope, &mut turn)?;
+        }
+        tx.execute("UPDATE run SET session_generation=(SELECT session_reset FROM thread WHERE id=run.thread_id) WHERE id=?", [&id.0])?;
         if tx.execute(
             "UPDATE thread SET continuation_key=?1 WHERE id=(SELECT thread_id FROM run WHERE id=?2)
             AND (continuation_key IS NULL OR native_thread IS NULL OR continuation_key=?1)",
@@ -1143,7 +1167,11 @@ impl Database {
 
     pub fn thread_position(&self, id: &ThreadId) -> Result<i64> {
         self.db
-            .query_row("SELECT rowid FROM thread WHERE id=?", [&id.0], |r| r.get(0))
+            .query_row(
+                "SELECT position FROM thread JOIN thread_order USING(id) WHERE id=?",
+                [&id.0],
+                |r| r.get(0),
+            )
             .optional()?
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
@@ -1151,7 +1179,7 @@ impl Database {
     pub fn threads_after(&self, position: i64) -> Result<Vec<ThreadSummary>> {
         Ok(self
             .db
-            .prepare("SELECT id,name FROM thread WHERE rowid>? ORDER BY rowid")?
+            .prepare("SELECT id,name FROM thread JOIN thread_order USING(id) WHERE position>? ORDER BY position")?
             .query_map([position], |r| {
                 Ok(ThreadSummary {
                     id: ThreadId(r.get(0)?),

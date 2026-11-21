@@ -1,4 +1,6 @@
 //! In-process orchestration of durable coding-agent conversations.
+#[cfg(feature = "application")]
+pub mod automation;
 pub mod contracts;
 pub mod guest;
 mod imports;
