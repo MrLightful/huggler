@@ -23,6 +23,21 @@ id!(MessageId);
 id!(UploadId);
 id!(TaskId);
 id!(ProjectId);
+id!(GrantId);
+id!(ShareId);
+id!(SubmissionId);
+id!(SecretRequestId);
+#[cfg(feature = "application")]
+id!(ScheduleId);
+#[cfg(feature = "application")]
+id!(ServiceHandleId);
+#[cfg(feature = "application")]
+id!(RepositoryBindingId);
+#[cfg(feature = "application")]
+id!(RepositoryLinkId);
+#[cfg(feature = "application")]
+id!(RepositoryWatchId);
+id!(EnvironmentId);
 id!(RequestId);
 id!(NativeThreadId);
 id!(NativeTurnId);
@@ -379,6 +394,8 @@ pub enum Role {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageOrigin {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<EnvironmentId>,
     pub thread_id: ThreadId,
     pub run_id: RunId,
     pub request_key: String,
@@ -657,6 +674,11 @@ pub enum Change {
         task: DelegatedTask,
     },
     Launched,
+    SessionReset,
+    UserNotice {
+        run_id: RunId,
+        text: String,
+    },
     PermissionRequested {
         request: PermissionRequest,
     },
@@ -730,6 +752,8 @@ pub enum Error {
     Busy,
     #[error("invalid request: {0}")]
     Invalid(String),
+    #[error("host integration: {0}")]
+    Integration(String),
     #[error("unsupported operation: {0}")]
     Unsupported(String),
     #[error("unsupported state schema version {0}")]

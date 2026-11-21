@@ -6,11 +6,11 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Stage 5 passed.** Through the public Rust API, stopping a delegation tree held its queues across reopen, a portable fork preserved the selected turn boundary, and recovery after external I/O produced one outbound prompt across restart and retry. The release GPUI app passed recorded approval and peer exchange checks. Its history window paged and searched 1,000 messages. The independent Cargo consumer and all three pinned upstream stream suites passed. [Stage 5 outcomes, limits and reproduction commands](stage-5.md)
+**Stage 6 passed.** An independent HTTP client sent and retried a message and read the completed conversation. Two runtimes recovered a remote delegation after a lost receipt and restart, with one parent completion. The checkout tests covered root and isolated worktrees under separate setup failures. Sixteen recorded HTTP requests exercised repository services, including team-scoped Linear comments. A live Codex session returned an approved secret reference under a three-tool policy. All 92 upstream tools have a workflow mapping or a documented limitation. [Stage 6 results and commands](stage-6.md) · [Tool coverage](stage-6.md#upstream-tool-coverage)
 
-**First Stage 6 action.** Start two runtimes with independent state, exercise approved read and operate grants, reconnect to the same remote thread and verify denial of sibling reads, read-only writes and revoked writes. The remote thread must keep its identity through reconnect, accept an authorized write and show zero state changes from the rejected operations. [Full application profile](#6-assemble-the-full-application-profile)
+**First Stage 7 action.** From the Huggler root, run `python3 scripts/check-package.py`. Confirm the archive includes migrations and fixtures. The independent consumer must build from that archive, resume the original native session, recover the original receipt on retry and keep the sibling thread isolated. [Package check](../scripts/check-package.py) · [Release criteria](#7-validate-cargo-and-desktop-releases)
 
-**Branch recommendation.** Merge Stage 5. Each acceptance row has reproducible evidence and documented provider or host limits. Begin Stage 6 on a new branch after merge.
+**Branch recommendation.** Merge Stage 6. The default and all-features suites passed. The Pi fixture, headless Chromium capture and authenticated Codex secret-request scenario each passed independently. Formatting and Clippy passed for the crate and desktop. The qualification record identifies which operations require an embedding host or use recorded service responses.
 
 ### Maintaining the handoff
 
@@ -28,7 +28,7 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 | [3. Connect two harnesses](#3-prove-agent-to-agent-operation-with-two-harnesses) | One driver works through the public API | [Peer reply, delegated completion, desktop permissions and native children](stage-3.md). |
 | [4. Qualify all drivers](#4-qualify-every-provider-instance-and-capability) | Two harnesses share a conformance suite | [Instance configuration, live and fixture results, usage and transport limitations](stage-4.md). |
 | [5. Complete runtime behavior](#5-complete-control-history-and-recovery) | Stage 2 works, with qualified drivers available for provider-specific cases | [Runtime controls, context, bounded history, crash recovery and import results](stage-5.md). |
-| [6. Assemble the full profile](#6-assemble-the-full-application-profile) | Agent tools and runtime controls work | An authorized second application completes a workflow with the host integrations enabled. |
+| [6. Assemble the full profile](#6-assemble-the-full-application-profile) | Agent tools and runtime controls work | [Independent host, application integration results and upstream tool coverage](stage-6.md). |
 | [7. Qualify a release](#7-validate-cargo-and-desktop-releases) | Begin Cargo packaging and desktop install checks in stage 2 | Build and upgrade results for the crate and installed app, plus a comparison to the reviewed upstream SHA. |
 
 ## 1. Capture the upstream reference

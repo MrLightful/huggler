@@ -1,19 +1,28 @@
+mod application;
+#[cfg(feature = "application")]
+mod automation;
 mod checkpoints;
 mod command_output;
 mod context;
 #[cfg(test)]
 mod crash_tests;
 mod creation;
+mod guest;
 mod history;
 mod imports;
 mod interrupts;
 mod native_children;
 mod questions;
 mod queue;
+mod remote;
+#[cfg(feature = "application")]
+mod repository;
 mod steering;
 mod tasks;
 mod uploads;
 mod usage_limits;
+#[cfg(feature = "application")]
+mod workspaces;
 use crate::{
     contracts::*,
     providers::{Turn, Update},
@@ -63,6 +72,17 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/022.sql"),
     include_str!("../migrations/023.sql"),
     include_str!("../migrations/024.sql"),
+    include_str!("../migrations/025.sql"),
+    include_str!("../migrations/026.sql"),
+    include_str!("../migrations/027.sql"),
+    include_str!("../migrations/028.sql"),
+    include_str!("../migrations/029.sql"),
+    include_str!("../migrations/030.sql"),
+    include_str!("../migrations/031.sql"),
+    include_str!("../migrations/032.sql"),
+    include_str!("../migrations/033.sql"),
+    include_str!("../migrations/034.sql"),
+    include_str!("../migrations/035.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -160,6 +180,18 @@ fn start_message(
     if text.trim().is_empty() {
         return Err(Error::Invalid("empty message".into()));
     }
+    if tx
+        .prepare(
+            "SELECT 1 FROM thread t JOIN project p ON p.id=t.project
+         JOIN project checkout ON checkout.root=coalesce(t.worktree_path,p.root)
+         JOIN workspace_setup s ON s.project=checkout.id WHERE t.id=? AND s.state!='ready'",
+        )?
+        .exists([&thread.0])?
+    {
+        return Err(Error::Invalid(
+            "workspace setup must succeed before starting a run".into(),
+        ));
+    }
     let (busy, held): (bool, bool) = tx.query_row(
         "SELECT count(*) FILTER (WHERE queue_held=0)>0, count(*) FILTER (WHERE queue_held=1)>0
          FROM run WHERE thread_id=? AND status IN ('starting','running','waiting','queued')",
@@ -193,6 +225,22 @@ fn start_message(
     Ok((id, msg, vec![started, seq], delivery))
 }
 
+fn start_durable_message(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+    text: &str,
+    model: Option<String>,
+    fresh_session: bool,
+) -> Result<(RunId, Option<RunJob>)> {
+    let (run, _, _, delivery) = start_message(tx, thread, text, model, None, true)?;
+    tx.execute(
+        "UPDATE turn_effect SET durable_launch=1, fresh_session=? WHERE run_id=?",
+        params![fresh_session, run.0],
+    )?;
+    let job = (delivery == PeerDelivery::Started).then(|| (thread.clone(), run.clone()));
+    Ok((run, job))
+}
+
 struct StateLock(File);
 
 impl Drop for StateLock {
@@ -206,6 +254,7 @@ impl Drop for StateLock {
 pub(crate) struct Database {
     db: Connection,
     worktree_dir: PathBuf,
+    secrets: std::collections::HashMap<SecretRequestId, application::Secret>,
     // Drop after SQLite closes.
     _lock: StateLock,
 }
@@ -276,11 +325,15 @@ impl Database {
         tx.execute_batch(
             "CREATE TEMP TABLE agent_grant(token TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL)",
         )?;
+        tx.execute("UPDATE workspace_setup SET state='failed',detail='runtime closed during setup' WHERE state='running'", [])?;
+        tx.execute_batch("CREATE TEMP TABLE discovered_tool(run TEXT, name TEXT, PRIMARY KEY(run,name));
+            CREATE TEMP TRIGGER forget_tools AFTER DELETE ON agent_grant BEGIN DELETE FROM discovered_tool WHERE run=OLD.run_id; END;
+            UPDATE secret_request SET state='expired' WHERE state IN ('requested','approved');")?;
         // Queue unclaimed task launches, wakes and peer messages for a new worker.
         // A claimed effect may already have reached the provider.
         tx.execute("UPDATE run SET status='queued' WHERE status='starting' AND stop_requested=0
             AND id IN (SELECT run_id FROM turn_effect WHERE state='pending')
-            AND (id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task)
+            AND (id IN (SELECT run_id FROM turn_effect WHERE durable_launch=1) OR id IN (SELECT child_run FROM delegated_task) OR id IN (SELECT wake_run FROM delegated_task)
                 OR id IN (SELECT run_id FROM message WHERE origin IS NOT NULL))", [])?;
         let lost = tx
             .prepare(
@@ -307,6 +360,7 @@ impl Database {
         tx.commit()?;
         Ok(Self {
             db,
+            secrets: Default::default(),
             worktree_dir: dir.canonicalize()?.join("worktrees"),
             _lock: lock,
         })
@@ -690,6 +744,7 @@ impl Database {
             [&id.0],
             |r| {
                 Ok(Turn {
+                    has_app_context: false,
                     sample_suggestion: false,
                     fork: None,
                     plan_mode: r.get(7)?,
@@ -724,8 +779,36 @@ impl Database {
                     turn.instance
                 ))
             })?;
-        imports::prepare(&tx, id, &mut turn)?;
-        context::prepare(&tx, id, &scope, &mut turn)?;
+        let thread = tx
+            .query_row(
+                "UPDATE thread SET native_thread=NULL, continuation_key=NULL, session_reset=session_reset+1
+             WHERE id=(SELECT r.thread_id FROM run r JOIN turn_effect e ON e.run_id=r.id
+                       WHERE r.id=? AND e.fresh_session=1) RETURNING id",
+                [&id.0],
+                |row| Ok(ThreadId(row.get(0)?)),
+            )
+            .optional()?;
+        if let Some(thread) = thread {
+            turn.resume = None;
+            event(&tx, &thread, Change::SessionReset)?;
+        } else if !tx
+            .prepare(
+                "SELECT 1 FROM thread t JOIN run r ON r.thread_id=t.id
+                               WHERE r.id=? AND t.session_reset>0",
+            )?
+            .exists([&id.0])?
+        {
+            imports::prepare(&tx, id, &mut turn)?;
+            context::prepare(&tx, id, &scope, &mut turn)?;
+        }
+        #[cfg(feature = "application")]
+        if let Some(context) = tx.query_row(
+            "UPDATE app_context SET claimed_run=?1 WHERE thread=(SELECT thread_id FROM run WHERE id=?1) RETURNING content",
+            [&id.0], |r|r.get::<_,String>(0)).optional()? {
+            turn.has_app_context = true;
+            turn.text = format!("MCP App context (host-approved data):\n{context}\n\n{}", turn.text);
+        }
+        tx.execute("UPDATE run SET session_generation=(SELECT session_reset FROM thread WHERE id=run.thread_id) WHERE id=?", [&id.0])?;
         if tx.execute(
             "UPDATE thread SET continuation_key=?1 WHERE id=(SELECT thread_id FROM run WHERE id=?2)
             AND (continuation_key IS NULL OR native_thread IS NULL OR continuation_key=?1)",
@@ -772,6 +855,9 @@ impl Database {
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::SubmittingAppContext => {
+                tx.execute("DELETE FROM app_context WHERE thread=? AND claimed_run=?", params![thread.0, id.0])?;
+            }
             Update::Steer(command,outcome) => steering::settle(&tx, thread,id,&command,outcome)?,
             Update::CommandOutput { item, frame } => command_output::record(&tx,thread,id,&item,frame)?,
             Update::Output(text) => {
@@ -1109,6 +1195,7 @@ impl Database {
         }
         let tx = self.db.transaction()?;
         let origin = MessageOrigin {
+            environment_id: None,
             thread_id: sender.clone(),
             run_id: sender_run.clone(),
             request_key: key.into(),
@@ -1138,7 +1225,22 @@ impl Database {
 
     pub fn thread_position(&self, id: &ThreadId) -> Result<i64> {
         self.db
-            .query_row("SELECT rowid FROM thread WHERE id=?", [&id.0], |r| r.get(0))
+            .query_row(
+                "SELECT position FROM thread JOIN thread_order USING(id) WHERE id=?",
+                [&id.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(id.to_string()))
+    }
+
+    pub fn thread_cursor_position(&self, id: &ThreadId) -> Result<i64> {
+        self.db
+            .query_row(
+                "SELECT position FROM thread_order WHERE id=?",
+                [&id.0],
+                |r| r.get(0),
+            )
             .optional()?
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
@@ -1146,7 +1248,7 @@ impl Database {
     pub fn threads_after(&self, position: i64) -> Result<Vec<ThreadSummary>> {
         Ok(self
             .db
-            .prepare("SELECT id,name FROM thread WHERE rowid>? ORDER BY rowid")?
+            .prepare("SELECT id,name FROM thread JOIN thread_order USING(id) WHERE position>? ORDER BY position")?
             .query_map([position], |r| {
                 Ok(ThreadSummary {
                     id: ThreadId(r.get(0)?),

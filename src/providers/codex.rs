@@ -281,6 +281,7 @@ impl Client {
         } else if turn.plan_mode {
             return Err(protocol("Codex plan mode requires a model"));
         }
+        turn.submitting_prompt(&update)?;
         let started = self.request("turn/start", params).await?;
         let id = started
             .pointer("/turn/id")

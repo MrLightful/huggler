@@ -149,6 +149,7 @@ impl Database {
                     |r| r.get(0),
                 )?;
                 let origin = MessageOrigin {
+                    environment_id: None,
                     thread_id: caller.clone(),
                     run_id: caller_run.clone(),
                     request_key: key.clone(),

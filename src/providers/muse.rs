@@ -102,6 +102,7 @@ pub(crate) async fn execute(
         }
         update(Update::Bound(NativeThreadId(session.into())))?;
         let turn_id = command_id();
+        turn.submitting_prompt(&update)?;
         rpc.write(json!({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":session,"commandId":turn_id,"input":[{"type":"text","text":turn.text}]}})).await?;
         let mut usage_cursors = HashSet::new();
         let mut totals = (0i64, 0i64);

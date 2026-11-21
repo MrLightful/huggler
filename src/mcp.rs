@@ -136,8 +136,122 @@ fn tool_result(value: HostResult<impl Serialize>) -> CallToolResult {
     }
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct Search {
+    query: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Notice {
+    client_request_id: String,
+    text: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretInput {
+    client_request_id: String,
+    label: String,
+}
+
+impl AgentServer {
+    fn permitted(&self, name: &str) -> bool {
+        let policy = &self.0.agent_policy;
+        policy
+            .allowed_tools
+            .as_ref()
+            .is_none_or(|names| names.contains(name))
+            && (name != "request_secret" || policy.secret_ttl_seconds.is_some_and(|n| n > 0))
+    }
+    fn deferred(&self) -> bool {
+        self.0.agent_policy.defer_tools && self.permitted("tool_search")
+    }
+
+    fn visible(&self, token: &str, name: &str) -> HostResult<bool> {
+        if !self.permitted(name) {
+            return Ok(false);
+        }
+        if !self.deferred()
+            || matches!(
+                name,
+                "tool_search" | "orchestrator_capabilities" | "delegate_task" | "task_status"
+            )
+        {
+            return Ok(true);
+        }
+        self.0.access(|db| db.discovered(token, name, false))
+    }
+}
 #[tool_router]
 impl AgentServer {
+    #[tool(
+        description = "List eligible orchestration tools for this caller. Search for a tool to load its schema."
+    )]
+    fn orchestrator_capabilities(&self) -> CallToolResult {
+        let names: Vec<_> = Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name)
+            .filter(|n| self.permitted(n))
+            .collect();
+        tool_result(Ok(json!({"tools":names,"deferred":self.deferred()})))
+    }
+    #[tool(
+        description = "Discover matching tools by name and expose their schemas to the current run."
+    )]
+    fn tool_search(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<Search>,
+    ) -> CallToolResult {
+        tool_result(bearer(&parts.headers).and_then(|token| {
+            let query = input.query.trim().to_lowercase();
+            if query.is_empty() {
+                return Err(Error::Invalid("expected a tool name or keyword".into()));
+            }
+            let mut tools = Vec::new();
+            for tool in Self::tool_router().list_all() {
+                if self.permitted(&tool.name) && tool.name.contains(&query) {
+                    self.0.access(|db| db.discovered(token, &tool.name, true))?;
+                    tools.push(tool);
+                }
+            }
+            Ok(json!({"tools":tools}))
+        }))
+    }
+    #[tool(description = "Deliver an interim message to the host user in your own thread.")]
+    fn send_to_user(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<Notice>,
+    ) -> CallToolResult {
+        tool_result(bearer(&parts.headers).and_then(|token| {
+            self.0.schedule(|db| {
+                db.notify_user(token, &input.client_request_id, &input.text)?;
+                Ok((json!({"delivered":true}), []))
+            })
+        }))
+    }
+    #[tool(
+        description = "Ask the host user for a secret. Poll with the same key and label for the decision and a one-use project reference."
+    )]
+    fn request_secret(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<SecretInput>,
+    ) -> CallToolResult {
+        tool_result(bearer(&parts.headers).and_then(|token| {
+            self.0.access(|db| {
+                let ttl = self
+                    .0
+                    .agent_policy
+                    .secret_ttl_seconds
+                    .ok_or(Error::Forbidden)?;
+                db.request_secret(token, &input.client_request_id, &input.label, ttl)
+            })
+        }))
+    }
     #[tool(
         description = "List, read or answer pending user questions. Omit threadId for your own thread. Use the question IDs from read as keys in answers. Provider permissions require a human responder."
     )]
@@ -312,7 +426,46 @@ impl AgentServer {
 }
 
 #[tool_handler(name = "huggler")]
-impl ServerHandler for AgentServer {}
+impl ServerHandler for AgentServer {
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let token = request_token(&context)?;
+        let mut tools = Vec::new();
+        for tool in Self::tool_router().list_all() {
+            if self.visible(token, &tool.name).unwrap_or(false) {
+                tools.push(tool);
+            }
+        }
+        Ok(rmcp::model::ListToolsResult::with_all_items(tools))
+    }
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let token = request_token(&context)?;
+        if !self.visible(token, &request.name).unwrap_or(false) {
+            return Ok(tool_result(HostResult::<()>::Err(Error::Forbidden)).into());
+        }
+        Self::tool_router()
+            .call(rmcp::handler::server::tool::ToolCallContext::new(
+                self, request, context,
+            ))
+            .await
+    }
+}
+
+fn request_token(
+    ctx: &rmcp::service::RequestContext<rmcp::RoleServer>,
+) -> Result<&str, rmcp::ErrorData> {
+    ctx.extensions
+        .get::<Parts>()
+        .and_then(|p| bearer(&p.headers).ok())
+        .ok_or_else(|| rmcp::ErrorData::invalid_request("missing caller", None))
+}
 
 pub(crate) async fn serve(
     listener: TcpListener,

@@ -1,4 +1,6 @@
 mod questions;
+#[cfg(feature = "application")]
+mod workspace_setup;
 use crate::{
     contracts::{
         agent_commands::{CreateThreads, CreatedPeer, Delegation},
@@ -28,6 +30,7 @@ pub struct HugglerOptions {
     pub state_dir: PathBuf,
     /// Enable caller-scoped orchestration tools over loopback HTTP.
     pub agent_tools: bool,
+    pub agent_policy: crate::application::AgentPolicy,
     /// Continue an idle independent Codex thread after a provider-reported quota reset.
     pub auto_resume_usage_limits: bool,
     /// Ask Codex for an optional follow-up after eligible independent conversations.
@@ -41,6 +44,7 @@ impl HugglerOptions {
         Self {
             state_dir: state_dir.into(),
             agent_tools: false,
+            agent_policy: Default::default(),
             auto_resume_usage_limits: false,
             prompt_suggestions: false,
             instances: vec![],
@@ -51,6 +55,9 @@ impl HugglerOptions {
 }
 
 pub(crate) struct Shared {
+    #[cfg(feature = "application")]
+    pub(crate) services: Mutex<crate::services::Registry>,
+    pub(crate) agent_policy: crate::application::AgentPolicy,
     prompt_suggestions: bool,
     registry: crate::providers::registry::Registry,
     endpoint: Option<String>,
@@ -89,7 +96,7 @@ impl Shared {
 
     // Hold the intake gate through commit and worker registration. Shutdown
     // takes this same gate before taking ownership of all registered workers.
-    fn schedule<T, Jobs: IntoIterator<Item = RunJob>>(
+    pub(crate) fn schedule<T, Jobs: IntoIterator<Item = RunJob>>(
         self: &Arc<Self>,
         write: impl FnOnce(&mut Database) -> Result<(T, Jobs)>,
     ) -> Result<T> {
@@ -302,7 +309,9 @@ impl Shared {
             turn.sample_suggestion = self.prompt_suggestions
                 && turn.provider == Provider::Codex
                 && db.can_sample_suggestion(run)?;
-            if let Some(url) = &self.endpoint {
+            if let Some(url) = &self.endpoint
+                && db.permits_agent_tools(run)?
+            {
                 turn.agent_tools = Some(crate::providers::AgentTools {
                     url: url.clone(),
                     token: db.grant(run)?,
@@ -359,7 +368,7 @@ impl Shared {
 
 /// The owner of a state directory. Share this handle via Arc inside the host.
 pub struct Huggler {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     closed: watch::Sender<bool>,
 }
 
@@ -388,6 +397,9 @@ impl Huggler {
             .transpose()?;
         let jobs = db.ready_jobs()?;
         let shared = Arc::new(Shared {
+            #[cfg(feature = "application")]
+            services: Mutex::default(),
+            agent_policy: options.agent_policy,
             prompt_suggestions: options.prompt_suggestions,
             db: Mutex::new(Some(db)),
             decisions: Mutex::default(),
@@ -683,14 +695,15 @@ impl Huggler {
     }
 
     /// Wait for conversations created after the last thread seen in creation order.
-    /// Pass `None` for an empty list. An unknown thread ID returns `Error::NotFound`.
+    /// The last seen ID remains a valid cursor after deletion. Pass `None` for an empty list.
+    /// An unknown thread ID returns `Error::NotFound`.
     pub async fn wait_for_threads_after(
         &self,
         last: Option<&ThreadId>,
     ) -> Result<Vec<ThreadSummary>> {
         let mut changed = self.shared.changed.subscribe();
         let position = match last {
-            Some(id) => self.shared.access(|db| db.thread_position(id))?,
+            Some(id) => self.shared.access(|db| db.thread_cursor_position(id))?,
             None => 0,
         };
         loop {
@@ -786,10 +799,20 @@ impl Huggler {
         self.shared.access(|db| db.retain_events(thread, count))
     }
 
+    /// Remove an idle thread and its local history. Foreign keys protect cross-thread
+    /// references (including delegated tasks and fork sources). Git files stay on disk.
+    #[cfg(feature = "application")]
+    pub fn delete_thread(&self, thread: &ThreadId) -> Result<()> {
+        let mut services = self.shared.services.lock().unwrap();
+        self.shared
+            .schedule(|db| Ok((db.delete_thread(thread)?, [])))?;
+        services.close_thread(thread);
+        Ok(())
+    }
+
     /// Coalesced notification for snapshot consumers. Returns the current high-water mark.
     pub async fn wait_for_change(&self, thread: &ThreadId, after: i64) -> Result<i64> {
         let mut changed = self.shared.changed.subscribe();
-        self.shared.access(|db| db.thread_position(thread))?;
         loop {
             let cursor = self.shared.access(|db| db.sequence(thread))?;
             if after < 0 || after > cursor {
@@ -822,7 +845,6 @@ impl Huggler {
             if let Some(cursor) = after
                 && cursor >= 0
             {
-                db.thread_position(id)?;
                 db.check_replay(id, cursor)?;
             }
             db.read(id)
@@ -862,6 +884,8 @@ impl Huggler {
                     *shared.fault.lock().unwrap() = Some(e.to_string());
                 }
             }
+            #[cfg(feature = "application")]
+            shared.services.lock().unwrap().clear();
             shared.db.lock().unwrap().take();
             closed.send_replace(true);
         });

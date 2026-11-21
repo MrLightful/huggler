@@ -268,6 +268,7 @@ pub(crate) async fn execute(
         };
         let session = client.configure(&turn).await?;
         update(Update::Bound(NativeThreadId(session.clone())))?;
+        turn.submitting_prompt(&update)?;
         let prompt = client
             .send(
                 "session/prompt",

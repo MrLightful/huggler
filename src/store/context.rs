@@ -84,7 +84,7 @@ pub(super) fn save_fork(
         Some(tx.query_row("SELECT t.native_thread,r.native_turn,t.continuation_key FROM thread t
             JOIN run r ON r.thread_id=t.id JOIN configured_provider c ON c.id=t.provider_instance AND c.scope=t.continuation_key
             WHERE t.id=? AND r.id=? AND c.id=? AND t.provider=c.driver AND c.driver='codex'
-            AND t.native_thread IS NOT NULL AND r.native_turn IS NOT NULL",params![history.source.0,history.through.0,instance.as_str()],
+            AND r.session_generation=t.session_reset AND t.native_thread IS NOT NULL AND r.native_turn IS NOT NULL",params![history.source.0,history.through.0,instance.as_str()],
             |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?
             .ok_or_else(|| Error::Unsupported("native fork requires the original Codex instance and a bound turn".into()))?)
     } else {

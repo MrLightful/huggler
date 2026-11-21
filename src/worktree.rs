@@ -15,7 +15,7 @@ fn command(cwd: &Path) -> Command {
     cmd
 }
 
-fn git(cwd: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String> {
     let output = command(cwd).args(args).output()?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(

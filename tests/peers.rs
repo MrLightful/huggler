@@ -175,6 +175,7 @@ async fn exchange(author_provider: Provider, reviewer_harness: Reviewer) {
         assert_eq!(
             received[0].origin.as_ref().unwrap(),
             &MessageOrigin {
+                environment_id: None,
                 thread_id: sender.clone(),
                 run_id: source_run.clone(),
                 request_key: key.into()
@@ -346,6 +347,7 @@ async fn batch_creation_retries_after_reopen_and_accepts_a_late_prompt() {
         assert_eq!(
             reviewed.messages[0].origin.as_ref().unwrap(),
             &MessageOrigin {
+                environment_id: None,
                 thread_id: author.clone(),
                 run_id: creator_run,
                 request_key: "peer-batch".into(),

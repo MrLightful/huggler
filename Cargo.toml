@@ -7,13 +7,20 @@ repository = "https://github.com/MrLightful/huggler"
 description = "Orchestrate durable coding-agent conversations in Rust applications"
 include = ["src/**", "migrations/**", "Cargo.toml", "Cargo.lock", "tests/**", "!**/__pycache__/**", "!**/*.pyc", "docs/reference/codex-resume/{LICENSE,codex_transcript.ndjson,cursors.json,expected.txt}"]
 
+[features]
+application = ["dep:chrono", "dep:chrono-tz", "dep:hmac", "dep:hex", "reqwest/rustls-tls"]
+
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+chrono-tz = { version = "0.10", optional = true }
+hmac = { version = "0.12", optional = true }
+hex = { version = "0.4", optional = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 rmcp = { version = "3.10", default-features = false, features = ["macros", "server", "transport-streamable-http-server"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
+sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time", "macros"] }

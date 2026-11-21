@@ -95,6 +95,34 @@ for line in sys.stdin:
         prompt_id = frame["id"]
         text = params["prompt"][0]["text"]
         tools = mcp("tools/list", {})["result"]["tools"]
+        if text == "direct notice":
+            assert {t["name"] for t in tools} == {"orchestrator_capabilities", "send_to_user"}
+            assert call("orchestrator_capabilities")["deferred"] is False
+            assert call("tool_search", query="request_secret")["code"] == "forbidden"
+            assert call("send_to_user", clientRequestId="notice", text=text)["delivered"]
+            finish(text)
+            continue
+        if text.startswith("managed secret "):
+            assert call("orchestrator_capabilities")["deferred"] is True
+            names = {t["name"] for t in tools}
+            assert names == {"tool_search", "orchestrator_capabilities"}, names
+            case = text.split()[-1]
+            def secret():
+                return call("request_secret", clientRequestId=case, label="Build credential")
+            assert secret()["code"] == "forbidden"
+            assert call("tool_search", query="thread_send")["tools"] == []
+            assert deliver("sibling", "key", "no")["code"] == "forbidden"
+            for name in ("request_secret", "send_to_user"):
+                assert call("tool_search", query=name)["tools"][0]["name"] == name
+            assert "request_secret" in {t["name"] for t in mcp("tools/list", {})["result"]["tools"]}
+            for _ in range(2):
+                assert call("send_to_user", clientRequestId="notice", text=case)["delivered"]
+            request = secret()
+            while request["state"] == "requested":
+                time.sleep(.03)
+                request = secret()
+            finish(request["reference"] or request["state"])
+            continue
         assert {"thread_list", "thread_send"} <= {t["name"] for t in tools}
         if text.startswith("Use the huggler"):
             peers = call("thread_list")["threads"]

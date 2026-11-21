@@ -26,6 +26,57 @@ pub(super) fn decode_message(r: &Row<'_>, text: String) -> rusqlite::Result<Mess
 }
 
 impl Database {
+    #[cfg(feature = "application")]
+    pub fn delete_thread(&mut self, thread: &ThreadId) -> Result<()> {
+        self.thread_position(thread)?;
+        let tx = self.db.transaction()?;
+        if tx.prepare("SELECT 1 FROM run WHERE thread_id=? AND status IN ('queued','starting','waiting','running')")?.exists([&thread.0])?
+            || tx.prepare("SELECT 1 FROM native_child JOIN run ON run.id=run_id WHERE thread_id=? AND active")?.exists([&thread.0])? {
+            return Err(Error::Busy);
+        }
+        tx.execute("DELETE FROM automation WHERE owner=?", [&thread.0])?;
+        tx.execute("DELETE FROM guest_share WHERE thread=?", [&thread.0])?;
+        tx.execute(
+            "DELETE FROM remote_task WHERE parent_run IN (SELECT id FROM run WHERE thread_id=?)",
+            [&thread.0],
+        )?;
+        tx.execute("DELETE FROM remote_grant WHERE thread=?", [&thread.0])?;
+        for table in [
+            "pending_upload",
+            "context_fork",
+            "imported_history",
+            "usage_recovery",
+            "event",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE thread_id=?"),
+                [&thread.0],
+            )?;
+        }
+        for table in [
+            "message",
+            "provider_usage",
+            "permission",
+            "user_question",
+            "checkpoint",
+            "native_child",
+            "steer",
+            "command_output",
+        ] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE run_id IN (SELECT id FROM run WHERE thread_id=?)"
+                ),
+                [&thread.0],
+            )?;
+        }
+        tx.execute("DELETE FROM run WHERE thread_id=?", [&thread.0])?;
+        tx.execute("DELETE FROM remote_delivery WHERE run_id IS NULL AND grant_id NOT IN (SELECT id FROM remote_grant)", [])?;
+        tx.execute("DELETE FROM thread WHERE id=?", [&thread.0])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(super) fn open_permissions(&self, id: &ThreadId) -> Result<Vec<PermissionRequest>> {
         self.db
             .prepare(
@@ -38,19 +89,27 @@ impl Database {
     }
 
     pub fn sequence(&self, thread: &ThreadId) -> Result<i64> {
-        Ok(self.db.query_row(
-            "SELECT coalesce(max(sequence),0) FROM event WHERE thread_id=?",
-            [&thread.0],
-            |r| r.get(0),
-        )?)
+        self.db
+            .query_row(
+                "SELECT coalesce((SELECT max(sequence) FROM event WHERE thread_id=t.id),0)
+             FROM thread t WHERE t.id=?",
+                [&thread.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(thread.to_string()))
     }
 
     pub fn check_replay(&self, thread: &ThreadId, after: i64) -> Result<()> {
-        let floor: i64 = self.db.query_row(
-            "SELECT replay_floor FROM thread WHERE id=?",
-            [&thread.0],
-            |r| r.get(0),
-        )?;
+        let floor: i64 = self
+            .db
+            .query_row(
+                "SELECT replay_floor FROM thread WHERE id=?",
+                [&thread.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(thread.to_string()))?;
         if after < floor {
             return Err(Error::CursorExpired);
         }
