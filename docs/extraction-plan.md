@@ -6,11 +6,11 @@ Start with a Rust consumer that resumes a Codex conversation after reopening its
 
 ## Stage handoff
 
-**Stage 6 passed.** An independent HTTP client sent and retried a message and read the completed conversation. Two runtimes recovered a remote delegation after a lost receipt and restart, with one parent completion. The application fixtures exercised all seven integration scenarios. All 92 upstream tools have a workflow mapping or a documented limitation. [Stage 6 results and commands](stage-6.md) · [Tool coverage](stage-6.md#upstream-tool-coverage)
+**Stage 6 passed.** An independent HTTP client sent and retried a message and read the completed conversation. Two runtimes recovered a remote delegation after a lost receipt and restart, with one parent completion. The checkout tests covered root and isolated worktrees under separate setup failures. Sixteen recorded HTTP requests exercised repository services, including team-scoped Linear comments. A live Codex session returned an approved secret reference under a three-tool policy. All 92 upstream tools have a workflow mapping or a documented limitation. [Stage 6 results and commands](stage-6.md) · [Tool coverage](stage-6.md#upstream-tool-coverage)
 
-**First Stage 7 action.** From the Huggler root, run `python3 scripts/check-package.py`. The archive contains the migrations and fixtures. An independent Cargo consumer built against the packaged contents resumes the original native session, retry returns the original receipt, and the sibling thread stays isolated. [Package check](../scripts/check-package.py) · [Release criteria](#7-validate-cargo-and-desktop-releases)
+**First Stage 7 action.** From the Huggler root, run `python3 scripts/check-package.py`. Confirm the archive includes migrations and fixtures. The independent consumer must build from that archive, resume the original native session, recover the original receipt on retry and keep the sibling thread isolated. [Package check](../scripts/check-package.py) · [Release criteria](#7-validate-cargo-and-desktop-releases)
 
-**Branch recommendation.** Merge Stage 6. The default and all-features suites passed, along with the optional Pi and Chromium fixtures. The qualification record identifies which operations require an embedding host or use recorded service responses.
+**Branch recommendation.** Merge Stage 6. The default and all-features suites passed. The Pi fixture, headless Chromium capture and authenticated Codex secret-request scenario each passed independently. Formatting and Clippy passed for the crate and desktop. The qualification record identifies which operations require an embedding host or use recorded service responses.
 
 ### Maintaining the handoff
 
