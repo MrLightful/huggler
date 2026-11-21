@@ -44,8 +44,7 @@ pub struct Desktop {
     selection_file: PathBuf,
     scratch_root: PathBuf,
     threads: Vec<ConversationSummary>,
-    show_working: bool,
-    show_settled: bool,
+    expanded_sections: HashMap<sidebar::Section, bool>,
     current: Option<ConversationDetail>,
     checkout_unavailable: bool,
     before: Option<HistoryCursor>,
@@ -58,7 +57,7 @@ pub struct Desktop {
     launching: Option<ThreadId>,
     name: Entity<InputState>,
     starter: Entity<InputState>,
-    launch_options: bool,
+    launch_setup: bool,
     prompt: Entity<InputState>,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
@@ -122,8 +121,7 @@ impl Desktop {
             scratch_root: state.join("scratch"),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
-            show_working: false,
-            show_settled: false,
+            expanded_sections: HashMap::new(),
             current: None,
             checkout_unavailable: false,
             before: None,
@@ -147,7 +145,7 @@ impl Desktop {
             }),
             launching: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Name this conversation…")),
-            launch_options: false,
+            launch_setup: false,
             starter: cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(3, 7)
@@ -413,7 +411,7 @@ impl Desktop {
             return;
         }
         match &self.current {
-            None if self.launch_options && self.launching.is_none() => {
+            None if self.launch_setup && self.launching.is_none() => {
                 self.name.focus_handle(cx).focus(window)
             }
             None if self.launching.is_none() => self.starter.focus_handle(cx).focus(window),
@@ -422,9 +420,10 @@ impl Desktop {
         }
     }
 
-    fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.model_picker = None;
         self.show_settings = false;
+        self.launch_setup = setup;
         if self.current.is_none() {
             self.focus_workspace(window, cx);
             cx.notify();
@@ -436,13 +435,12 @@ impl Desktop {
         self.subscription = None;
         self.command_log = None;
         self.current = None;
-        self.launch_options = false;
         self.error = None;
         self.name
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.branch
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.starter.focus_handle(cx).focus(window);
+        self.focus_workspace(window, cx);
         cx.notify();
     }
 
@@ -696,24 +694,7 @@ impl Desktop {
         }
         let check = self.provider_check.as_ref().map(|check| check.read(cx));
         let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
-        let toggle = control!(
-            "Conversation options",
-            Button::new("launch-options")
-                .ghost()
-                .small()
-                .label(if self.launch_options {
-                    "Back to message"
-                } else {
-                    "Options"
-                })
-                .on_click(cx.listener(|v, _, w, cx| {
-                    v.model_picker = None;
-                    v.launch_options = !v.launch_options;
-                    v.focus_workspace(w, cx);
-                    cx.notify();
-                }))
-        );
-        if !self.launch_options {
+        if !self.launch_setup {
             let checkout = self.checkout.read(cx).value();
             let project = std::path::Path::new(checkout.trim())
                 .file_name()
@@ -788,11 +769,7 @@ impl Desktop {
                     ))
                 })
                 .child(composer)
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .child(control!(
+                .child(h_flex().w_full().justify_between().child(control!(
                             "Choose project",
                             Button::new("project")
                                 .ghost()
@@ -800,9 +777,7 @@ impl Desktop {
                                 .icon(IconName::FolderOpen)
                                 .label(project.unwrap_or("Choose project").to_owned())
                                 .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
-                        ))
-                        .child(toggle),
-                );
+                        )));
             return v_flex()
                 .id("starter")
                 .flex_1()
@@ -890,7 +865,14 @@ impl Desktop {
             .max_w(px(736.))
             .p_4()
             .gap_3()
-            .child(toggle)
+            .child(control!(
+                "Back to message",
+                Button::new("back-to-message")
+                    .small()
+                    .ghost()
+                    .label("Back to message")
+                    .on_click(cx.listener(|v, _, w, cx| v.new_conversation(false, w, cx)))
+            ))
             .child(launcher)
             .child(context)
             .child(
@@ -1303,7 +1285,7 @@ impl Desktop {
                             Button::new("replace-checkout")
                                 .label("Choose another checkout")
                                 .on_click(cx.listener(|view, _, window, cx| {
-                                    view.new_conversation(window, cx);
+                                    view.new_conversation(false, window, cx);
                                     let checkout = std::env::current_dir()
                                         .ok()
                                         .filter(|root| root.join(".git").exists())
@@ -1453,7 +1435,14 @@ impl Render for Desktop {
             .track_focus(&self.focus)
             .on_action(cx.listener(|v, _: &crate::OpenSettings, w, cx| v.open_settings(w, cx)))
             .on_action(
-                cx.listener(|v, _: &crate::NewConversation, w, cx| v.new_conversation(w, cx)),
+                cx.listener(|v, _: &crate::NewConversation, w, cx| {
+                    v.new_conversation(false, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|v, _: &crate::NewConversationWithSetup, w, cx| {
+                    v.new_conversation(true, w, cx);
+                }),
             )
             .relative()
             .size_full()
@@ -1497,7 +1486,7 @@ impl Render for Desktop {
                                                 .icon(IconName::Plus)
                                                 .label("Create")
                                                 .on_click(cx.listener(|view, _, w, cx| {
-                                                    view.new_conversation(w, cx)
+                                                    view.new_conversation(false, w, cx)
                                                 })),
                                         ))
                                         .child(control!(
@@ -1516,6 +1505,7 @@ impl Render for Desktop {
                                                 }))
                                         )),
                                 )
+                                .child(div().w_full().h_px().flex_shrink_0().bg(cx.theme().border))
                                 .child(self.conversation_sidebar(cx)),
                         ),
                 )

@@ -37,8 +37,8 @@ def main():
         starter_state = checkout / "starter-state"
         first = "Explain this project"
         run_window(executable, starter_state, [
-            {"resize": [640, 440]}, {"click": "Conversation options"},
-            {"click": "Git checkout"}, {"type": str(checkout)}, {"click": "Conversation options"},
+            {"resize": [640, 440]}, {"key": "cmd-shift-n"},
+            {"click": "Git checkout"}, {"type": str(checkout)}, {"click": "Back to message"},
             {"click": "Start without a project"}, {"click": "First message"}, {"type": first},
             {"click": "Send first message"}, {"see": "thread/" + first},
             {"see": "Codex/reply " + first},
@@ -48,12 +48,12 @@ def main():
             root, = db.execute("SELECT root FROM project").fetchone()
             assert Path(root).parent == (starter_state / "scratch").resolve()
         run_window(executable, starter_state, [
-            {"key": "cmd-n"}, {"click": "Conversation options"}, {"click": "Git checkout"},
-            {"type": str(checkout / "missing")}, {"click": "Conversation options"},
+            {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Git checkout"},
+            {"type": str(checkout / "missing")}, {"click": "Back to message"},
             {"click": "First message"}, {"type": "Review my changes"}, {"key": "enter"},
             {"type": "Include the tests."}, {"key": "cmd-enter"}, {"contains": "Could not open"},
-            {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"},
-            {"type": str(checkout)}, {"click": "Conversation options"}, {"click": "Send first message"},
+            {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"},
+            {"type": str(checkout)}, {"click": "Back to message"}, {"click": "Send first message"},
             {"see": "thread/Review my changes"}, {"see": "Ready/Review my changes/Completed"},
         ], env)
         with sqlite3.connect(starter_state / "huggler.sqlite3") as db:
@@ -67,7 +67,7 @@ def main():
             {"in_lower_half": "section/Settled/2"}, {"click": "Unsettle/Review my changes"},
         ], env)
         run_window(executable, starter_state, [
-            {"click": "Show settled"}, {"click": "thread/" + first},
+            {"click": "section/Settled/1"}, {"click": "thread/" + first},
             {"see": "Codex/reply " + first}, {"click": "Unsettle/" + first},
             {"see": "Ready/" + first + "/Completed"}, {"click": "Settle/" + first},
             {"see": "Settled/" + first + "/Settled"}, *send_message("Continue"),

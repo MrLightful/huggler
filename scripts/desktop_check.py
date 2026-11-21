@@ -32,7 +32,7 @@ def isolated_env(case, *, codex_login=False):
 
 def launch_thread(checkout, name, provider="Codex", *, branch=None):
     return [
-        {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
+        {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
         {"click": "model/Provider default"}, {"click": f"provider/{provider}"}, {"click": "model-option/Provider default"},
         {"click": "Conversation name"}, {"type": name},
         *([{"click": "New worktree branch (optional)"}, {"type": branch}] if branch else []),

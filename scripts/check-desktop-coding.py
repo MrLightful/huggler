@@ -32,8 +32,11 @@ def check(binary):
                    GIT_COMMON_DIR=str(root / ".git"), GIT_INDEX_FILE=str(root / ".git/index"))
         env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
         run_window(binary, state, [
+            {"see": "First message"}, {"absent": "Conversation options"},
             *launch_thread(checkout, "Implementation"),
             {"see": "Ready/Implementation/New conversation"},
+            {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
+            {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
             {"absent": "Send plan"},
             *send_message("Create the answer file."),
             {"see": "writing/Checking the requested filename. I will confirm the path with you before "
@@ -72,9 +75,9 @@ def check(binary):
             {"see": "status/Running"}, {"click": "Message"}, {"type": "Review the staged result."},
             {"click": "Queue message"}, {"see": "1 queued message"},
             {"in_lower_half": "section/Working/1"}, {"see": "Working/Implementation/Running"},
-            {"click": "thread/Review"}, {"absent": "thread/Implementation"}, {"click": "Show working"},
-            {"see": "Working/Implementation/Running"}, {"click": "Hide working"}, {"absent": "thread/Implementation"},
-            {"click": "Show working"}, {"click": "thread/Implementation"},
+            {"click": "thread/Review"}, {"absent": "thread/Implementation"}, {"click": "section/Working/1"},
+            {"see": "Working/Implementation/Running"}, {"click": "section/Working/1"}, {"absent": "thread/Implementation"},
+            {"click": "section/Working/1"}, {"click": "thread/Implementation"},
             {"see": "writing/Waiting for your instruction."}, {"click": "Stop thread"},
             {"see": "1 queued message · paused"}, {"see": "Needs attention/Implementation/Queue paused"},
         ], env)

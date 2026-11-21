@@ -47,8 +47,8 @@ impl SidebarVisibility {
 
 pub(super) const WIDTH: f32 = 184.;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Section {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Section {
     Attention,
     Ready,
     Working,
@@ -121,48 +121,41 @@ impl Desktop {
 
             let title = section.label();
             let count = rows.len();
-            let expanded = match section {
-                Section::Working => self.show_working,
-                Section::Settled => self.show_settled,
-                _ => true,
-            };
             let selected = self
                 .current
                 .as_ref()
                 .filter(|_| !self.show_settings)
                 .map(|t| &t.id);
-            let can_fold = matches!(section, Section::Working | Section::Settled)
-                && rows.iter().any(|(t, _)| Some(&t.id) != selected);
-            let header = h_flex()
-                .px_1()
-                .gap_2()
-                .justify_between()
+            // Before the user toggles a lower group, keep just the open thread visible.
+            let expanded = self.expanded_sections.get(&section).copied();
+            let visible = |thread: &ConversationSummary| {
+                expanded.unwrap_or(
+                    matches!(section, Section::Attention | Section::Ready)
+                        || Some(&thread.id) == selected,
+                )
+            };
+            let fully_expanded = rows.iter().all(|(thread, _)| visible(thread));
+            let header = Button::new(SharedString::from(format!("toggle-{title}")))
+                .w_full()
+                .small()
+                .compact()
+                .ghost()
+                .justify_start()
+                .icon(if fully_expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
                 .child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(format!("{title} ({count})")),
                 )
-                .when(can_fold, |header| {
-                    let action = if expanded { "Hide" } else { "Show" };
-                    header.child(control!(
-                        format!("{action} {}", title.to_lowercase()),
-                        Button::new(SharedString::from(format!("toggle-{title}")))
-                            .small()
-                            .compact()
-                            .ghost()
-                            .label(action)
-                            .tooltip(format!("{action} {} conversations", title.to_lowercase()))
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                match section {
-                                    Section::Settled => view.show_settled = !expanded,
-                                    Section::Working => view.show_working = !expanded,
-                                    _ => {}
-                                }
-                                cx.notify();
-                            }))
-                    ))
-                });
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.expanded_sections.insert(section, !fully_expanded);
+                    cx.notify();
+                }));
             let group = v_flex()
                 .flex_shrink_0()
                 .pb_3()
@@ -170,7 +163,7 @@ impl Desktop {
                 .child(control!(format!("section/{title}/{count}"), header))
                 .children(
                     rows.into_iter()
-                        .filter(|(thread, _)| expanded || Some(&thread.id) == selected)
+                        .filter(|(thread, _)| visible(thread))
                         .map(|(thread, status)| self.sidebar_row(thread, section, status, cx)),
                 );
             list = list.child(group);

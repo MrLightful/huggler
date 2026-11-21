@@ -18,7 +18,7 @@ def check_models(executable, tmp, env):
     default = "model/Provider default"
     run_window(executable, state, [
         {"click": default}, {"click": "provider/available"}, {"click": "provider/Codex"}, {"key": "escape"},
-        {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)}, {"click": default},
+        {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)}, {"click": default},
         {"see": "model-option/fixture-fast"}, {"type": "deep"},
         {"absent": "model-option/fixture-fast"}, {"key": "enter"}, {"see": "model/fixture-deep"},
         {"click": "model/fixture-deep"}, {"click": "provider/available"}, {"see": default},
@@ -63,12 +63,12 @@ def main():
         ]))
         status = "provider-status/"
         steps = [
-            {"click": "Conversation options"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(tmp)},
-            {"click": "model/Provider default"}, {"click": "provider/unavailable"}, {"click": "model-option/Provider default"}, {"click": "Check provider"},
+            {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(tmp)},
+            {"click": "model/Provider default"}, {"click": "provider/unavailable"}, {"click": "model-option/Provider default"}, {"absent": "model-option/Provider default"}, {"click": "Check provider"},
             {"see": status + "install the provider executable or configure its path: " + str(missing)},
             {"click": "model/Provider default"}, {"see": "Retry models"},
             {"click": "Retry models"}, {"see": "model-option/Provider default"}, {"key": "escape"},
-            {"click": "model/Provider default"}, {"click": "provider/available"}, {"click": "model-option/Provider default"}, {"click": "Check provider"},
+            {"click": "model/Provider default"}, {"click": "provider/available"}, {"click": "model-option/Provider default"}, {"absent": "model-option/Provider default"}, {"click": "Check provider"},
             {"see": status + "ACP v1 · 1 · login unverified · 2 models"},
         ]
         env = dict(isolated_env(tmp), HUGGLER_PROVIDERS=str(config), HUGGLER_CODEX=str(missing))
