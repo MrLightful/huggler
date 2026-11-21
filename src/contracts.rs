@@ -178,6 +178,24 @@ pub struct Project {
     pub root: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForkMode {
+    Native,
+    Portable,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForkHistory {
+    pub source: ThreadId,
+    pub through: RunId,
+    pub mode: ForkMode,
+    /// Most recent messages through the boundary, in delivery order.
+    pub messages: Vec<Message>,
+    /// Earlier messages or portions of their text exceeded the history budget.
+    pub truncated: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
@@ -197,6 +215,22 @@ pub enum Action {
         name: String,
         model: Option<String>,
         instance: ProviderInstanceId,
+    },
+    /// Create a new thread at a completed source run and send its first prompt.
+    Fork {
+        source: ThreadId,
+        through: RunId,
+        name: String,
+        instance: ProviderInstanceId,
+        model: Option<String>,
+        mode: ForkMode,
+        text: String,
+    },
+    /// Send a bounded account of completed branch work to its direct parent.
+    MergeBack {
+        source: ThreadId,
+        through: RunId,
+        text: String,
     },
     Send {
         text: String,
@@ -611,6 +645,8 @@ pub enum Error {
     Busy,
     #[error("invalid request: {0}")]
     Invalid(String),
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
     #[error("unsupported state schema version {0}")]
     SchemaVersion(i64),
     #[error("storage: {0}")]

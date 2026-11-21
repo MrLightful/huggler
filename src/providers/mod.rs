@@ -33,6 +33,7 @@ pub(crate) struct AgentTools {
 }
 
 pub(crate) struct Turn {
+    pub fork: Option<(NativeThreadId, NativeTurnId)>,
     pub plan_mode: bool,
     pub agent_tools: Option<AgentTools>,
     pub provider: Provider,

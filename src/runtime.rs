@@ -614,6 +614,10 @@ impl Huggler {
             .access(|db| db.detail(thread, before, query, limit))
     }
 
+    pub fn fork_history(&self, thread: &ThreadId) -> Result<Option<ForkHistory>> {
+        self.shared.access(|db| db.fork_history(thread))
+    }
+
     pub fn read_message(&self, thread: &ThreadId, id: &MessageId) -> Result<Message> {
         self.shared.access(|db| db.read_message(thread, id))
     }

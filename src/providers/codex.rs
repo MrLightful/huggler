@@ -197,13 +197,19 @@ impl Client {
         if let Some(model) = model {
             session["model"] = json!(model);
         }
-        let method = match &turn.resume {
-            Some(id) => {
+        let method = match (&turn.resume, &turn.fork) {
+            (_, Some((parent, through))) => {
+                session["threadId"] = json!(parent);
+                session["lastTurnId"] = json!(through);
+                session["excludeTurns"] = json!(true);
+                "thread/fork"
+            }
+            (Some(id), None) => {
                 session["threadId"] = json!(id);
                 session["excludeTurns"] = json!(true);
                 "thread/resume"
             }
-            None => "thread/start",
+            (None, None) => "thread/start",
         };
         let response = self.request(method, session).await?;
         let thread = response
@@ -212,6 +218,18 @@ impl Client {
             .ok_or_else(|| protocol("missing native thread ID"))?;
         if turn.resume.as_ref().is_some_and(|id| id.0 != thread) {
             return Err(protocol("resume returned a different native thread"));
+        }
+        if let Some((parent, through)) = &turn.fork {
+            let fork = &response["thread"];
+            let last = fork["turns"].as_array().and_then(|turns| turns.last());
+            if thread == parent.0
+                || fork["forkedFromId"].as_str() != Some(&parent.0)
+                || last.and_then(|t| t["id"].as_str()) != Some(&through.0)
+            {
+                return Err(protocol(
+                    "fork returned a different parent or turn boundary",
+                ));
+            }
         }
         update(Update::Bound(NativeThreadId(thread.to_owned())))?;
         self.request(
@@ -239,7 +257,7 @@ impl Client {
             .ok_or_else(|| protocol("missing native turn ID"))?;
         // Resume can emit the preceding turn's cumulative counters before acknowledging
         // turn/start. Without that baseline, the thread total cannot be attributed to this run.
-        let baseline = if turn.resume.is_none() {
+        let baseline = if turn.resume.is_none() && turn.fork.is_none() {
             Some((0, 0))
         } else {
             self.early

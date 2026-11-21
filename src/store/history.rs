@@ -4,7 +4,7 @@ pub(super) fn message_row(r: &Row<'_>) -> rusqlite::Result<Message> {
     decode_message(r, r.get(3)?)
 }
 
-fn decode_message(r: &Row<'_>, text: String) -> rusqlite::Result<Message> {
+pub(super) fn decode_message(r: &Row<'_>, text: String) -> rusqlite::Result<Message> {
     let origin = r
         .get::<_, Option<String>>(4)?
         .map(|s| serde_json::from_str(&s))

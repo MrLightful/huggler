@@ -14,7 +14,7 @@ Run `cargo test --locked stop_thread` to reproduce the stop checks. A scripted p
 
 **History and replay.** The Rust fixture pages through held messages, expands a large message, verifies an edit from a retained cursor and rebuilds the same messages after expiry and reopen. The GPUI fixture pages and searches 1,000 messages. The three pinned upstream stream suites passed 20 tests. [Rust test](../tests/runtime.rs) · [Window check](../scripts/check-desktop-history.py)
 
-**Next action for Stage 5.** Verify context fork, handoff and merge through the first outbound provider prompt, then exercise attachments, recovery and migration.
+**Next action for Stage 5.** Verify upload claim, duplicate send, per-question delivery and dismissal, then exercise recovery and migration. The context-transfer fixture now checks the first provider prompt, native turn boundary, cross-instance and cross-provider delivery, fork history and merge-back. [Transfer scenario](../tests/context.rs)
 
 **Branch recommendation.** Commit and continue on this branch while Stage 5 acceptance checks remain open.
 

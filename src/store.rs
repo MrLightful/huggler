@@ -1,3 +1,4 @@
+mod context;
 mod creation;
 mod history;
 mod interrupts;
@@ -45,6 +46,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/014.sql"),
     include_str!("../migrations/015.sql"),
     include_str!("../migrations/016.sql"),
+    include_str!("../migrations/017.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
@@ -344,6 +346,7 @@ impl Database {
             && !matches!(
                 cmd.action,
                 Action::Launch { .. }
+                    | Action::Fork { .. }
                     | Action::LaunchProvider { .. }
                     | Action::LaunchInstance { .. }
             )
@@ -388,6 +391,59 @@ impl Database {
                 receipt
                     .event_sequences
                     .push(event(&tx, thread, Change::Launched)?);
+            }
+            Action::Fork {
+                source,
+                through,
+                name,
+                instance,
+                model,
+                mode,
+                text,
+            } => {
+                if selection.is_some() || name.trim().is_empty() {
+                    return Err(Error::Invalid(
+                        "fork requires a new thread and a name".into(),
+                    ));
+                }
+                let driver = creation::instance_driver(&tx, instance.as_str())?;
+                let history = context::capture(&tx, source, through, *mode, true)?;
+                tx.execute("INSERT INTO thread(id,project,name,provider_instance,provider,model,worktree_path)
+                    SELECT ?1,project,?2,?3,?4,?5,worktree_path FROM thread WHERE id=?6",
+                    params![thread.0,name,instance.as_str(),driver,model,source.0])?;
+                context::save_fork(&tx, thread, &history, instance)?;
+                receipt
+                    .event_sequences
+                    .push(event(&tx, thread, Change::Launched)?);
+                let (run, msg, events, _) =
+                    start_message(&tx, thread, text, model.clone(), None, false)?;
+                work.start.push((thread.clone(), run.clone()));
+                receipt.run_id = Some(run);
+                receipt.message_id = Some(msg);
+                receipt.event_sequences.extend(events);
+            }
+            Action::MergeBack {
+                source,
+                through,
+                text,
+            } => {
+                if !tx
+                    .prepare("SELECT 1 FROM context_fork WHERE thread_id=? AND source=?")?
+                    .exists(params![source.0, thread.0])?
+                {
+                    return Err(Error::Forbidden);
+                }
+                if text.trim().is_empty() {
+                    return Err(Error::Invalid("empty merge prompt".into()));
+                }
+                let history = context::capture(&tx, source, through, ForkMode::Portable, false)?;
+                let prompt = context::prompt(&serde_json::to_string(&history)?, text);
+                let (run, msg, events, _) =
+                    start_message(&tx, thread, &prompt, selection.flatten(), None, false)?;
+                work.start.push((thread.clone(), run.clone()));
+                receipt.run_id = Some(run);
+                receipt.message_id = Some(msg);
+                receipt.event_sequences = events;
             }
             Action::SetModel { model } => {
                 if selection.as_ref() != Some(model) {
@@ -513,7 +569,7 @@ impl Database {
         {
             return Err(Error::Interrupted);
         }
-        let turn = tx.query_row(
+        let mut turn = tx.query_row(
             "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode,t.provider_instance FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
@@ -521,6 +577,7 @@ impl Database {
             [&id.0],
             |r| {
                 Ok(Turn {
+                    fork: None,
                     plan_mode: r.get(7)?,
                     instance: ProviderInstanceId(r.get(8)?),
                     provider: Provider::from_key(&r.get::<_, String>(5)?)?,
@@ -553,6 +610,7 @@ impl Database {
                     turn.instance
                 ))
             })?;
+        context::prepare(&tx, id, &scope, &mut turn)?;
         if tx.execute(
             "UPDATE thread SET continuation_key=?1 WHERE id=(SELECT thread_id FROM run WHERE id=?2)
             AND (continuation_key IS NULL OR native_thread IS NULL OR continuation_key=?1)",
