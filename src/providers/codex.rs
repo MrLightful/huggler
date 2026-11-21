@@ -285,6 +285,7 @@ impl Client {
         let mut questions = HashMap::<RequestId, Value>::new();
         let mut children = Children::default();
         let mut foreground_complete = false;
+        let mut steers = HashMap::new();
         let mut interrupt_replies = HashMap::<u64, oneshot::Sender<Result<()>>>::new();
         loop {
             if foreground_complete && !children.active() && interrupt_replies.is_empty() {
@@ -296,6 +297,17 @@ impl Client {
                     frame = self.read() => frame?,
                     control = controls.recv() => {
                         match control.ok_or(Error::Closed)? {
+                            Control::Steer { command, text } => {
+                                if foreground_complete {
+                                    update(Update::Steer(command,crate::SteerOutcome::Rejected("foreground turn completed".into())))?;
+                                } else {
+                                    let wire_id=self.next_id;
+                                    self.next_id+=1;
+                                    self.rpc.write(json!({"id":wire_id,"method":"turn/steer","params":{"threadId":thread,
+                                        "expectedTurnId":id,"input":[{"type":"text","text":text}]}})).await?;
+                                    steers.insert(wire_id,command);
+                                }
+                            }
                             Control::Interrupt(request) => {
                                 self.interrupt_child(request, &children, &mut interrupt_replies).await?;
                             }
@@ -346,6 +358,18 @@ impl Client {
             }
             if let Some(wire_id) = frame.get("id") {
                 if frame.get("method").is_none() {
+                    if let Some(command) = wire_id.as_u64().and_then(|id| steers.remove(&id)) {
+                        let outcome = if let Some(error) = frame.get("error") {
+                            crate::SteerOutcome::Rejected(error.to_string())
+                        } else if frame.pointer("/result/turnId").and_then(Value::as_str)
+                            == Some(id)
+                        {
+                            crate::SteerOutcome::Accepted
+                        } else {
+                            crate::SteerOutcome::Uncertain
+                        };
+                        update(Update::Steer(command, outcome))?;
+                    }
                     if let Some(reply) = wire_id
                         .as_u64()
                         .and_then(|id| interrupt_replies.remove(&id))

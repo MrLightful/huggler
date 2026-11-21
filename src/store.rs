@@ -9,6 +9,7 @@ mod interrupts;
 mod native_children;
 mod questions;
 mod queue;
+mod steering;
 mod tasks;
 mod uploads;
 use crate::{
@@ -32,6 +33,7 @@ pub(crate) type RunJob = (ThreadId, RunId);
 pub(crate) struct DispatchWork {
     pub start: Vec<RunJob>,
     pub stop: Vec<RunId>,
+    pub steer: Option<(RunId, String)>,
 }
 
 const MIGRATIONS: &[&str] = &[
@@ -55,6 +57,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/018.sql"),
     include_str!("../migrations/019.sql"),
     include_str!("../migrations/020.sql"),
+    include_str!("../migrations/021.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot";
@@ -525,6 +528,13 @@ impl Database {
                 receipt.message_id = Some(msg);
                 receipt.event_sequences = events;
             }
+            Action::Steer { active, text } => {
+                receipt
+                    .event_sequences
+                    .push(steering::request(&tx, thread, active, &cmd.id, text)?);
+                receipt.run_id = Some(active.clone());
+                work.steer = Some((active.clone(), text.clone()));
+            }
             Action::Restart { active, text } => {
                 if tx.execute("UPDATE run SET stop_requested=1,stop_reason='Restarted by the host'
                     WHERE thread_id=? AND id=? AND stop_requested=0 AND status IN ('starting','running')",
@@ -731,6 +741,7 @@ impl Database {
     pub fn update(&mut self, thread: &ThreadId, id: &RunId, update: Update) -> Result<()> {
         let tx = self.db.transaction()?;
         match update {
+            Update::Steer(command,outcome) => steering::settle(&tx, thread,id,&command,outcome)?,
             Update::Output(text) => {
                 event(&tx, thread, Change::OutputDelta { run_id: id.clone(), text })?;
             }
@@ -892,6 +903,7 @@ impl Database {
     ) -> Result<()> {
         Self::expire_permissions(tx, thread, id, None, None)?;
         questions::expire_run(tx, thread, id)?;
+        steering::disconnect(tx, thread, id)?;
         // Waiting and the final answer commit together. A cleanup error or a
         // process exit after this point cannot undo provider completion.
         let interrupted = matches!(result, Err(Error::Interrupted));

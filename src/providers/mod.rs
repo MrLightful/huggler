@@ -19,6 +19,10 @@ pub(crate) struct ChildInterrupt {
 }
 
 pub(crate) enum Control {
+    Steer {
+        command: crate::CommandId,
+        text: String,
+    },
     Interrupt(ChildInterrupt),
     Answer {
         id: RequestId,
@@ -46,6 +50,7 @@ pub(crate) struct Turn {
 }
 
 pub(crate) enum Update {
+    Steer(crate::CommandId, crate::SteerOutcome),
     Output(String),
     Usage {
         input: i64,

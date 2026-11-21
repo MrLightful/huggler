@@ -274,6 +274,11 @@ pub enum Action {
     Enqueue {
         text: String,
     },
+    /// Send text into the expected live Codex turn. Read its acknowledgement with steer_outcome.
+    Steer {
+        active: RunId,
+        text: String,
+    },
     /// Interrupt the expected foreground run, then deliver the replacement before queued work.
     Restart {
         active: RunId,
@@ -299,6 +304,15 @@ pub enum Action {
         model: Option<String>,
     },
 }
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerOutcome {
+    Pending,
+    Accepted,
+    Rejected(String),
+    Uncertain,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Command {
     pub id: CommandId,
@@ -572,6 +586,11 @@ impl From<ThreadSnapshot> for Thread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
+    Steer {
+        run_id: RunId,
+        command_id: CommandId,
+        outcome: SteerOutcome,
+    },
     /// The host requested that the worker for this run stop.
     RunStopRequested {
         run_id: RunId,

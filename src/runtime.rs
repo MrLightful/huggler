@@ -448,8 +448,40 @@ impl Huggler {
         self.shared.schedule(|db| {
             let (receipt, work) = db.dispatch(&command)?;
             self.shared.stop_runs(&work.stop);
+            if let Some((run, text)) = work.steer {
+                let sent = self
+                    .shared
+                    .controls
+                    .lock()
+                    .unwrap()
+                    .get(&(command.thread_id.clone(), run.clone()))
+                    .is_some_and(|tx| {
+                        tx.send(Control::Steer {
+                            command: command.id.clone(),
+                            text,
+                        })
+                        .is_ok()
+                    });
+                if !sent {
+                    db.update(
+                        &command.thread_id,
+                        &run,
+                        crate::providers::Update::Steer(
+                            command.id.clone(),
+                            SteerOutcome::Rejected(
+                                "foreground session closed before delivery".into(),
+                            ),
+                        ),
+                    )?;
+                }
+            }
             Ok((receipt, work.start))
         })
+    }
+
+    /// Read the durable acknowledgement of a steering command, including after reopen.
+    pub fn steer_outcome(&self, thread: &ThreadId, command: &CommandId) -> Result<SteerOutcome> {
+        self.shared.access(|db| db.steer_outcome(thread, command))
     }
 
     pub fn launch(

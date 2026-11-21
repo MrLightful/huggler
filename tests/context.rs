@@ -727,3 +727,109 @@ async fn outstanding_callbacks_expire_after_process_loss() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn steering_settles_only_acknowledged_input_on_the_expected_turn() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let opts = options(&dir.path().join("state"));
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&repo)?;
+    let root = launch(&rt, &project, "root", Provider::Codex);
+    let other = launch(&rt, &project, "other", Provider::ClaudeAgent);
+    let steer = |thread: &ThreadId, run: &RunId, text: &str| {
+        command(
+            text,
+            thread,
+            Action::Steer {
+                active: run.clone(),
+                text: text.into(),
+            },
+        )
+    };
+    let mut replay = Vec::new();
+    for (i, inputs) in [
+        vec!["clarification", "reject", "finish before ack"],
+        vec!["drop"],
+    ]
+    .iter()
+    .enumerate()
+    {
+        let run = rt
+            .send(CommandId(format!("send-{i}")), root.clone(), "ask".into())?
+            .run_id
+            .unwrap();
+        question(&rt, &root).await?;
+        let state = rt.read(&root)?;
+        let native_turn = state.runs.last().unwrap().native_turn.as_ref().unwrap();
+        let mut events = rt.subscribe(&root, Some(state.cursor))?.1;
+        assert!(matches!(
+            rt.dispatch(steer(&root, &RunId("stale".into()), "wrong")),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            rt.dispatch(steer(&other, &run, "unsupported")),
+            Err(Error::Unsupported(_))
+        ));
+        for input in inputs {
+            let cmd = steer(&root, &run, input);
+            let receipt = rt.dispatch(cmd.clone())?;
+            assert_eq!(receipt.run_id.as_ref(), Some(&run));
+            assert_eq!(rt.dispatch(cmd.clone())?, receipt);
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if let Change::Steer {
+                        command_id,
+                        run_id,
+                        outcome,
+                    } = events.next().await?.change
+                        && command_id == cmd.id
+                        && outcome != SteerOutcome::Pending
+                    {
+                        assert_eq!(run_id, run);
+                        return Ok::<_, Error>(outcome);
+                    }
+                }
+            })
+            .await
+            .expect("steer settlement")?;
+            match *input {
+                "clarification" => assert_eq!(outcome, SteerOutcome::Accepted),
+                "reject" => assert!(
+                    matches!(&outcome, SteerOutcome::Rejected(reason) if reason.contains("turn refused"))
+                ),
+                _ => assert_eq!(outcome, SteerOutcome::Uncertain),
+            }
+            assert!(matches!(
+                rt.steer_outcome(&other, &cmd.id),
+                Err(Error::NotFound(_))
+            ));
+            let wire = frames(&repo, "turn/steer").pop().unwrap();
+            assert_eq!(wire["expectedTurnId"], native_turn.0);
+            assert_eq!(wire["threadId"], state.native_thread.as_ref().unwrap().0);
+            replay.push((cmd, receipt, outcome));
+        }
+        assert_eq!(
+            rt.wait(&root, &run).await?.status,
+            if i == 0 {
+                RunStatus::Completed
+            } else {
+                RunStatus::Failed
+            }
+        );
+    }
+    rt.close().await?;
+    let rt = Huggler::open(opts).await?;
+    for (cmd, receipt, outcome) in replay {
+        assert_eq!(rt.steer_outcome(&root, &cmd.id)?, outcome);
+        assert_eq!(rt.dispatch(cmd)?, receipt);
+    }
+    let history = rt.read(&root)?.messages;
+    assert_eq!(
+        history.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+        ["ask", "clarification", "reply ask", "ask"]
+    );
+    assert_eq!(frames(&repo, "turn/steer").len(), 4);
+    rt.close().await
+}

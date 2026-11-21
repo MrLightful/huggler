@@ -87,6 +87,9 @@ impl Session<'_> {
                     let _ = request.reply.send(Ok(()));
                 }
             }
+            Control::Steer { .. } => {
+                return Err(Error::Unsupported("native steering requires Codex".into()));
+            }
             Control::Answer { reply, .. } => {
                 let _ = reply.send(Err(Error::NotFound("live user-input request".into())));
             }

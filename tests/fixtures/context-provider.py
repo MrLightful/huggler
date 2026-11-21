@@ -58,6 +58,18 @@ for line in sys.stdin:
         emit(method="session/update", params={"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk",
              "content": {"type": "text", "text": "portable reply"}}})
         result = {"stopReason": "end_turn"}
+    elif method == "turn/steer":
+        assert params["threadId"] == session and params["expectedTurnId"] == turn
+        text = params["input"][0]["text"]
+        if text == "reject":
+            emit(id=frame["id"], error={"code": -32602, "message": "turn refused"})
+            continue
+        if text == "finish before ack":
+            completed()
+            continue
+        if text == "drop":
+            sys.exit(0)
+        result = {"turnId": turn}
     elif method == "turn/start":
         prompt = params["input"][0]["text"]
         turn = str(uuid4())
