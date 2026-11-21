@@ -1,8 +1,10 @@
 //! In-process orchestration of durable coding-agent conversations.
 pub mod contracts;
+pub mod guest;
 mod imports;
 mod mcp;
 pub mod providers;
+pub mod remote;
 mod runtime;
 mod store;
 mod worktree;

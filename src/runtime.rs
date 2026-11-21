@@ -89,7 +89,7 @@ impl Shared {
 
     // Hold the intake gate through commit and worker registration. Shutdown
     // takes this same gate before taking ownership of all registered workers.
-    fn schedule<T, Jobs: IntoIterator<Item = RunJob>>(
+    pub(crate) fn schedule<T, Jobs: IntoIterator<Item = RunJob>>(
         self: &Arc<Self>,
         write: impl FnOnce(&mut Database) -> Result<(T, Jobs)>,
     ) -> Result<T> {
@@ -302,7 +302,9 @@ impl Shared {
             turn.sample_suggestion = self.prompt_suggestions
                 && turn.provider == Provider::Codex
                 && db.can_sample_suggestion(run)?;
-            if let Some(url) = &self.endpoint {
+            if let Some(url) = &self.endpoint
+                && db.permits_agent_tools(run)?
+            {
                 turn.agent_tools = Some(crate::providers::AgentTools {
                     url: url.clone(),
                     token: db.grant(run)?,
@@ -359,7 +361,7 @@ impl Shared {
 
 /// The owner of a state directory. Share this handle via Arc inside the host.
 pub struct Huggler {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     closed: watch::Sender<bool>,
 }
 

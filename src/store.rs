@@ -4,12 +4,14 @@ mod context;
 #[cfg(test)]
 mod crash_tests;
 mod creation;
+mod guest;
 mod history;
 mod imports;
 mod interrupts;
 mod native_children;
 mod questions;
 mod queue;
+mod remote;
 mod steering;
 mod tasks;
 mod uploads;
@@ -63,6 +65,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/022.sql"),
     include_str!("../migrations/023.sql"),
     include_str!("../migrations/024.sql"),
+    include_str!("../migrations/025.sql"),
+    include_str!("../migrations/026.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion";
@@ -1109,6 +1113,7 @@ impl Database {
         }
         let tx = self.db.transaction()?;
         let origin = MessageOrigin {
+            environment_id: None,
             thread_id: sender.clone(),
             run_id: sender_run.clone(),
             request_key: key.into(),

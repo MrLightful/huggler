@@ -343,6 +343,7 @@ async fn owner_followups_keep_their_own_runs_receipts_and_results() {
             assert_eq!(
                 message.origin,
                 Some(MessageOrigin {
+                    environment_id: None,
                     thread_id: parent.clone(),
                     run_id: owner_run.clone(),
                     request_key: key.into()

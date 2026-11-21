@@ -23,6 +23,7 @@ id!(MessageId);
 id!(UploadId);
 id!(TaskId);
 id!(ProjectId);
+id!(EnvironmentId);
 id!(RequestId);
 id!(NativeThreadId);
 id!(NativeTurnId);
@@ -379,6 +380,8 @@ pub enum Role {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageOrigin {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<EnvironmentId>,
     pub thread_id: ThreadId,
     pub run_id: RunId,
     pub request_key: String,
