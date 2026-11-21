@@ -668,13 +668,39 @@ impl Huggler {
         id: &str,
         cwd: impl AsRef<Path>,
     ) -> Result<crate::ProviderReport> {
+        self.discover_provider(id, cwd.as_ref(), async |instance, output, cwd| {
+            crate::providers::probe::inspect(&instance, &output, &cwd).await
+        })
+        .await
+    }
+
+    /// List enabled skills in a working directory, ordered by name and path. None
+    /// indicates an unsupported adapter or provider version. Discovery does not submit a prompt.
+    pub async fn list_provider_skills(
+        &self,
+        id: &str,
+        cwd: impl AsRef<Path>,
+    ) -> Result<Option<Vec<crate::ProviderSkill>>> {
+        self.discover_provider(id, cwd.as_ref(), async |instance, output, cwd| {
+            crate::providers::probe::list_skills(&instance, &output, &cwd).await
+        })
+        .await
+    }
+
+    async fn discover_provider<T: Send + 'static, F: Future<Output = Result<T>> + Send>(
+        &self,
+        id: &str,
+        cwd: &Path,
+        discover: impl FnOnce(crate::ProviderInstance, Arc<crate::AgentOutput>, PathBuf) -> F
+        + Send
+        + 'static,
+    ) -> Result<T> {
         let instance = self
             .shared
             .registry
             .get(id)
             .ok_or_else(|| Error::NotFound(format!("provider instance {id}")))?
             .clone();
-        let cwd = cwd.as_ref();
         let cwd = cwd.canonicalize().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
                 Error::CheckoutUnavailable(cwd.to_owned())
@@ -692,14 +718,15 @@ impl Huggler {
             let mut stop = self.shared.stop.subscribe();
             workers.spawn_on(
                 async move {
-                    let probe = crate::providers::probe::inspect(&instance, &output, &cwd);
+                    let provider_id = instance.id.clone();
+                    let probe = discover(instance, output, cwd);
                     let deadline = std::time::Duration::from_secs(15);
                     let result = tokio::select! {
                         _ = stop.wait_for(|stopped| *stopped) => Err(Error::Closed),
                         result = tokio::time::timeout(deadline, probe) => result.unwrap_or_else(|_| {
                             Err(Error::Provider(format!(
                                 "{} timed out during discovery. Check its executable, server and login",
-                                instance.id
+                                provider_id
                             )))
                         }),
                     };

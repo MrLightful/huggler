@@ -13,6 +13,17 @@ Check Huggler’s public interface and tests for current support. Record provide
 | T3 MCP declarations | 92 tools across 15 toolkit directories | [Toolkits and access-checked handlers][src-7] |
 | Harnesses | 11 built-in driver kinds, 8 aggregate usage readers | [Driver source map](upstream-watch-guide.md#locate-a-harness-change) · [Registration][src-8] |
 
+## Composer suggestions
+
+The desktop owns trigger detection, file search, selection, and draft edits. For `@`, it searches tracked and non-ignored untracked files in the selected checkout, or files in a scratch conversation. The selected relative path is sent as a Markdown link in the existing message. This follows T3 Code's file reference format. [T3 Code menu and selection](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/ChatComposer.tsx) · [T3 Code workspace search regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/workspace/WorkspaceEntries.test.ts)
+
+| Harness | Version and transport | Skill discovery and delivery |
+| --- | --- | --- |
+| Codex | 0.170.0, app-server over stdio | Native `skills/list` through `list_provider_skills` for the selected checkout and instance. Selection inserts the native `$name` syntax. When enabled skills share a name, the desktop uses a native path-qualified mention for each path representable by Codex's linked-mention syntax. Older app servers may report the skill catalog unavailable. [Codex skill selection](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/skills/src/selection.rs) |
+| Other adapters | See [driver source map](upstream-watch-guide.md#locate-a-harness-change) | Skill discovery is unavailable in the desktop. |
+
+The [provider fixture test](../tests/provider_instances.rs) verifies checkout scope, disabled skills, same-named skills, and independent model discovery. The [macOS qualification check](../scripts/check-provider-desktop.py) drives the composer with keyboard and mouse and inspects the resulting Codex `turn/start` input. The live protocol check used `skills/list` only.
+
 ## Commands
 
 A host should normally use launch, send, stop and the other management operations. Low-level dispatch accepts a broader schema, including messages normally produced by server workers. Use the authenticated intake, scope checks, provenance normalization and existing command policy for any remote dispatch API. A thread agent gets the narrower MCP interface below. [Management service][src-9] · [Message intake][src-10] · [RPC authorization][src-11]
