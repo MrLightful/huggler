@@ -472,7 +472,25 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
     let replay_second = || rt.deliver_webhook(&hook, key, &signed(key, second_body), second_body);
     let second = replay_second()?.unwrap();
     completed(&rt, &second.thread, &second.run).await;
+    let (snapshot, mut subscription) = rt.subscribe(&second.thread, None)?;
+    let observers = async {
+        tokio::join!(
+            rt.wait_for_change(&second.thread, snapshot.cursor),
+            subscription.next()
+        )
+    };
+    tokio::pin!(observers);
+    tokio::select! {
+        biased;
+        _ = &mut observers => panic!("observers returned before deletion"),
+        _ = std::future::ready(()) => {}
+    }
     rt.delete_thread(&second.thread)?;
+    let (change, event) = tokio::time::timeout(std::time::Duration::from_secs(2), observers)
+        .await
+        .expect("deletion should wake both observers");
+    assert!(matches!(change, Err(Error::NotFound(id)) if id == second.thread.0));
+    assert!(matches!(event, Err(Error::NotFound(id)) if id == second.thread.0));
     assert_eq!(replay_second()?.as_ref(), Some(&second));
     assert_eq!(rt.threads()?.len(), 2);
     rt.delete_thread(&thread)?;

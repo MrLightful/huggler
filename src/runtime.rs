@@ -799,10 +799,20 @@ impl Huggler {
         self.shared.access(|db| db.retain_events(thread, count))
     }
 
+    /// Remove an idle thread and its local history. Foreign keys protect cross-thread
+    /// references (including delegated tasks and fork sources). Git files stay on disk.
+    #[cfg(feature = "application")]
+    pub fn delete_thread(&self, thread: &ThreadId) -> Result<()> {
+        let mut services = self.shared.services.lock().unwrap();
+        self.shared
+            .schedule(|db| Ok((db.delete_thread(thread)?, [])))?;
+        services.close_thread(thread);
+        Ok(())
+    }
+
     /// Coalesced notification for snapshot consumers. Returns the current high-water mark.
     pub async fn wait_for_change(&self, thread: &ThreadId, after: i64) -> Result<i64> {
         let mut changed = self.shared.changed.subscribe();
-        self.shared.access(|db| db.thread_position(thread))?;
         loop {
             let cursor = self.shared.access(|db| db.sequence(thread))?;
             if after < 0 || after > cursor {
@@ -835,7 +845,6 @@ impl Huggler {
             if let Some(cursor) = after
                 && cursor >= 0
             {
-                db.thread_position(id)?;
                 db.check_replay(id, cursor)?;
             }
             db.read(id)

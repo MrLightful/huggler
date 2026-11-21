@@ -175,36 +175,3 @@ impl Database {
             != 0)
     }
 }
-
-impl crate::Huggler {
-    /// Remove an idle thread and its local history. Foreign keys protect cross-thread
-    /// references (including delegated tasks and fork sources). Git files stay on disk.
-    pub fn delete_thread(&self, thread: &ThreadId) -> Result<()> {
-        let mut services = self.shared.services.lock().unwrap();
-        self.shared.schedule(|db| {
-            db.thread_position(thread)?;
-            let tx = db.db.transaction()?;
-            if tx.prepare("SELECT 1 FROM run WHERE thread_id=? AND status IN ('queued','starting','waiting','running')")?.exists([&thread.0])?
-                || tx.prepare("SELECT 1 FROM native_child JOIN run ON run.id=run_id WHERE thread_id=? AND active")?.exists([&thread.0])? {
-                return Err(Error::Busy);
-            }
-            tx.execute("DELETE FROM automation WHERE owner=?", [&thread.0])?;
-            tx.execute("DELETE FROM guest_share WHERE thread=?", [&thread.0])?;
-            tx.execute("DELETE FROM remote_task WHERE parent_run IN (SELECT id FROM run WHERE thread_id=?)", [&thread.0])?;
-            tx.execute("DELETE FROM remote_grant WHERE thread=?", [&thread.0])?;
-            for table in ["pending_upload","context_fork","imported_history","usage_recovery","event"] {
-                tx.execute(&format!("DELETE FROM {table} WHERE thread_id=?"), [&thread.0])?;
-            }
-            for table in ["message","provider_usage","permission","user_question","checkpoint","native_child","steer","command_output"] {
-                tx.execute(&format!("DELETE FROM {table} WHERE run_id IN (SELECT id FROM run WHERE thread_id=?)"), [&thread.0])?;
-            }
-            tx.execute("DELETE FROM run WHERE thread_id=?", [&thread.0])?;
-            tx.execute("DELETE FROM remote_delivery WHERE run_id IS NULL AND grant_id NOT IN (SELECT id FROM remote_grant)", [])?;
-            tx.execute("DELETE FROM thread WHERE id=?", [&thread.0])?;
-            tx.commit()?;
-            Ok(((), []))
-        })?;
-        services.close_thread(thread);
-        Ok(())
-    }
-}
