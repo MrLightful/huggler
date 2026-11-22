@@ -2,7 +2,7 @@
 
 The Python package embeds Huggler with Cargo's `application` feature enabled. It exposes all public `Huggler` methods and uses the same action, event and persistence contracts as Rust. Python hosts choose the timer, HTTP server and external credentials, and supply host callbacks for preview and device integrations. [Python documentation](../docs-app/content/docs/bindings/python/index.mdx) · [Consumer and orchestration boundary](README.md#consumer-and-orchestration-boundary)
 
-## Build and test from a checkout
+## Build and test from a local checkout
 
 Use Rust 1.94.1, a C toolchain, Git and CPython 3.11 or later. The release builder uses the locked Cargo graph to include the dependency notices. Run these commands from the repository root.
 

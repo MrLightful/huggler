@@ -1,6 +1,6 @@
 # Verify Huggler changes
 
-## Rust replay checks
+## Run Rust replay checks
 
 Run from the Huggler root with the Rust version in `Cargo.toml`, Git and Python 3 on PATH. These commands use fixtures and temporary checkouts.
 

@@ -24,7 +24,7 @@ npm test -- packages/huggler-sdk-0.0.1-preview.0.tgz packages/huggler-sdk-darwin
 
 The pack command writes the SDK and host binary packages under `bindings/node/packages/`. Substitute the Linux tarball name on Linux. On macOS the build uses Rust's bundled LLVM linker. With Xcode 27, install an SDK compatible with that linker and point `SDKROOT` to it. The build script detects the Command Line Tools macOS 26 SDK when available.
 
-## Registry release
+## Prepare a registry release
 
 The preview is distributed as local tarballs. For a registry release, confirm access to the `@huggler` npm scope and set up trusted publishing. Publish the exact-version platform packages before the SDK, then repeat the consumer checks from a registry install before promoting the preview tag. [Package manifests](../bindings/node/npm) · [Consumer check](../bindings/node/scripts/test-consumer.mjs)
 
