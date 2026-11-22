@@ -44,7 +44,7 @@ fn setting(
     cx: &App,
 ) -> Div {
     h_flex()
-        .gap_4()
+        .gap_3()
         .justify_between()
         .border_b_1()
         .border_color(cx.theme().border)
@@ -53,7 +53,7 @@ fn setting(
             v_flex()
                 .flex_1()
                 .min_w_0()
-                .gap_1()
+                .gap_0p5()
                 .child(section_title(title))
                 .child(hint(description, cx)),
         )

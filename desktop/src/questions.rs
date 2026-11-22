@@ -1,6 +1,7 @@
+use crate::ui::section_title;
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Selectable,
+    ActiveTheme, Disableable, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -89,9 +90,10 @@ impl Render for Questions {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_2()
-            .p_2()
+            .px_3()
+            .py_2()
             .border_1()
-            .rounded_md()
+            .rounded_lg()
             .border_color(cx.theme().border)
             .children(
                 self.request
@@ -104,32 +106,39 @@ impl Render for Questions {
                         let options = q.options.as_deref().unwrap_or_default();
                         v_flex()
                             .gap_1()
-                            .child(title.clone())
-                            .child(h_flex().gap_1().flex_wrap().children(
-                                options.iter().enumerate().map(|(j, opt)| {
-                                    let label = opt.label.clone();
-                                    let input = input.clone();
-                                    Button::new(SharedString::from(format!(
-                                        "{}-{i}-{j}",
-                                        self.request.id
-                                    )))
-                                    .label(label.clone())
-                                    .selected(input.read(cx).value() == label.as_str())
-                                    .when_some(opt.description.clone(), |b, d| b.tooltip(d))
-                                    .disabled(self.pending)
-                                    .on_click(cx.listener(move |_, _, w, cx| {
-                                        input.update(cx, |s, cx| s.set_value(label.clone(), w, cx));
-                                        cx.notify();
-                                    }))
-                                }),
-                            ))
+                            .child(section_title(title.clone()))
+                            .when(!options.is_empty(), |question| {
+                                question.child(h_flex().gap_1().flex_wrap().children(
+                                    options.iter().enumerate().map(|(j, opt)| {
+                                        let label = opt.label.clone();
+                                        let input = input.clone();
+                                        Button::new(SharedString::from(format!(
+                                            "{}-{i}-{j}",
+                                            self.request.id
+                                        )))
+                                        .small()
+                                        .label(label.clone())
+                                        .selected(input.read(cx).value() == label.as_str())
+                                        .when_some(opt.description.clone(), |b, d| b.tooltip(d))
+                                        .disabled(self.pending)
+                                        .on_click(
+                                            cx.listener(move |_, _, w, cx| {
+                                                input.update(cx, |s, cx| {
+                                                    s.set_value(label.clone(), w, cx)
+                                                });
+                                                cx.notify();
+                                            }),
+                                        )
+                                    }),
+                                ))
+                            })
                             .when(q.is_other || options.is_empty(), |v| {
                                 v.child(control!(format!("answer/{}", q.id), Input::new(input)))
                             })
                     }),
             )
             .when_some(self.error.clone(), |v, e| {
-                v.child(div().text_color(cx.theme().danger).child(e))
+                v.child(div().text_sm().text_color(cx.theme().danger).child(e))
             })
             .child(
                 h_flex()
@@ -137,6 +146,7 @@ impl Render for Questions {
                     .child(control!(
                         "Submit answers",
                         Button::new("answer-questions")
+                            .small()
                             .label("Submit answers")
                             .primary()
                             .disabled(self.pending)
@@ -145,6 +155,8 @@ impl Render for Questions {
                     .child(control!(
                         "Dismiss questions",
                         Button::new("dismiss-questions")
+                            .small()
+                            .ghost()
                             .label("Dismiss")
                             .disabled(self.pending)
                             .on_click(cx.listener(|v, _, _, cx| v.respond(true, cx)))

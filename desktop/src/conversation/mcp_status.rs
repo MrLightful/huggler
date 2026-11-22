@@ -91,12 +91,7 @@ impl Desktop {
             let header = h_flex()
                 .justify_between()
                 .gap_3()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("MCP servers"),
-                )
+                .child(crate::ui::section_title("MCP servers"))
                 .child(control!(
                     "Refresh MCP status",
                     Button::new("refresh-mcp-status")
@@ -174,7 +169,7 @@ fn server_row(server: &McpServerStatus, cx: &App) -> Div {
             .gap_3()
             .px_2()
             .py_1()
-            .text_sm()
+            .text_size(crate::ui::control_text_size())
             .child(
                 div()
                     .flex_1()

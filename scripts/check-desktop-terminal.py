@@ -154,7 +154,7 @@ def check_project_actions(binary, root):
         {"click": "Terminal project actions"}, {"click": "Configure project actions"},
         *add_action("Run", original),
         *add_action("Check", multiline),
-        {"click": "Done"},
+        {"click": "Back to workspace"},
         {"click": "Prefill Run"}, {"see": "Prefilled terminal command"},
         {"click": "Collapse terminal"}, {"absent": "Prefilled terminal command"},
         {"click": "Expand terminal"}, {"see": "Prefilled terminal command"},
@@ -167,7 +167,7 @@ def check_project_actions(binary, root):
         {"click": "Terminal project actions"}, {"click": "Configure project actions"},
         {"click": "Make default/Check"},
         {"click": "Edit action/Run"}, {"click": "Action name"}, {"key": "cmd-a"},
-        {"type": "Run project"}, {"click": "Save action"}, {"click": "Done"},
+        {"type": "Run project"}, {"click": "Save action"}, {"click": "Back to workspace"},
         {"click": "Prefill Check"}, {"key": "cmd-a"}, {"key": "cmd-c"},
         {"clipboard_text": multiline}, {"key": "enter"},
         {"file_text": [str(checkout / "action.txt"), "first\nsecond\n"]},
@@ -182,7 +182,7 @@ def check_project_actions(binary, root):
         {"see": "Shell exited"},
         {"click": "Terminal project actions"}, {"see": "Terminal action/Run project"},
         {"click": "Configure project actions"}, {"click": "Remove action/Run project"},
-        {"click": "Done"}, {"click": "Terminal project actions"},
+        {"click": "Back to workspace"}, {"click": "Terminal project actions"},
         {"see": "Terminal action/Check"}, {"absent": "Terminal action/Run project"},
     ], env)
     output, = (state / "worktrees").glob("*/action.txt")
@@ -195,7 +195,7 @@ def check_project_actions(binary, root):
         {"next_file_selection": [str(alternate)]}, {"click": "Add project"},
         {"click": "Project actions/alternate"},
         *add_action("Alternate", "echo alternate > alternate.txt"),
-        {"click": "Done"},
+        {"click": "Back to Projects"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
         *launch_thread(alternate, "Alternate action worktree", branch="alternate-action-worktree"),
         {"click": "Expand terminal"}, {"see": "Prefill Alternate"}, {"absent": "Prefill Check"},
     ], env)

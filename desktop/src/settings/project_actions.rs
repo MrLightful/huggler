@@ -139,8 +139,12 @@ impl Settings {
         let actions = project.map_or(&[][..], |project| project.actions.as_slice());
         let mut panel = v_flex()
             .gap_3()
-            .child(heading(name.to_owned()))
-            .child(hint(self.action_project.display().to_string(), cx))
+            .child(
+                v_flex()
+                    .gap_0p5()
+                    .child(heading(name.to_owned()))
+                    .child(hint(self.action_project.display().to_string(), cx)),
+            )
             .child(hint(
                 "The default action appears on the terminal’s play button.",
                 cx,
@@ -148,11 +152,14 @@ impl Settings {
         if let Some(editor) = &self.action_editor {
             panel = panel.child(
                 v_flex()
-                    .gap_2()
-                    .child(label("Action name"))
-                    .child(control!("Action name", Input::new(&editor.name)))
-                    .child(label("Shell command"))
-                    .child(control!("Action command", Input::new(&editor.command)))
+                    .gap_3()
+                    .child(crate::ui::field("Action name", &editor.name))
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(label("Shell command"))
+                            .child(control!("Action command", Input::new(&editor.command))),
+                    )
                     .child(
                         h_flex()
                             .gap_2()

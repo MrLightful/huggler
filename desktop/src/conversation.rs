@@ -36,8 +36,8 @@ use crate::{
     git,
     paths::StoragePaths,
     questions::Questions,
-    settings::{FollowUp, Preferences, SendShortcut, Settings, SettingsEvent},
-    ui::{field, hint, label},
+    settings::{FollowUp, Preferences, SendShortcut, Settings, SettingsEvent, SettingsTarget},
+    ui::{field, heading, hint, label},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -214,8 +214,9 @@ impl Desktop {
             move |view: &mut Self, _, event, window, cx| {
                 match event {
                     SettingsEvent::Back => {
-                        view.show_settings = false;
-                        view.focus_workspace(window, cx);
+                        if view.leave_settings(cx) {
+                            view.focus_workspace(window, cx);
+                        }
                     }
                     SettingsEvent::ProviderModels(id, refresh) => {
                         let (_, checkout) = view.model_source(cx);
@@ -286,7 +287,7 @@ impl Desktop {
             starter_attachments: Attachments::default(),
             starter: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .auto_grow(3, 7)
+                    .auto_grow(2, 7)
                     .placeholder("Describe a task or ask a question…")
             }),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
@@ -644,7 +645,20 @@ impl Desktop {
         cx.notify();
     }
 
-    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn leave_settings(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.show_settings && !self.settings.update(cx, |settings, cx| settings.leave(cx)) {
+            return false;
+        }
+        self.show_settings = false;
+        true
+    }
+
+    fn open_settings(
+        &mut self,
+        target: SettingsTarget<'_>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.suggestions = Default::default();
         self.model_picker = None;
         self.mcp_status = None;
@@ -653,7 +667,7 @@ impl Desktop {
         self.launch_workspace.close_picker();
         self.show_settings = true;
         self.settings
-            .update(cx, |settings, cx| settings.opened(window, cx));
+            .update(cx, |settings, cx| settings.opened(target, window, cx));
         self.settings.read(cx).focus.focus(window);
         cx.notify();
     }
@@ -708,13 +722,15 @@ impl Desktop {
     }
 
     fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.leave_settings(cx) {
+            return;
+        }
         self.suggestions = Default::default();
         self.model_picker = None;
         self.mcp_status = None;
         self.project_picker = None;
         self.checkout_browse = None;
         self.launch_workspace.close_picker();
-        self.show_settings = false;
         self.launch_setup = setup;
         if self.current.is_none() {
             self.focus_workspace(window, cx);
@@ -1078,7 +1094,11 @@ impl Desktop {
             .min_w_0()
             .gap_2()
             .text_sm()
-            .child(IconName::Folder)
+            .child(
+                Icon::new(IconName::Folder)
+                    .small()
+                    .text_color(cx.theme().muted_foreground),
+            )
             .child(
                 div()
                     .max_w(relative(0.40))
@@ -1087,7 +1107,13 @@ impl Desktop {
                     .child(project.unwrap_or_else(|| "Workspace".into())),
             )
             .child(div().text_color(cx.theme().muted_foreground).child("/"))
-            .child(div().min_w_0().truncate().child(title.to_owned()));
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title.to_owned()),
+            );
         h_flex()
             .h_10()
             .flex_shrink_0()
@@ -1175,12 +1201,21 @@ impl Desktop {
 
     fn send_icon(id: &'static str, tooltip: impl Into<SharedString>) -> Button {
         Button::new(id)
-            .large()
-            .w_8()
+            .size_8()
             .px_0()
             .rounded(px(999.))
             .child(Icon::new(IconName::ArrowUp).with_size(px(16.)))
             .tooltip(tooltip)
+    }
+
+    fn composer_surface(cx: &App) -> Div {
+        v_flex()
+            .p_3()
+            .gap_2()
+            .rounded_xl()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted.opacity(0.55))
     }
 
     fn launch_form(&self, compact: bool, window: &Window, cx: &Context<Self>) -> AnyElement {
@@ -1196,28 +1231,12 @@ impl Desktop {
         let empty_message =
             self.starter.read(cx).value().trim().is_empty() && self.starter_attachments.is_empty();
         if !self.launch_setup {
-            let heading = self.launch_project_name(cx).map_or_else(
+            let title = self.launch_project_name(cx).map_or_else(
                 || "What should we build?".into(),
                 |name| format!("What should we build in {name}?"),
             );
-            let composer = v_flex()
-                .on_drop(cx.listener(Self::drop_attachments))
+            let composer = Self::composer_surface(cx)
                 .w_full()
-                .p_3()
-                .gap_2()
-                .rounded_xl()
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().muted.opacity(0.55))
-                .child(
-                    h_flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(self.project_control(window, cx))
-                        .when(!checkout_empty, |row| {
-                            row.child(self.launch_checkout_controls(cx))
-                        }),
-                )
                 .child(self.message_input("First message", &self.starter, window, cx))
                 .children(self.attachment_list(&self.starter_attachments, cx))
                 .child(
@@ -1247,18 +1266,20 @@ impl Desktop {
                         ),
                 );
             let body = v_flex()
+                .on_drop(cx.listener(Self::drop_attachments))
                 .w_full()
-                .max_w(px(780.))
+                .max_w(px(736.))
                 .p_4()
-                .gap_3()
-                .items_center()
+                .gap_2()
+                .child(heading(title).text_xl().mb_1())
                 .child(
-                    div()
-                        .w_full()
-                        .text_center()
-                        .text_3xl()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(heading),
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .child(self.project_control(window, cx))
+                        .when(!checkout_empty, |row| {
+                            row.child(self.launch_checkout_controls(cx))
+                        }),
                 )
                 .child(composer);
             return v_flex()
@@ -1270,15 +1291,9 @@ impl Desktop {
                 .child(body.flex_shrink_0().my_auto())
                 .into_any_element();
         }
-        let launcher = v_flex()
+        let launcher = Self::composer_surface(cx)
             .on_drop(cx.listener(Self::drop_attachments))
             .w_full()
-            .p_3()
-            .gap_3()
-            .rounded_xl()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().muted.opacity(0.55))
             .children(self.attachment_list(&self.starter_attachments, cx))
             .child(control!(
                 "Conversation name",
@@ -1367,14 +1382,15 @@ impl Desktop {
             .max_w(px(736.))
             .p_4()
             .gap_3()
-            .child(control!(
+            .child(h_flex().child(control!(
                 "Back to message",
                 Button::new("back-to-message")
                     .small()
                     .ghost()
+                    .icon(IconName::ChevronLeft)
                     .label("Back to message")
                     .on_click(cx.listener(|v, _, w, cx| v.new_conversation(false, w, cx)))
-            ))
+            )))
             .child(launcher)
             .child(context)
             .child(
@@ -1447,14 +1463,14 @@ impl Desktop {
             control!(
                 "Stop thread",
                 Button::new("stop-turn")
-                    .large()
-                    .w(px(36.))
+                    .size_8()
+                    .px_0()
                     .rounded(px(999.))
                     .child(
                         div()
                             .size_3()
                             .rounded_sm()
-                            .bg(cx.theme().primary_foreground),
+                            .bg(cx.theme().secondary_foreground),
                     )
                     .tooltip("Stop")
                     .on_click(cx.listener(move |view, _, _, cx| {
@@ -1554,20 +1570,13 @@ impl Desktop {
             .when(show_scroll_to_end, |column| column.child(Self::scroll_to_end_button(cx)))
             .when(fresh, |column| {
                 column.child(
-                    div()
-                        .mb_3()
-                        .text_center()
-                        .text_2xl()
-                        .child("What should we build?"),
+                    heading("What should we build?").text_xl().mx_4().mb_3(),
                 )
             })
         .child(
-            v_flex()
+            Self::composer_surface(cx)
                 .on_drop(cx.listener(Self::drop_attachments))
-                .mx_4().mb_3().p_3().rounded_xl().bg(cx.theme().muted.opacity(0.55))
-                .gap_2()
-                .border_1()
-                .border_color(cx.theme().border)
+                .mx_4().mb_2()
                 .when(self.checkout_unavailable, |composer| {
                     composer
                         .child(control!(
@@ -1647,7 +1656,7 @@ impl Desktop {
                         .flex_wrap().gap_2()
                         .child(self.model_control(cx))
                         .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
-                            format!("status/{status}"), label(status).truncate()
+                            format!("status/{status}"), hint(status, cx).truncate()
                         ))))
                         .child(self.mcp_status_control(window, cx))
                         .child(h_flex().gap_2().flex_shrink_0()
@@ -1774,7 +1783,9 @@ impl Render for Desktop {
             )
             .on_action(cx.listener(Self::close_active_document))
             .on_action(cx.listener(Self::save_active_document))
-            .on_action(cx.listener(|v, _: &crate::OpenSettings, w, cx| v.open_settings(w, cx)))
+            .on_action(cx.listener(|v, _: &crate::OpenSettings, w, cx| {
+                v.open_settings(SettingsTarget::Overview, w, cx)
+            }))
             .on_action(
                 cx.listener(|v, _: &crate::NewConversation, w, cx| {
                     v.new_conversation(false, w, cx)
@@ -1842,7 +1853,11 @@ impl Render for Desktop {
                                                 .label("Settings")
                                                 .selected(self.show_settings)
                                                 .on_click(cx.listener(|view, _, w, cx| {
-                                                    view.open_settings(w, cx)
+                                                    view.open_settings(
+                                                        SettingsTarget::Overview,
+                                                        w,
+                                                        cx,
+                                                    )
                                                 }))
                                         )),
                                 )
@@ -1866,17 +1881,9 @@ impl Render for Desktop {
                             .child(self.document_tab_strip(window, cx))
                     })
                     .child(if self.show_settings {
-                        v_flex()
-                            .size_full()
-                            .relative()
-                            .child(self.settings.clone())
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top_4()
-                                    .left_4()
-                                    .child(self.navigation_toggle(navigation_open, cx)),
-                            )
+                        let toggle = self.navigation_toggle(navigation_open, cx);
+                        self.settings
+                            .update(cx, |settings, cx| settings.panel(toggle, cx))
                             .into_any_element()
                     } else {
                         match &self.current {

@@ -675,7 +675,7 @@ impl DocumentTab {
             color: label_color,
             ..Default::default()
         };
-        let font_size = rems(0.875).to_pixels(window.rem_size());
+        let font_size = crate::ui::control_text_size().to_pixels(window.rem_size());
         let mut runs = vec![label_style.to_run(name.len())];
         let label_width = window
             .text_system()
@@ -722,7 +722,7 @@ impl DocumentTab {
                                 .w(label_width.min(TAB_LABEL_WIDTH))
                                 .overflow_hidden()
                                 .whitespace_nowrap()
-                                .text_sm()
+                                .text_size(crate::ui::control_text_size())
                                 .text_color(label_color)
                                 .child(name)
                         )
@@ -891,7 +891,8 @@ impl DocumentTab {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_sm()
+                                    .text_size(crate::ui::control_text_size())
+                                    .font_weight(FontWeight::MEDIUM)
                                     .text_color(foreground)
                                     .child(path_label)
                             )),

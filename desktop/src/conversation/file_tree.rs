@@ -237,7 +237,8 @@ impl Row {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_sm()
+                    .text_size(crate::ui::control_text_size())
+                    .when(is_directory, |name| name.font_weight(FontWeight::MEDIUM))
                     .child(SharedString::from(name.into_owned())),
             )
             // Expanding with the mouse should leave keyboard focus where it was.

@@ -39,7 +39,7 @@ def check_provider_presets(executable, tmp, env):
         )],
         {"click": "provider/cursor"}, {"see": "Installation guide"},
         {"click": "Custom executable"}, {"click": "CLI executable"}, {"type": str(cursor)},
-        {"click": "Save path"}, {"click": "Done"},
+        {"click": "Save path"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
         {"click": "model-automatic"}, {"absent": "provider/Cursor"},
         {"absent": "provider/Antigravity"}, {"see": "provider/fx"},
     ], env)
@@ -49,7 +49,7 @@ def check_provider_presets(executable, tmp, env):
     run_window(executable, state, [
         {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/cursor"},
         {"see": "v2026.11.19-f005e9d"}, {"see": "model-enabled/grok-build"},
-        {"click": "Done"}, {"key": "cmd-shift-n"}, {"click": "Git checkout"},
+        {"click": "Back to Settings"}, {"click": "Back to workspace"}, {"key": "cmd-shift-n"}, {"click": "Git checkout"},
         {"key": "cmd-a"}, {"type": str(checkout)}, {"click": "model-automatic"},
         {"click": "provider/Cursor"}, {"click": "model-option/grok-build"},
         {"click": "Conversation name"}, {"type": "Cursor replay"}, {"click": "Open conversation"},
@@ -72,7 +72,7 @@ def check_provider_presets(executable, tmp, env):
         {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/cursor"},
         {"see": "model-enabled/grok-build"}, {"click": "Advanced settings"},
         {"absent": "Save path"}, {"click": "Add provider"}, {"see": "provider/muse"},
-        {"click": "Done"}, {"key": "cmd-n"}, {"click": "model-automatic"},
+        {"click": "Back to Settings"}, {"click": "Back to workspace"}, {"key": "cmd-n"}, {"click": "model-automatic"},
         {"see": "provider/cursor"}, {"absent": "provider/Cursor"},
     ], dict(env, HUGGLER_PROVIDERS=str(config)))
 
@@ -104,7 +104,7 @@ def check_models(executable, tmp, env):
         {"click": "model/fixture-deep"}, {"see": "Fast mode on"},
         {"click": "Fast mode on"}, {"see": "Fast mode off"},
         {"click": "Edit"}, {"see": "Models"}, {"see": "provider/codex"},
-        {"click": "Done"}, *send_message("Standard turn"), {"see": "Codex/reply Standard turn"},
+        {"click": "Back to workspace"}, *send_message("Standard turn"), {"see": "Codex/reply Standard turn"},
         {"see": "Ready/Models/Completed"},
         {"click": "Message"}, {"type": "Second turn"}, {"click": "model/fixture-deep"},
         {"click": "model-option/fixture-fast"}, {"see": "model/fixture-fast"},
@@ -239,7 +239,7 @@ def main():
             {"absent": "provider/Codex"}, {"see": "provider/available"},
             {"see": "model-status/Choose a provider to load models."},
             {"click": "Edit"}, {"see": "Installation guide"}, {"absent": "Models"},
-            {"click": "Done"}, {"click": "model-automatic"},
+            {"click": "Back to workspace"}, {"click": "model-automatic"},
             {"see": "model-status/Choose a provider to load models."}, {"click": "provider/available"},
             {"see": "model-option-automatic/name/Grok Build"},
             {"click": "model-option-automatic"}, {"absent": "model-option-automatic"},
