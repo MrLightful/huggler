@@ -1531,7 +1531,7 @@ impl Desktop {
         let empty_draft = attachments.loading
             || (self.prompt.read(cx).value().trim().is_empty() && attachments.is_empty());
         let status = match last_run.map(|run| run.status) {
-            Some(huggler::RunStatus::Completed) => None,
+            Some(huggler::RunStatus::Running | huggler::RunStatus::Completed) => None,
             Some(status) => Some(format!("{status:?}")),
             None => Some("Ready".to_owned()),
         };
