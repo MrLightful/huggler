@@ -197,7 +197,8 @@ def check(binary):
         ], text=True)
         run_window(binary, state, [
             {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
-            {"click": "Create"}, {"next_file_selection": [str(checkout)]}, {"click": "Choose project"},
+            {"click": "Create"}, {"click": "Choose project"},
+            {"next_file_selection": [str(checkout)]}, {"click": "Add project"},
             {"see": "From main (remote)"}, {"click": "First message"}, {"type": "Please start from default @base-only"},
             {"see": "suggestion/base-only.txt"}, {"absent": "suggestion/base-only-link.txt"}, {"key": "enter"},
             {"click": "Send first message"}, {"see": "Codex/Started from the default branch."},
@@ -353,7 +354,8 @@ def check(binary):
         private_file = checkout / "base-only.txt"
         private_file.write_text("keep this local file\n")
         run_window(binary, state, [
-            {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
+            {"key": "cmd-shift-n"}, {"click": "Choose project"}, {"type": "checkout"},
+            {"see": "project/checkout"}, {"key": "enter"}, {"absent": "project/checkout"},
             {"click": "Conversation name"}, {"type": "Current branch review"},
             {"see": "From main (remote)"}, {"click": "Choose workspace"}, {"click": "Current checkout"},
             {"click": "Choose checkout branch"}, {"see": "branch/checkout-review"},

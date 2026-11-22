@@ -1,6 +1,7 @@
 use super::{
     document_tabs::tab_surface,
     terminal::{StatusChanged, TerminalView},
+    terminal_actions::StagedAction,
     *,
 };
 use gpui_component::button::ButtonCustomVariant;
@@ -18,6 +19,8 @@ pub(super) struct TerminalPane {
     scroll: ScrollHandle,
     open: bool,
     height: Option<f32>,
+    pub(super) main_worktree: Option<PathBuf>,
+    pub(super) staged_action: Option<StagedAction>,
 }
 
 struct TerminalTab {
@@ -48,7 +51,7 @@ impl TerminalPane {
         self.active.and_then(|index| self.tabs.get(index))
     }
 
-    fn focus_active(&self, window: &mut Window, cx: &App) {
+    pub(super) fn focus_active(&self, window: &mut Window, cx: &App) {
         if let Some(terminal) = self.active_tab().and_then(|tab| tab.shell.as_ref().ok()) {
             terminal.read(cx).focus(window);
         }
@@ -72,6 +75,17 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_terminal(thread, restart, None, window, cx);
+    }
+
+    pub(super) fn open_terminal(
+        &mut self,
+        thread: &ThreadId,
+        restart: Option<usize>,
+        command: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let workspace = self.workspaces.get_mut(thread).expect("terminal workspace");
         let pane = &mut workspace.terminal;
         let replace = if let Some(id) = restart {
@@ -89,8 +103,8 @@ impl Desktop {
         } else {
             None
         };
-        let shell =
-            TerminalView::start(&workspace.root, window, cx).map_err(|error| format!("{error:#}"));
+        let shell = TerminalView::start(&workspace.root, command, window, cx)
+            .map_err(|error| format!("{error:#}"));
         if let Ok(terminal) = &shell {
             cx.subscribe(terminal, |_, _, _: &StatusChanged, cx| cx.notify())
                 .detach();
@@ -107,6 +121,9 @@ impl Desktop {
             pane.tabs.len() - 1
         };
         pane.select(index);
+        if restart.is_none() {
+            pane.scroll.scroll_to_item(pane.tabs.len());
+        }
         pane.focus_active(window, cx);
         cx.notify();
     }
@@ -217,21 +234,24 @@ impl Desktop {
                             .track_scroll(&pane.scroll)
                             .children(pane.tabs.iter().enumerate().map(|(index, tab)| {
                                 tab.selector(thread, pane.active == Some(index), cx)
-                            })),
-                    )
-                    .child(control!(
-                        "New terminal",
-                        Button::new("new-terminal")
-                            .ghost()
-                            .small()
-                            .compact()
-                            .flex_none()
-                            .icon(IconName::Plus)
-                            .tooltip("New terminal")
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.start_terminal(&new_thread, None, window, cx)
                             }))
-                    ))
+                            .child(
+                                control!(
+                                    "New terminal",
+                                    Button::new("new-terminal")
+                                        .ghost()
+                                        .small()
+                                        .compact()
+                                        .icon(IconName::Plus)
+                                        .tooltip("New terminal")
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.start_terminal(&new_thread, None, window, cx)
+                                        }))
+                                )
+                                .flex_shrink_0(),
+                            ),
+                    )
+                    .children(self.terminal_action_picker(thread, cx))
             });
         let drag = ResizeTerminal(thread.clone());
         v_flex()
@@ -273,7 +293,12 @@ impl Desktop {
                         .min_h_0()
                         .overflow_hidden()
                         .bg(cx.theme().background)
-                        .child(contents),
+                        .children(
+                            pane.staged_action
+                                .as_ref()
+                                .map(|action| action.render(thread, cx)),
+                        )
+                        .child(contents.flex_1().min_h_0()),
                 )
             })
             .on_drag_move(cx.listener(

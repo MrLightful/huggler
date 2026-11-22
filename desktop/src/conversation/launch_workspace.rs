@@ -405,7 +405,7 @@ impl ListDelegate for BranchPicker {
 
 impl Desktop {
     pub(super) fn load_launch_branches(&mut self, debounce: bool, cx: &mut Context<Self>) {
-        let path = PathBuf::from(self.checkout.read(cx).value().trim());
+        let path = self.launch_checkout(cx);
         self.launch_workspace.load = None;
         if path.as_os_str().is_empty() {
             return;
@@ -546,7 +546,7 @@ impl Desktop {
 
     fn open_launch_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model_picker = None;
-        let path = PathBuf::from(self.checkout.read(cx).value().trim());
+        let path = self.launch_checkout(cx);
         self.launch_workspace.load = None;
         let job = cx.background_spawn(async move { git::branches(&path) });
         self.launch_workspace.picker_load = Some(cx.spawn_in(window, async move |view, cx| {

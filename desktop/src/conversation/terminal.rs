@@ -43,7 +43,12 @@ struct Session {
 }
 
 impl TerminalView {
-    pub(super) fn start(root: &Path, window: &mut Window, cx: &mut App) -> Result<Entity<Self>> {
+    pub(super) fn start(
+        root: &Path,
+        command: Option<&str>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<Entity<Self>> {
         let size = PtySize {
             rows: 24,
             cols: 80,
@@ -54,7 +59,7 @@ impl TerminalView {
         let mut emulator = Emulator::new(size.cols, size.rows)?;
         palette.apply(&mut emulator);
 
-        let (pty, io) = Pty::spawn(root, size)?;
+        let (pty, io) = Pty::spawn(root, size, command)?;
         Ok(cx.new(move |cx: &mut Context<Self>| {
             let (input, writes) = channel::bounded::<Vec<u8>>(128);
             let writer_io = io.clone();

@@ -17,7 +17,11 @@ pub(super) struct Pty {
 }
 
 impl Pty {
-    pub(super) fn spawn(root: &Path, size: PtySize) -> Result<(Self, Rc<Async<File>>)> {
+    pub(super) fn spawn(
+        root: &Path,
+        size: PtySize,
+        command: Option<&str>,
+    ) -> Result<(Self, Rc<Async<File>>)> {
         ensure!(root.is_dir(), "The checkout is unavailable");
         let pair = native_pty_system().openpty(size)?;
         let fd = pair
@@ -28,6 +32,10 @@ impl Pty {
         let fd = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
         let io = Rc::new(Async::new(File::from(fd))?);
         let mut shell = CommandBuilder::new_default_prog();
+        if let Some(command) = command {
+            shell = CommandBuilder::new(shell.get_shell());
+            shell.args(["-lc", command]);
+        }
         shell.cwd(root);
         shell.env("TERM", "xterm-256color");
         shell.env("COLORTERM", "truecolor");

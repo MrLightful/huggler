@@ -126,8 +126,71 @@ def check(binary, root):
         time.sleep(0.05)
 
 
+def check_project_actions(binary, root):
+    root.mkdir()
+    checkout = root / "project"
+    subprocess.run(["git", "init", "-qb", "main", checkout], check=True)
+    subprocess.run(["git", "-C", checkout, "-c", "user.name=Huggler", "-c",
+                    "user.email=check@example.test", "-c", "commit.gpgsign=false",
+                    "commit", "--allow-empty", "-qm", "Base"], check=True)
+    env = isolated_env(root)
+    env.update(HUGGLER_CODEX=str(ROOT / "tests/fixtures/desktop-coding-peer.py"), SHELL="/bin/bash")
+    state = root / "state"
+
+    def add_action(name, text):
+        return [
+            {"click": "Add action"}, {"click": "Action name"}, {"type": name},
+            {"click": "Action command"}, {"type": text}, {"click": "Save action"},
+        ]
+
+    original = "echo unexpected > unconfirmed.txt"
+    multiline = "echo first > action.txt\necho second >> action.txt"
+    run_window(binary, state, [
+        *launch_thread(checkout, "Action project", current=True),
+        {"resize": [1120, 740]}, {"click": "Expand terminal"},
+        {"same_line": ["New terminal", "Terminal project actions"]},
+        {"right_of": ["New terminal", "Close Terminal 1"]},
+        {"right_of": ["Terminal project actions", "New terminal"]},
+        {"click": "Terminal project actions"}, {"click": "Configure project actions"},
+        *add_action("Run", original),
+        *add_action("Check", multiline),
+        {"click": "Done"},
+        {"click": "Prefill Run"}, {"see": "Prefilled terminal command"},
+        {"key": "cmd-a"}, {"key": "cmd-c"}, {"clipboard_text": original},
+        {"type": "echo edited > edited.txt"}, {"key": "enter"},
+        {"file_text": [str(checkout / "edited.txt"), "edited\n"]},
+        {"click": "Terminal project actions"}, {"click": "Terminal action/Check"},
+        {"see": "Prefilled terminal command"}, {"key": "escape"},
+        {"absent": "Prefilled terminal command"},
+        {"click": "Terminal project actions"}, {"click": "Configure project actions"},
+        {"click": "Make default/Check"},
+        {"click": "Edit action/Run"}, {"click": "Action name"}, {"key": "cmd-a"},
+        {"type": "Run project"}, {"click": "Save action"}, {"click": "Done"},
+        {"click": "Prefill Check"}, {"key": "cmd-a"}, {"key": "cmd-c"},
+        {"clipboard_text": multiline}, {"key": "enter"},
+        {"file_text": [str(checkout / "action.txt"), "first\nsecond\n"]},
+    ], env)
+    assert not (checkout / "unconfirmed.txt").exists()
+
+    run_window(binary, state, [
+        *launch_thread(checkout, "Action worktree", branch="action-worktree"),
+        {"click": "Expand terminal"}, {"click": "Prefill Check"},
+        {"see": "Prefilled terminal command"}, {"key": "cmd-a"}, {"key": "cmd-c"},
+        {"clipboard_text": multiline}, {"key": "enter"}, {"absent": "Prefilled terminal command"},
+        {"see": "Shell exited"},
+        {"click": "Terminal project actions"}, {"see": "Terminal action/Run project"},
+        {"click": "Configure project actions"}, {"click": "Remove action/Run project"},
+        {"click": "Done"}, {"click": "Terminal project actions"},
+        {"see": "Terminal action/Check"}, {"absent": "Terminal action/Run project"},
+    ], env)
+    output, = (state / "worktrees").glob("*/action.txt")
+    assert output.read_text() == "first\nsecond\n"
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="huggler desktop terminal ") as tmp:
         root = Path(tmp)
-        check(install_check(root / "Huggler.app"), root)
+        binary = install_check(root / "Huggler.app")
+        check(binary, root)
+        check_project_actions(binary, root / "project actions")
     print("Desktop terminal workflow passed")

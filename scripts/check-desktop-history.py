@@ -96,7 +96,7 @@ def main():
         run_window(executable, starter_state, [
             {"resize": [640, 440]}, {"key": "cmd-shift-n"},
             {"click": "Git checkout"}, {"type": str(checkout)}, {"click": "Back to message"},
-            {"click": "Start without a project"}, {"click": "model-automatic"},
+            {"click": "Choose project"}, {"click": "Start without a project"}, {"click": "model-automatic"},
             {"see": "provider/Codex"}, {"see": "⌘L to focus"}, {"key": "cmd-l"},
             {"absent": "provider/Codex"}, {"absent": "⌘L to focus"},
             {"click": "model-automatic"}, {"see": "provider/Codex"},
