@@ -69,6 +69,9 @@ pub struct Desktop {
     threads: Vec<ConversationSummary>,
     expanded_sections: HashMap<sidebar::Section, bool>,
     current: Option<ConversationDetail>,
+    pull_request: Option<crate::github::Status>,
+    pull_request_watch: Option<Task<()>>,
+    pull_request_action: HashSet<ThreadId>,
     checkout_unavailable: bool,
     before: Option<HistoryCursor>,
     subscription: Option<Task<()>>,
@@ -155,6 +158,9 @@ impl Desktop {
             threads: Vec::new(),
             expanded_sections: HashMap::new(),
             current: None,
+            pull_request: None,
+            pull_request_watch: None,
+            pull_request_action: HashSet::new(),
             checkout_unavailable: false,
             before: None,
             subscription: None,
@@ -223,6 +229,12 @@ impl Desktop {
         })
         .detach();
         Self::observe_composer(&view.starter, window, cx);
+        cx.observe_window_activation(window, |view, window, cx| {
+            if window.is_window_active() {
+                view.watch_pull_request(cx);
+            }
+        })
+        .detach();
         let restored = view.restore(window, cx);
         if let Ok(mut revision) = restored {
             let runtime = view.runtime.clone();
@@ -289,6 +301,7 @@ impl Desktop {
         if self.current.as_ref().is_some_and(|thread| thread.id == id) {
             self.focus_workspace(window, cx);
             self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
+            self.watch_pull_request(cx);
             return Ok(());
         }
         let snapshot = self.runtime.detail(&id, None, "", 32)?;
@@ -303,6 +316,8 @@ impl Desktop {
         self.model_picker = None;
         self.launch_workspace.close_picker();
         self.current = Some(snapshot);
+        self.pull_request = None;
+        self.watch_pull_request(cx);
         self.preload_models(cx);
         self.before = None;
         self.focus_workspace(window, cx);
@@ -334,12 +349,14 @@ impl Desktop {
                                 .as_ref()
                                 .is_none_or(|(id, status)| id != &r.id || *status != r.status)
                     });
+                    let sequence = thread.history.sequence;
                     if finished || latest_finished {
                         view.workspaces[&selected]
                             .changes
                             .update(cx, |panel, cx| panel.refresh(cx));
+                        view.watch_pull_request(cx);
                     }
-                    Some(thread.history.sequence)
+                    Some(sequence)
                 }) {
                     Ok(Some(next)) => cursor = next,
                     _ => break,
@@ -529,6 +546,8 @@ impl Desktop {
         self.subscription = None;
         self.command_log = None;
         self.current = None;
+        self.pull_request_watch = None;
+        self.pull_request = None;
         self.launch_workspace = LaunchWorkspace::default();
         self.load_launch_branches(false, cx);
         self.preload_models(cx);

@@ -2930,6 +2930,7 @@ dependencies = [
  "objc2-foundation",
  "serde",
  "serde_json",
+ "smol",
  "tempfile",
  "tokio",
  "url",

@@ -30,6 +30,12 @@ Desktop owns the workspace mode and the searchable branch picker. It follows T3 
 
 The Rust allocator resolves the chosen ref to an immutable commit before reserving a managed checkout. The desktop check verifies the provider's working directory and the worktree's starting commit using a scripted Codex app-server peer over stdio. [Rust workspace API](../src/workspace.rs) · [Allocation and release check](../tests/application_profile.rs)
 
+## Desktop pull request actions
+
+The desktop reads GitHub’s status for the tracked head branch and chooses the header action. GitHub owns merge eligibility, merge queues, auto-merge and the final head check on each mutation. Huggler’s existing message queue delivers **Fix** and **Resolve** to the current conversation. As in T3 Code, conflicts take priority and a PR waiting on requirements can offer auto-merge. Huggler uses **Fix** for failing checks or requested review changes, and opens drafts on GitHub. [T3 Code primary action](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/pullRequest/pullRequestDetail.logic.ts) · [T3 Code regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/pullRequest/pullRequestDetail.logic.test.ts)
+
+GitHub CLI 2.103.2 was verified with an authenticated GraphQL read. The native desktop check uses a scripted CLI and Codex app-server peer over stdio to verify the header, confirmed writes, and task delivery. The browser compare form is the fallback when GitHub status is unavailable. [Desktop workflow](desktop-coding.md#reproduce-the-desktop-check)
+
 ## Desktop storage layout
 
 Desktop chooses a base directory with sibling `userdata`, `worktrees` and `scratch` directories, following T3 Code at the pinned revision. A name in the Rust or TypeScript SDK supplies the provider and MCP identifier and defaults storage to `userdata` and `worktrees` under `~/.<identifier>`. Embedders can set a base directory, database path, or provider identity explicitly. Desktop reopens legacy state in place because saved checkout paths are absolute. [Upstream desktop path resolution](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/desktop/src/app/DesktopStatePaths.ts) · [Upstream server paths](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/config.ts) · [Huggler desktop paths and tests](../desktop/src/paths.rs)

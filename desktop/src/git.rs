@@ -246,7 +246,21 @@ pub fn changed_files(root: &Path) -> Result<Vec<File>> {
         .collect()
 }
 
-pub fn pull_request_url(root: &Path) -> Result<String> {
+pub fn has_conflicts(root: &Path) -> bool {
+    execute(git(root).args(["ls-files", "--unmerged", "-z"])).is_ok_and(|output| !output.is_empty())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubBranch {
+    pub owner: String,
+    pub repo: String,
+    pub head: String,
+    local_ref: String,
+    pub local_oid: String,
+    synced: bool,
+}
+
+pub fn github_branch(root: &Path) -> Result<GitHubBranch> {
     ensure!(
         root.join(".git").exists(),
         "Create PR requires a Git checkout."
@@ -256,7 +270,7 @@ pub fn pull_request_url(root: &Path) -> Result<String> {
     let branch = std::str::from_utf8(&branch)?.trim_end();
     let tracking = execute(git(root).args([
         "for-each-ref",
-        "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)",
+        "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)%00%(objectname)",
         branch,
     ]))?;
     let tracking = std::str::from_utf8(&tracking)?.lines().find_map(|line| {
@@ -273,16 +287,32 @@ pub fn pull_request_url(root: &Path) -> Result<String> {
         .next()
         .and_then(|r| r.strip_prefix("refs/heads/"))
         .context(message)?;
-    ensure!(
-        fields.next() == Some(""),
-        "Sync the branch with its upstream before creating a pull request."
-    );
+    let synced = fields.next() == Some("");
+    let local_oid = fields.next().context(message)?.to_owned();
     let url = execute(git(root).args(["remote", "get-url", "--", remote]))?;
-    github_compare(std::str::from_utf8(&url)?.trim_end(), head)
-        .context("Create PR requires a GitHub.com upstream.")
+    let (owner, repo) = github_repository(std::str::from_utf8(&url)?.trim_end())
+        .context("Create PR requires a GitHub.com upstream.")?;
+    Ok(GitHubBranch {
+        owner,
+        repo,
+        head: head.to_owned(),
+        local_ref: branch.to_owned(),
+        local_oid,
+        synced,
+    })
 }
 
-fn github_compare(remote: &str, branch: &str) -> Option<String> {
+impl GitHubBranch {
+    pub fn compare_url(&self) -> Result<String> {
+        ensure!(
+            self.synced,
+            "Sync the branch with its upstream before creating a pull request."
+        );
+        Ok(github_compare(&self.owner, &self.repo, &self.head))
+    }
+}
+
+fn github_repository(remote: &str) -> Option<(String, String)> {
     let path = if let Some(path) = remote.strip_prefix("git@github.com:") {
         path.to_owned()
     } else {
@@ -303,17 +333,21 @@ fn github_compare(remote: &str, branch: &str) -> Option<String> {
             return None;
         }
     }
-    let mut url = url::Url::parse("https://github.com").ok()?;
+    Some((owner.to_owned(), repo.to_owned()))
+}
+
+fn github_compare(owner: &str, repo: &str, branch: &str) -> String {
+    let mut url = url::Url::parse("https://github.com").unwrap();
     url.path_segments_mut()
-        .ok()?
+        .unwrap()
         .extend([owner, repo, "compare", branch]);
     url.set_query(Some("expand=1"));
-    Some(url.into())
+    url.into()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::github_compare;
+    use super::{github_compare, github_repository};
 
     #[test]
     fn opens_github_comparisons_for_the_selected_repository_and_branch() {
@@ -323,9 +357,10 @@ mod tests {
             "https://github.com/org/project",
             "https://sample@example.invalid@github.com/org/project.git",
         ] {
+            let (owner, repo) = github_repository(remote).unwrap();
             assert_eq!(
-                github_compare(remote, "fix/parser#12").as_deref(),
-                Some("https://github.com/org/project/compare/fix%2Fparser%2312?expand=1")
+                github_compare(&owner, &repo, "fix/parser#12"),
+                "https://github.com/org/project/compare/fix%2Fparser%2312?expand=1"
             );
         }
         for remote in [
@@ -333,7 +368,7 @@ mod tests {
             "git@gitlab.com:org/project.git",
             "https://github.com/org",
         ] {
-            assert!(github_compare(remote, "topic").is_none());
+            assert!(github_repository(remote).is_none());
         }
     }
 }
