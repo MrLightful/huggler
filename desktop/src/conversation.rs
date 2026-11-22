@@ -2,6 +2,7 @@ mod attachments;
 mod document_tabs;
 mod file_tree;
 mod launch_workspace;
+mod markdown_view;
 mod models;
 mod project_actions;
 mod sidebar;
@@ -20,7 +21,7 @@ use transcript::TurnClock;
 
 use self::launch_workspace::{LaunchProgress, WorktreeStage};
 use crate::{
-    changes::Changes,
+    changes::{Changes, RevertFinished, ReviewRow},
     git,
     paths::StoragePaths,
     questions::Questions,
@@ -467,15 +468,28 @@ impl Desktop {
             })
             .detach();
             let thread = id.clone();
-            cx.subscribe_in(&changes, window, move |view, _, row, window, cx| {
-                if view
-                    .current
-                    .as_ref()
-                    .is_some_and(|current| current.id == thread)
-                {
-                    view.open_document(Document::Diff(row.clone()), window, cx);
-                }
-            })
+            cx.subscribe_in(
+                &changes,
+                window,
+                move |view, _, row: &ReviewRow, window, cx| {
+                    if view
+                        .current
+                        .as_ref()
+                        .is_some_and(|current| current.id == thread)
+                    {
+                        view.open_document(Document::Diff(row.clone()), window, cx);
+                    }
+                },
+            )
+            .detach();
+            let thread = id.clone();
+            cx.subscribe_in(
+                &changes,
+                window,
+                move |view, _, result: &RevertFinished, window, cx| {
+                    view.refresh_reverted_documents(&thread, result, window, cx);
+                },
+            )
             .detach();
             let draft = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -608,10 +622,16 @@ impl Desktop {
                 self.name.focus_handle(cx).focus(window)
             }
             None if self.launching.is_none() => self.starter.focus_handle(cx).focus(window),
-            Some(thread) if self.workspaces[&thread.id].documents.active().is_some() => {
-                self.focus.focus(window);
+            Some(thread) => {
+                let documents = &self.workspaces[&thread.id].documents;
+                let focus = match documents.active() {
+                    Some(_) => documents
+                        .active_editor_focus(cx)
+                        .unwrap_or_else(|| self.focus.clone()),
+                    None => self.prompt.focus_handle(cx),
+                };
+                focus.focus(window);
             }
-            Some(_) => self.prompt.focus_handle(cx).focus(window),
             _ => self.focus.focus(window),
         }
     }
@@ -1601,6 +1621,7 @@ impl Render for Desktop {
                 |layout| layout.key_context(DOCUMENT_CONTEXT),
             )
             .on_action(cx.listener(Self::close_active_document))
+            .on_action(cx.listener(Self::save_active_document))
             .on_action(cx.listener(|v, _: &crate::OpenSettings, w, cx| v.open_settings(w, cx)))
             .on_action(
                 cx.listener(|v, _: &crate::NewConversation, w, cx| {
@@ -1708,9 +1729,16 @@ impl Render for Desktop {
                     } else {
                         match &self.current {
                             Some(thread) => {
-                                let documents = &self.workspaces[&thread.id].documents;
-                                match documents.active() {
-                                    Some(tab) => tab.render(cx).into_any_element(),
+                                let workspace = &self.workspaces[&thread.id];
+                                match workspace.documents.active() {
+                                    Some(tab) => tab
+                                        .render(
+                                            &workspace.changes,
+                                            &workspace.documents,
+                                            window,
+                                            cx,
+                                        )
+                                        .into_any_element(),
                                     None => self
                                         .conversation(thread, conversation_width, window, cx)
                                         .into_any_element(),

@@ -1,4 +1,4 @@
-use super::transcript_muted;
+use super::transcript::transcript_muted;
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, h_flex,
@@ -9,42 +9,72 @@ use markdown::mdast::Node;
 use std::borrow::Cow;
 
 pub(super) fn prose(id: String, source: &str, window: &mut Window, cx: &mut App) -> Div {
-    let safe = safe_markdown(source);
-    let mut body = v_flex()
-        .w_full()
-        .min_w_0()
-        .gap_2()
-        .text_sm()
-        .line_height(relative(1.55));
-    let Ok(Node::Root(root)) = markdown::to_mdast(&safe, &markdown::ParseOptions::gfm()) else {
-        return body.child(source.to_owned());
-    };
-    let definitions = root
-        .children
-        .iter()
-        .filter_map(|node| match node {
-            Node::Definition(_) => node_source(node, &safe),
+    Markdown::new(source).render(id, source, false, window, cx)
+}
+
+pub(super) struct Markdown {
+    source: String,
+    root: Option<markdown::mdast::Root>,
+    definitions: String,
+}
+
+impl Markdown {
+    pub(super) fn new(source: &str) -> Self {
+        let source = safe_markdown(source);
+        let root = match markdown::to_mdast(&source, &markdown::ParseOptions::gfm()) {
+            Ok(Node::Root(root)) => Some(root),
             _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    for (index, node) in root.children.iter().enumerate() {
-        body = body.children(
-            MarkdownBlock {
-                source: &safe,
-                definitions: &definitions,
-                in_list: false,
-            }
-            .render(node, &format!("{id}-{index}"), window, cx),
-        );
+        };
+        let definitions = root
+            .iter()
+            .flat_map(|root| &root.children)
+            .filter(|node| matches!(node, Node::Definition(_)))
+            .filter_map(|node| node_source(node, &source))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            source,
+            root,
+            definitions,
+        }
     }
-    body
+
+    pub(super) fn render(
+        &self,
+        id: String,
+        raw: &str,
+        document: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Div {
+        let mut body = v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .text_sm()
+            .line_height(relative(1.55))
+            .when(document, |body| body.gap_3().line_height(relative(1.65)));
+        let Some(root) = &self.root else {
+            return body.child(raw.to_owned());
+        };
+        let blocks = MarkdownBlock {
+            source: &self.source,
+            definitions: &self.definitions,
+            in_list: false,
+            document,
+        };
+        for (index, node) in root.children.iter().enumerate() {
+            body = body.children(blocks.render(node, &format!("{id}-{index}"), window, cx));
+        }
+        body
+    }
 }
 
 struct MarkdownBlock<'a> {
     source: &'a str,
     definitions: &'a str,
     in_list: bool,
+    document: bool,
 }
 
 impl MarkdownBlock<'_> {
@@ -117,19 +147,36 @@ impl MarkdownBlock<'_> {
                     is_dark: cx.theme().mode.is_dark(),
                     ..Default::default()
                 }
-                .heading_font_size(|level, _| {
-                    px(match level {
-                        1 => 20.,
-                        2 => 18.,
-                        _ => 15.,
-                    })
+                .heading_font_size({
+                    let document = self.document;
+                    move |level, _| {
+                        px(match (document, level) {
+                            (true, 1) => 28.,
+                            (true, 2) => 21.,
+                            (true, 3) => 17.,
+                            (_, 1) => 20.,
+                            (_, 2) => 18.,
+                            _ => 15.,
+                        })
+                    }
                 });
                 Some(
-                    div().w_full().min_w_0().child(
-                        TextView::markdown(SharedString::from(id.to_owned()), source, window, cx)
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .when(self.document && matches!(node, Node::Heading(_)), |block| {
+                            block.mt_3()
+                        })
+                        .child(
+                            TextView::markdown(
+                                SharedString::from(id.to_owned()),
+                                source,
+                                window,
+                                cx,
+                            )
                             .style(style)
                             .selectable(true),
-                    ),
+                        ),
                 )
             }
         }

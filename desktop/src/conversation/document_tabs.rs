@@ -1,16 +1,34 @@
-use super::*;
-use crate::{changes::ReviewRow, file_icons};
+mod diff;
+mod editor;
+
+use super::{markdown_view::Markdown, *};
+use crate::{
+    changes::{ReviewRow, line_counts},
+    file_icons,
+    git::PreparedRevert,
+};
 use anyhow::{Result, ensure};
+use diff::Diff;
+use editor::{Editor, confirm_discard};
 use gpui_component::{
+    WindowExt,
+    button::ButtonCustomVariant,
     scroll::{ScrollableElement, ScrollbarAxis},
     tooltip::Tooltip,
 };
-use std::{cell::Cell, io::Read, path::Path, rc::Rc};
+use std::{
+    cell::Cell,
+    io::Read,
+    path::Path,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 pub(crate) const DOCUMENT_CONTEXT: &str = "HugglerDocument";
 const TEXT_LIMIT: usize = 128 * 1024;
 const IMAGE_LIMIT: usize = 8 * 1024 * 1024;
 const TAB_LABEL_WIDTH: Pixels = px(144.);
+const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub(super) enum Document {
@@ -44,47 +62,52 @@ impl Document {
         }
     }
 
-    fn read(&self, root: &Path) -> Result<Preview> {
-        match self {
-            Self::File(path) => read_file(root, path),
-            Self::Diff(row) => {
-                let bytes = git::file_patch(root, &row.base, &row.head, &row.file, TEXT_LIMIT + 1)?;
-                if bytes.is_empty() {
-                    return Ok(Preview::Notice(
-                        "This file has no changes in this comparison.",
-                    ));
-                }
-                let mut preview = Preview::text(bytes, true);
-                if let Preview::Text { text, .. } = &mut preview {
-                    // The tab already identifies the file. Keep the hunks and any mode or binary changes.
-                    let mut in_header = false;
-                    *text = text
-                        .split_inclusive('\n')
-                        .filter(|line| {
-                            if line.starts_with("diff --git ") {
-                                in_header = true;
-                                return false;
-                            }
-                            if line.starts_with('@') {
-                                in_header = false;
-                            }
-                            !in_header
-                                || !["index ", "--- ", "+++ "]
-                                    .iter()
-                                    .any(|prefix| line.starts_with(prefix))
-                        })
-                        .collect::<String>()
-                        .into();
-                }
-                Ok(preview)
-            }
-        }
+    fn read(&self, root: &Path, refresh: bool) -> Result<Loaded> {
+        let Self::Diff(row) = self else {
+            return Ok(Loaded::file(read_file(root, self.path())?));
+        };
+        let row = if refresh {
+            let snapshot = git::changed_files(root, row.scope)?;
+            snapshot
+                .files
+                .into_iter()
+                .find(|file| file.path == row.file.path)
+                .map(|file| ReviewRow {
+                    file,
+                    base: snapshot.base,
+                    head: snapshot.head,
+                    scope: row.scope,
+                })
+        } else {
+            Some(row.clone())
+        };
+        let Some(row) = row else {
+            return Ok(Loaded::file(Preview::Notice(NO_DIFF)));
+        };
+        let revert = row
+            .file
+            .can_revert()
+            .then(|| PreparedRevert::prepare(root, row.head.clone(), row.file.clone()).ok())
+            .flatten()
+            .map(|target| Arc::from([target]));
+        let bytes = git::file_patch(root, &row.base, &row.head, &row.file, TEXT_LIMIT + 1)?;
+        let preview = if bytes.is_empty() {
+            Preview::Notice(NO_DIFF)
+        } else {
+            Preview::text(bytes, Some(&row.file.path), false)
+        };
+        Ok(Loaded {
+            preview,
+            review: Some(row),
+            revert,
+        })
     }
 }
 
 #[derive(Default)]
 pub(super) struct DocumentTabs {
     tabs: Vec<DocumentTab>,
+    editors: HashMap<Arc<Path>, Editor>,
     active: Option<usize>,
     next_id: usize,
     scroll: ScrollHandle,
@@ -100,55 +123,142 @@ impl DocumentTabs {
         self.active.and_then(|index| self.tabs.get(index))
     }
 
+    pub(super) fn active_editor_focus(&self, cx: &App) -> Option<FocusHandle> {
+        let tab = self.active().filter(|tab| tab.mode == DocumentMode::Raw)?;
+        let draft = self.editors.get(tab.document.path())?.draft()?;
+        (!draft.is_saving()).then(|| draft.input.focus_handle(cx))
+    }
+
     fn index_of(&self, id: usize) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.id == id)
     }
 
-    fn select(&mut self, index: usize, window: &mut Window) {
+    fn select(&mut self, index: usize) {
         self.active = Some(index);
         self.reveal.set(Some(index));
-        self.tabs[index].focus.focus(window);
     }
 }
+
+const NO_DIFF: &str = "This file has no changes in this comparison.";
 
 pub(super) struct DocumentTab {
     id: usize,
     document: Document,
     focus: FocusHandle,
     scroll: ScrollHandle,
-    preview: Option<Result<Preview>>,
+    diff_scroll: UniformListScrollHandle,
+    mode: DocumentMode,
+    copied_at: Option<Instant>,
+    loaded: Option<Result<Loaded>>,
+    revert_error: Option<String>,
     load: Option<Task<()>>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum DocumentMode {
+    #[default]
+    Preview,
+    Patch,
+    Raw,
+}
+
+struct Loaded {
+    preview: Preview,
+    review: Option<ReviewRow>,
+    revert: Option<Arc<[PreparedRevert]>>,
+}
+
+impl Loaded {
+    fn file(preview: Preview) -> Self {
+        Self {
+            preview,
+            review: None,
+            revert: None,
+        }
+    }
+}
+
+enum Formatted {
+    Markdown(Box<Markdown>),
+    Diff(Arc<Diff>),
+}
+
 enum Preview {
-    Text { text: SharedString, truncated: bool },
-    Image(Arc<RenderImage>),
+    Text {
+        text: SharedString,
+        truncated: bool,
+        formatted: Option<Formatted>,
+    },
+    Image {
+        thumbnail: Arc<RenderImage>,
+        source: Arc<Image>,
+    },
     Notice(&'static str),
 }
 
 impl Preview {
-    fn text(bytes: Vec<u8>, diff: bool) -> Self {
+    fn text(bytes: Vec<u8>, diff: Option<&Path>, markdown: bool) -> Self {
         let truncated = bytes.len() > TEXT_LIMIT;
         let bytes = &bytes[..bytes.len().min(TEXT_LIMIT)];
         let text = match std::str::from_utf8(bytes) {
-            Ok(text) => text,
+            Ok(text) => std::borrow::Cow::Borrowed(text),
             Err(error) if truncated && error.error_len().is_none() => {
-                std::str::from_utf8(&bytes[..error.valid_up_to()]).expect("valid UTF-8 prefix")
+                std::str::from_utf8(&bytes[..error.valid_up_to()])
+                    .expect("valid UTF-8 prefix")
+                    .into()
             }
-            Err(_) if diff => {
-                return Self::Text {
-                    text: String::from_utf8_lossy(bytes).into_owned().into(),
-                    truncated,
-                };
-            }
+            Err(_) if diff.is_some() => String::from_utf8_lossy(bytes),
             Err(_) => return Self::Notice("A text preview is unavailable for this file."),
         };
-        if !diff && text.contains('\0') {
+        if diff.is_none() && text.contains('\0') {
             return Self::Notice("A text preview is unavailable for this file.");
         }
+        let formatted = if let Some(path) = diff {
+            Some(Formatted::Diff(Arc::new(Diff::new(&text, path))))
+        } else if markdown {
+            Some(Formatted::Markdown(Box::new(Markdown::new(&text))))
+        } else {
+            None
+        };
         Self::Text {
-            text: text.to_owned().into(),
+            text: text.into_owned().into(),
             truncated,
+            formatted,
+        }
+    }
+
+    fn copy_content(&self, diff: bool) -> Option<(&'static str, CopyContent)> {
+        match self {
+            Self::Text {
+                text, truncated, ..
+            } => {
+                let tooltip = if *truncated {
+                    "Copy excerpt"
+                } else if diff {
+                    "Copy diff"
+                } else {
+                    "Copy file"
+                };
+                Some((tooltip, CopyContent::Text(text.clone())))
+            }
+            Self::Image { source, .. } => Some(("Copy image", CopyContent::Image(source.clone()))),
+            Self::Notice(_) => None,
+        }
+    }
+}
+
+enum CopyContent {
+    Text(SharedString),
+    Image(Arc<Image>),
+    Draft(Entity<InputState>),
+}
+
+impl CopyContent {
+    fn clipboard_item(&self, cx: &App) -> ClipboardItem {
+        match self {
+            Self::Text(text) => ClipboardItem::new_string(text.to_string()),
+            Self::Image(image) => ClipboardItem::new_image(image),
+            Self::Draft(input) => ClipboardItem::new_string(input.read(cx).value().to_string()),
         }
     }
 }
@@ -165,6 +275,7 @@ fn read_file(root: &Path, path: &Path) -> Result<Preview> {
         return Ok(Preview::Text {
             text: format!("Symbolic link → {}", fs::read_link(target)?.display()).into(),
             truncated: false,
+            formatted: None,
         });
     }
     ensure!(
@@ -187,13 +298,14 @@ fn read_file(root: &Path, path: &Path) -> Result<Preview> {
     (&mut file)
         .take((TEXT_LIMIT + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if matches!(
-        image::guess_format(&bytes),
-        Ok(image::ImageFormat::Png
-            | image::ImageFormat::Jpeg
-            | image::ImageFormat::WebP
-            | image::ImageFormat::Gif)
-    ) {
+    let format = match image::guess_format(&bytes) {
+        Ok(image::ImageFormat::Png) => Some(ImageFormat::Png),
+        Ok(image::ImageFormat::Jpeg) => Some(ImageFormat::Jpeg),
+        Ok(image::ImageFormat::WebP) => Some(ImageFormat::Webp),
+        Ok(image::ImageFormat::Gif) => Some(ImageFormat::Gif),
+        _ => None,
+    };
+    if let Some(format) = format {
         file.take((IMAGE_LIMIT + 1 - bytes.len()) as u64)
             .read_to_end(&mut bytes)?;
         if bytes.len() > IMAGE_LIMIT {
@@ -201,16 +313,33 @@ fn read_file(root: &Path, path: &Path) -> Result<Preview> {
         }
         return Ok(attachments::image_preview(&bytes).map_or(
             Preview::Notice("Could not preview this image."),
-            Preview::Image,
+            |thumbnail| Preview::Image {
+                thumbnail,
+                source: Arc::new(Image::from_bytes(format, bytes)),
+            },
         ));
     }
     if bytes.is_empty() {
         return Ok(Preview::Notice("This file is empty."));
     }
-    Ok(Preview::text(bytes, false))
+    let markdown = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| {
+            ["md", "markdown", "mdx"]
+                .iter()
+                .any(|name| ext.eq_ignore_ascii_case(name))
+        });
+    Ok(Preview::text(bytes, None, markdown))
 }
 
 impl Desktop {
+    fn active_document_mut(&mut self, id: usize) -> Option<&mut DocumentTab> {
+        let thread = self.current.as_ref()?;
+        let tabs = &mut self.workspaces.get_mut(&thread.id)?.documents;
+        tabs.tabs.get_mut(tabs.active?).filter(|tab| tab.id == id)
+    }
+
     pub(super) fn return_to_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(thread) = &self.current {
             self.workspaces
@@ -254,30 +383,73 @@ impl Desktop {
                     document: document.clone(),
                     focus: cx.focus_handle().tab_stop(true),
                     scroll: ScrollHandle::new(),
-                    preview: None,
+                    diff_scroll: UniformListScrollHandle::new(),
+                    mode: DocumentMode::default(),
+                    copied_at: None,
+                    loaded: None,
+                    revert_error: None,
                     load: None,
                 });
                 tabs.next_id += 1;
                 index
             });
-        tabs.select(index, window);
+        tabs.select(index);
         let tab = &mut tabs.tabs[index];
-        tab.document = document.clone();
-        let id = tab.id;
-        let root = workspace.root.clone();
-        let job = cx.background_spawn(async move { document.read(&root) });
-        tab.load = Some(cx.spawn(async move |view, cx| {
-            let result = job.await;
-            let _ = view.update(cx, |view, cx| {
-                if let Some(tab) = view.workspaces.get_mut(&thread).and_then(|workspace| {
-                    workspace.documents.tabs.iter_mut().find(|tab| tab.id == id)
-                }) {
-                    tab.preview = Some(result);
-                    tab.load = None;
-                    cx.notify();
-                }
-            });
-        }));
+        tab.document = document;
+        tab.revert_error = None;
+        tab.load(&thread, &workspace.root, false, cx);
+        let path = tab.document.path();
+        let editor_path = (tab.mode == DocumentMode::Raw || tabs.editors.contains_key(path))
+            .then(|| Arc::from(path));
+        self.focus_workspace(window, cx);
+        if let Some(path) = editor_path {
+            self.load_raw_editor(&thread, path, true, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn open_active_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(thread) = self.current.as_ref().map(|current| current.id.clone()) else {
+            return;
+        };
+        if let Some(tab) = self.workspaces[&thread].documents.active()
+            && tab.mode == DocumentMode::Raw
+        {
+            self.load_raw_editor(&thread, tab.document.path().into(), false, window, cx);
+        }
+    }
+
+    pub(super) fn refresh_reverted_documents(
+        &mut self,
+        thread: &ThreadId,
+        result: &RevertFinished,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspaces.get_mut(thread) else {
+            return;
+        };
+        if !result.paths.is_empty() {
+            workspace.files.update(cx, FileTree::refresh);
+        }
+        for tab in &mut workspace.documents.tabs {
+            let path = tab.document.path();
+            let error = result.failure.as_ref().filter(|(failed, _)| failed == path);
+            if error.is_none() && !result.paths.iter().any(|changed| changed == path) {
+                continue;
+            }
+            tab.revert_error = error.map(|(_, message)| message.clone());
+            tab.load(thread, &workspace.root, true, cx);
+        }
+        let refresh: Vec<_> = result
+            .paths
+            .iter()
+            .filter(|path| workspace.documents.editors.contains_key(path.as_path()))
+            .map(|path| Arc::<Path>::from(path.as_path()))
+            .collect();
+        for path in refresh {
+            self.load_raw_editor(thread, path, true, window, cx);
+        }
         cx.notify();
     }
 
@@ -293,13 +465,71 @@ impl Desktop {
         let Some(index) = tabs.index_of(id) else {
             return;
         };
-        tabs.tabs.remove(index);
-        match tabs.active {
-            Some(active) if active == index && index > 0 => tabs.select(index - 1, window),
-            Some(active) if active == index => self.return_to_chat(window, cx),
-            Some(active) => tabs.select(active - usize::from(active > index), window),
-            None => self.focus_workspace(window, cx),
+        let path = tabs.tabs[index].document.path();
+        let last = !tabs
+            .tabs
+            .iter()
+            .enumerate()
+            .any(|(other, tab)| other != index && tab.document.path() == path);
+        if last && let Some(draft) = tabs.editors.get(path).and_then(Editor::draft) {
+            if draft.is_saving() || window.has_active_dialog(cx) {
+                return;
+            }
+            if draft.dirty {
+                let thread = thread.id.clone();
+                let view = cx.weak_entity();
+                confirm_discard(
+                    "Discard unsaved changes?",
+                    format!("Changes to {} will be discarded.", path.display()),
+                    "Discard changes",
+                    move |window, cx| {
+                        let _ = view.update(cx, |view, cx| {
+                            if view
+                                .current
+                                .as_ref()
+                                .is_some_and(|current| current.id == thread)
+                            {
+                                view.remove_document(id, window, cx);
+                            }
+                        });
+                    },
+                    window,
+                    cx,
+                );
+                return;
+            }
         }
+        self.remove_document(id, window, cx);
+    }
+
+    fn remove_document(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(thread) = &self.current else {
+            return;
+        };
+        let tabs = &mut self
+            .workspaces
+            .get_mut(&thread.id)
+            .expect("selected workspace")
+            .documents;
+        let Some(index) = tabs.index_of(id) else {
+            return;
+        };
+        let tab = tabs.tabs.remove(index);
+        if !tabs
+            .tabs
+            .iter()
+            .any(|other| other.document.path() == tab.document.path())
+        {
+            tabs.editors.remove(tab.document.path());
+        }
+        match tabs.active {
+            Some(active) if active == index && index > 0 => tabs.select(index - 1),
+            Some(active) if active == index => return self.return_to_chat(window, cx),
+            Some(active) => tabs.select(active - usize::from(active > index)),
+            None => {}
+        }
+        self.focus_workspace(window, cx);
+        self.open_active_editor(window, cx);
         cx.notify();
     }
 
@@ -326,72 +556,103 @@ impl Desktop {
         let chat_active = documents.and_then(DocumentTabs::active).is_none();
         let theme = cx.theme();
         h_flex()
+            .relative()
             .h_9()
+            .items_end()
             .flex_shrink_0()
             .px_2()
-            .gap_1()
-            .border_b_1()
-            .border_color(theme.border)
+            .gap_0p5()
             .bg(theme.sidebar)
             .child(
-                control!(
-                    "Chat tab",
-                    Button::new("chat-tab")
-                        .ghost()
-                        .small()
-                        .h_7()
-                        .px_2p5()
-                        .label("Chat")
-                        .when(chat_active, |button| button
-                            .bg(theme.sidebar_accent)
-                            .selected(true))
-                        .on_click(
-                            cx.listener(|view, _, window, cx| view.return_to_chat(window, cx))
-                        )
-                )
-                .flex_none(),
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h_px()
+                    .bg(theme.border),
             )
+            .child(tab_surface(chat_active, cx).child(control!(
+                "Chat tab",
+                Button::new("chat-tab")
+                    .custom(ButtonCustomVariant::new(cx).foreground(if chat_active {
+                        theme.foreground
+                    } else {
+                        theme.muted_foreground
+                    }))
+                    .small()
+                    .h_full()
+                    .px_3()
+                    .label("Chat")
+                    .on_click(cx.listener(|view, _, window, cx| view.return_to_chat(window, cx)))
+            )))
             .when_some(
                 documents.filter(|documents| !documents.tabs.is_empty()),
                 |strip, documents| {
-                    strip
-                        .child(div().w_px().h_4().flex_none().bg(theme.border))
-                        .child(
-                            div()
-                                .relative()
-                                .flex_1()
-                                .min_w_0()
-                                .on_children_prepainted({
-                                    let reveal = documents.reveal.clone();
-                                    let scroll = documents.scroll.clone();
-                                    move |_, window, _| reveal_tab(&reveal, &scroll, window)
-                                })
-                                .child(
-                                    h_flex()
-                                        .id("document-tabs")
-                                        .h_9()
-                                        .gap_1()
-                                        .overflow_x_scroll()
-                                        .track_scroll(&documents.scroll)
-                                        .children(documents.tabs.iter().enumerate().map(
-                                            |(index, tab)| {
-                                                tab.selector(
-                                                    documents.active == Some(index),
-                                                    window,
-                                                    cx,
-                                                )
-                                            },
-                                        )),
-                                )
-                                .horizontal_scrollbar(&documents.scroll),
-                        )
+                    strip.child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .on_children_prepainted({
+                                let reveal = documents.reveal.clone();
+                                let scroll = documents.scroll.clone();
+                                move |_, window, _| reveal_tab(&reveal, &scroll, window)
+                            })
+                            .child(
+                                h_flex()
+                                    .id("document-tabs")
+                                    .h_8()
+                                    .gap_0p5()
+                                    .overflow_x_scroll()
+                                    .track_scroll(&documents.scroll)
+                                    .children(documents.tabs.iter().enumerate().map(
+                                        |(index, tab)| {
+                                            tab.selector(
+                                                documents.active == Some(index),
+                                                documents
+                                                    .editors
+                                                    .get(tab.document.path())
+                                                    .and_then(Editor::draft)
+                                                    .is_some_and(|draft| draft.dirty),
+                                                window,
+                                                cx,
+                                            )
+                                        },
+                                    )),
+                            )
+                            .horizontal_scrollbar(&documents.scroll),
+                    )
                 },
             )
     }
 }
 
+fn tab_surface(active: bool, cx: &App) -> Div {
+    let theme = cx.theme();
+    let hover = theme.muted;
+    h_flex()
+        .h_8()
+        .flex_none()
+        .rounded_t_md()
+        .border_t_1()
+        .border_l_1()
+        .border_r_1()
+        .border_color(transparent_black())
+        .when(active, |tab| {
+            tab.bg(theme.background).border_color(theme.border)
+        })
+        .when(!active, |tab| tab.hover(move |style| style.bg(hover)))
+}
+
 impl DocumentTab {
-    fn selector(&self, active: bool, window: &Window, cx: &Context<Desktop>) -> impl IntoElement {
+    fn selector(
+        &self,
+        active: bool,
+        dirty: bool,
+        window: &Window,
+        cx: &Context<Desktop>,
+    ) -> impl IntoElement {
         let id = self.id;
         let path = self.document.path();
         let name = path
@@ -406,7 +667,6 @@ impl DocumentTab {
             |scope| format!("Diff tab/{scope}/{full_path}"),
         );
         let theme = cx.theme();
-        let fill = theme.sidebar_accent;
         let ring = theme.ring;
         let muted = theme.muted_foreground;
         let label_color = if active { theme.foreground } else { muted };
@@ -435,13 +695,9 @@ impl DocumentTab {
         } else {
             name.into()
         };
-        h_flex()
+        tab_surface(active, cx)
             .id(("document-tab", id))
-            .h_7()
-            .flex_none()
-            .rounded_md()
-            .hover(move |style| style.bg(fill))
-            .when(active, |tab| tab.bg(fill))
+            .pr_0p5()
             .child(
                 control!(
                     _key.clone(),
@@ -473,7 +729,11 @@ impl DocumentTab {
                         .when(diff.is_some(), |tab| tab.child(
                             div().flex_none().text_xs().text_color(muted).child("Diff")
                         ))
-                        .on_click(cx.listener(move |view, _, window, cx| {
+                        .when(dirty, |tab| {
+                            tab.child(div().size(px(5.)).flex_none().rounded_full().bg(muted))
+                        })
+                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
                             if let Some(thread) = &view.current {
                                 let tabs = &mut view
                                     .workspaces
@@ -481,7 +741,11 @@ impl DocumentTab {
                                     .expect("selected workspace")
                                     .documents;
                                 if let Some(index) = tabs.index_of(id) {
-                                    tabs.select(index, window);
+                                    tabs.select(index);
+                                    if !event.is_keyboard() {
+                                        view.focus_workspace(window, cx);
+                                    }
+                                    view.open_active_editor(window, cx);
                                     cx.notify();
                                 }
                             }
@@ -509,49 +773,95 @@ impl DocumentTab {
             )
     }
 
-    pub(super) fn render(&self, cx: &App) -> impl IntoElement {
+    fn load(&mut self, thread: &ThreadId, root: &Path, refresh: bool, cx: &mut Context<Desktop>) {
+        let document = self.document.clone();
+        let thread = thread.clone();
+        let root = root.to_path_buf();
+        let id = self.id;
+        let job = cx.background_spawn(async move { document.read(&root, refresh) });
+        self.copied_at = None;
+        self.load = Some(cx.spawn(async move |view, cx| {
+            let result = job.await;
+            let _ = view.update(cx, |view, cx| {
+                if let Some(tab) = view.workspaces.get_mut(&thread).and_then(|workspace| {
+                    workspace.documents.tabs.iter_mut().find(|tab| tab.id == id)
+                }) {
+                    tab.loaded = Some(result);
+                    tab.load = None;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(super) fn render(
+        &self,
+        changes: &Entity<Changes>,
+        documents: &DocumentTabs,
+        window: &mut Window,
+        cx: &mut Context<Desktop>,
+    ) -> impl IntoElement {
+        let path = self.document.path();
+        let path_label = path.display().to_string();
+        let scope = self.document.comparison();
         let theme = cx.theme();
-        let path = self.document.path().display().to_string();
-        let diff = self.document.comparison();
-        let preview = match &self.preview {
-            None => hint(
-                if diff.is_some() {
-                    "Reading diff…"
-                } else {
-                    "Reading file…"
-                },
-                cx,
-            )
-            .px_4()
-            .py_3(),
-            Some(Err(error)) => hint(format!("Could not open {path}. {error:#}"), cx)
-                .px_4()
-                .py_3(),
-            Some(Ok(Preview::Notice(message))) => hint(*message, cx).px_4().py_3(),
-            Some(Ok(Preview::Image(image))) => div().p_4().child(img(image.clone()).max_w_full()),
-            Some(Ok(Preview::Text { text, truncated })) => {
-                let code = StyledText::new(text.clone());
-                let code = if diff.is_some() {
-                    code.with_highlights(diff_highlights(text, cx))
-                } else {
-                    code
-                };
-                div()
-                    .min_w_full()
-                    .flex_none()
-                    .px_4()
-                    .py_3()
-                    .whitespace_nowrap()
-                    .font_family(theme.mono_font_family.clone())
-                    .text_xs()
-                    .line_height(px(18.))
-                    .child(control!(
-                        format!("Document text/{}", &text[..text.floor_char_boundary(1024)]),
-                        code
-                    ))
-                    .when(*truncated, |body| {
-                        body.child(hint("Preview truncated", cx).mt_2())
-                    })
+        let (border, muted, foreground) = (theme.border, theme.muted_foreground, theme.foreground);
+        let loaded = match &self.loaded {
+            Some(Ok(loaded)) => Some(loaded),
+            _ => None,
+        };
+        let preview = loaded.map(|loaded| &loaded.preview);
+        let modes: &[(DocumentMode, &str)] = if scope.is_some() {
+            &[
+                (DocumentMode::Preview, "Unified"),
+                (DocumentMode::Patch, "Patch"),
+                (DocumentMode::Raw, "Raw"),
+            ]
+        } else {
+            &[
+                (DocumentMode::Preview, "Preview"),
+                (DocumentMode::Raw, "Raw"),
+            ]
+        };
+        let editor = documents.editors.get(path);
+        let draft = editor.and_then(Editor::draft);
+        let raw = self.mode == DocumentMode::Raw;
+        let copy = if raw {
+            draft.map(|draft| ("Copy file", CopyContent::Draft(draft.input.clone())))
+        } else {
+            preview.and_then(|preview| preview.copy_content(scope.is_some()))
+        };
+        let revert = loaded.and_then(|loaded| loaded.review.as_ref().zip(loaded.revert.as_ref()));
+        let truncated = matches!(
+            preview,
+            Some(Preview::Text {
+                truncated: true,
+                ..
+            })
+        );
+        let content = if raw {
+            editor
+                .map_or_else(
+                    || hint("Reading working file…", cx).p_4(),
+                    |editor| editor.render(cx),
+                )
+                .into_any_element()
+        } else {
+            match &self.loaded {
+                None => hint(
+                    if scope.is_some() {
+                        "Reading diff…"
+                    } else {
+                        "Reading file…"
+                    },
+                    cx,
+                )
+                .p_4()
+                .into_any_element(),
+                Some(Err(error)) => hint(format!("Could not open {path_label}. {error:#}"), cx)
+                    .p_4()
+                    .into_any_element(),
+                Some(Ok(loaded)) => self.render_preview(&loaded.preview, window, cx),
             }
         };
         v_flex()
@@ -561,45 +871,288 @@ impl DocumentTab {
             .min_w_0()
             .child(
                 h_flex()
-                    .h_8()
                     .flex_none()
-                    .px_4()
-                    .gap_2()
+                    .flex_wrap()
+                    .px_3()
+                    .py_1p5()
+                    .gap_x_3()
+                    .gap_y_1()
                     .border_b_1()
-                    .border_color(theme.border)
+                    .border_color(border)
                     .child(
-                        control!(
-                            format!("Document/{path}"),
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme.foreground)
-                                .child(path.clone())
-                        )
-                        .min_w_0()
-                        .flex_1(),
+                        h_flex()
+                            .min_w(px(120.))
+                            .min_h_7()
+                            .flex_1()
+                            .gap_2()
+                            .child(file_icons::icon(path, muted))
+                            .child(control!(
+                                format!("Document/{path_label}"),
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(foreground)
+                                    .child(path_label)
+                            )),
                     )
-                    .when_some(diff, |header, scope| {
-                        header.child(hint(scope, cx).text_xs().flex_none())
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .max_w_full()
+                            .flex_wrap()
+                            .gap_1()
+                            .child(self.mode_control(modes, cx))
+                            .children(
+                                copy.map(|(tooltip, content)| {
+                                    self.copy_button(tooltip, content, cx)
+                                }),
+                            )
+                            .when_some(
+                                draft.filter(|draft| raw || draft.dirty),
+                                |actions, draft| {
+                                    actions.child(control!(
+                                        "Save document",
+                                        Button::new("save-document")
+                                            .small()
+                                            .label(if draft.is_saving() {
+                                                "Saving…"
+                                            } else {
+                                                "Save"
+                                            })
+                                            .tooltip("Save working file (⌘S)")
+                                            .disabled(!draft.dirty || draft.is_saving())
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.save_active_document(
+                                                    &crate::SaveDocument,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }))
+                                    ))
+                                },
+                            )
+                            .when_some(revert, |actions, (row, target)| {
+                                let changes = changes.clone();
+                                let row = row.clone();
+                                let target = target.clone();
+                                actions.child(control!(
+                                    "Revert document",
+                                    Button::new("revert-document")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Undo2)
+                                        .tooltip("Revert file")
+                                        .disabled(
+                                            self.load.is_some()
+                                                || draft.is_some_and(
+                                                    |draft| draft.dirty || draft.is_saving()
+                                                )
+                                        )
+                                        .on_click(move |_, window, cx| {
+                                            changes.update(cx, |changes, cx| {
+                                                changes.confirm_document_revert(
+                                                    row.clone(),
+                                                    target.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        })
+                                ))
+                            }),
+                    ),
+            )
+            .when_some(scope, |pane, scope| {
+                pane.child(
+                    h_flex()
+                        .px_3()
+                        .py_1p5()
+                        .gap_3()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(hint(scope, cx).text_xs().flex_1())
+                        .when_some(
+                            loaded.and_then(|loaded| loaded.review.as_ref()),
+                            |summary, row| summary.child(line_counts(row.file.lines, cx)),
+                        ),
+                )
+            })
+            .when_some(self.revert_error.as_ref(), |pane, error| {
+                pane.child(control!(
+                    "Document revert failed",
+                    hint(error.clone(), cx).p_3().text_color(cx.theme().danger)
+                ))
+            })
+            .when_some(
+                draft.and_then(|draft| draft.error.as_ref()),
+                |pane, error| {
+                    pane.child(
+                        h_flex()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .child(control!(
+                                "Document save failed",
+                                hint(error.clone(), cx)
+                                    .flex_1()
+                                    .text_color(cx.theme().danger)
+                            ))
+                            .child(control!(
+                                "Reload document",
+                                Button::new("reload-document")
+                                    .ghost()
+                                    .small()
+                                    .label("Reload")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.reload_active_editor(window, cx)
+                                    }))
+                            )),
+                    )
+                },
+            )
+            .when(truncated && !raw, |pane| {
+                pane.child(hint("Showing the first 128 KiB", cx).px_3().py_1())
+            })
+            .child(div().relative().flex_1().min_h_0().min_w_0().child(content))
+    }
+
+    fn copy_button(
+        &self,
+        tooltip: &'static str,
+        content: CopyContent,
+        cx: &Context<Desktop>,
+    ) -> Div {
+        let id = self.id;
+        let copied = self
+            .copied_at
+            .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+        control!(
+            "Copy document",
+            Button::new("copy-document")
+                .ghost()
+                .small()
+                .icon(if copied {
+                    IconName::Check
+                } else {
+                    IconName::Copy
+                })
+                .tooltip(tooltip)
+                .disabled(self.load.is_some())
+                .on_click(cx.listener(move |desktop, _, _, cx| {
+                    let Some(tab) = desktop.active_document_mut(id) else {
+                        return;
+                    };
+                    cx.write_to_clipboard(content.clipboard_item(cx));
+                    tab.copied_at = Some(Instant::now());
+                    cx.notify();
+                    cx.spawn(async |view, cx| {
+                        cx.background_executor().timer(COPY_FEEDBACK).await;
+                        let _ = view.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                }))
+        )
+    }
+
+    fn mode_control(&self, modes: &[(DocumentMode, &str)], cx: &Context<Desktop>) -> Div {
+        let id = self.id;
+        h_flex()
+            .flex_none()
+            .rounded_md()
+            .p_0p5()
+            .bg(cx.theme().muted)
+            .children(
+                modes
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, (mode, label))| {
+                        control!(
+                            format!("Document mode/{label}"),
+                            Button::new(("document-mode", index))
+                                .ghost()
+                                .xsmall()
+                                .h_6()
+                                .label(label.to_owned())
+                                .selected(self.mode == mode)
+                                .when(self.mode == mode, |button| button.bg(cx.theme().background))
+                                .on_click(cx.listener(move |desktop, _, window, cx| {
+                                    if let Some(tab) = desktop.active_document_mut(id) {
+                                        tab.mode = mode;
+                                        desktop.focus_workspace(window, cx);
+                                        desktop.open_active_editor(window, cx);
+                                        cx.notify();
+                                    }
+                                }))
+                        )
                     }),
             )
+    }
+
+    fn render_preview(&self, preview: &Preview, window: &mut Window, cx: &mut App) -> AnyElement {
+        let body = match preview {
+            Preview::Notice(message) => {
+                return control!(*message, hint(*message, cx).p_4()).into_any_element();
+            }
+            Preview::Image { thumbnail, .. } => {
+                div().p_4().child(img(thumbnail.clone()).max_w_full())
+            }
+            Preview::Text {
+                formatted: Some(Formatted::Diff(diff)),
+                ..
+            } if self.mode == DocumentMode::Preview => {
+                return Diff::render(diff, &self.diff_scroll, window, cx).into_any_element();
+            }
+            Preview::Text {
+                text,
+                formatted: Some(Formatted::Markdown(markdown)),
+                ..
+            } if self.mode == DocumentMode::Preview => div()
+                .w_full()
+                .px_6()
+                .pb_10()
+                .pt_4()
+                .flex()
+                .justify_center()
+                .child(div().w_full().max_w(px(720.)).min_w_0().child(control!(
+                    "Rendered Markdown",
+                    markdown.render(
+                        format!("markdown-document-{}", self.id),
+                        text,
+                        true,
+                        window,
+                        cx
+                    )
+                ))),
+            Preview::Text { text, .. } => div()
+                .min_w_full()
+                .flex_none()
+                .px_4()
+                .py_3()
+                .whitespace_nowrap()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_sm()
+                .line_height(px(22.))
+                .child(control!(
+                    format!("Document text/{}", &text[..text.floor_char_boundary(1024)]),
+                    StyledText::new(text.clone())
+                )),
+        };
+        let scroll = &self.scroll;
+        div()
+            .relative()
+            .size_full()
             .child(
                 div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .id("document-content")
-                            .size_full()
-                            .overflow_scroll()
-                            .track_scroll(&self.scroll)
-                            .child(preview),
-                    )
-                    .scrollbar(&self.scroll, ScrollbarAxis::Both),
+                    .id("document-content")
+                    .size_full()
+                    .overflow_scroll()
+                    .track_scroll(scroll)
+                    .child(body),
             )
+            .scrollbar(scroll, ScrollbarAxis::Both)
+            .into_any_element()
     }
 }
 
@@ -619,36 +1172,4 @@ fn reveal_tab(reveal: &Cell<Option<usize>>, scroll: &ScrollHandle, window: &mut 
         scroll.set_offset(point(x, offset.y));
         window.refresh();
     }
-}
-
-fn diff_highlights(text: &str, cx: &App) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
-    let (added, removed, _) = crate::changes::change_colors(cx);
-    let muted = cx.theme().muted_foreground;
-    let mut offset = 0;
-    let mut in_hunk = false;
-    let mut highlights = Vec::new();
-    for line in text.split_inclusive('\n') {
-        let color = match line.as_bytes().first() {
-            Some(b'@') => {
-                in_hunk = true;
-                Some(muted)
-            }
-            Some(b'+') if in_hunk => Some(added),
-            Some(b'-') if in_hunk => Some(removed),
-            Some(b' ') if in_hunk => None,
-            _ => Some(muted),
-        };
-        let end = offset + line.trim_end_matches('\n').len();
-        if let Some(color) = color.filter(|_| end > offset) {
-            highlights.push((
-                offset..end,
-                HighlightStyle {
-                    color: Some(color),
-                    ..Default::default()
-                },
-            ));
-        }
-        offset += line.len();
-    }
-    highlights
 }

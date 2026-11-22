@@ -637,10 +637,7 @@ pub fn diff_fingerprint(root: &Path, base: &str, head: &str, file: &File) -> Res
     let mut fingerprint = hash_patch(root, command, file.diff_source == DiffSource::Untracked)?;
     let empty = execute(git(root).args(["hash-object", "--stdin"]))?;
     let net_empty = empty.strip_suffix(b"\n") == Some(fingerprint.as_bytes());
-    if let Some(status) = file.working_tree
-        && status.has_staged_change()
-        && (net_empty || status.status[1] != b'.' || status.recreated)
-    {
+    if let Some(extra) = supplemental_diff(file, net_empty) {
         // The combined patch can conceal staged changes when unstaged edits cancel them out.
         let staged = hash_patch(root, staged_diff(root, head, &file.path), false)?;
         ensure!(
@@ -649,7 +646,7 @@ pub fn diff_fingerprint(root: &Path, base: &str, head: &str, file: &File) -> Res
         );
         fingerprint.push(':');
         fingerprint.push_str(&staged);
-        if status.recreated {
+        if extra == SupplementalDiff::Recreated {
             // A staged deletion hides the recreated, untracked file from diff-index.
             fingerprint.push(':');
             fingerprint.push_str(&hash_patch(root, untracked_diff(root, &file.path), true)?);
@@ -676,24 +673,62 @@ pub(crate) fn file_patch(
         limit,
         &mut patch,
     )?;
-    if let Some(status) = file.working_tree
-        && status.has_staged_change()
-        && (patch.is_empty() || status.status[1] != b'.' || status.recreated)
-        && patch.len() < limit
-    {
-        patch.extend_from_slice(b"\nStaged changes\n\n");
-        read_patch(
+    if let Some(extra) = supplemental_diff(file, patch.is_empty()) {
+        append_patch_section(
             staged_diff(root, head, &file.path),
             false,
+            b"\nStaged changes\n\n",
             limit,
             &mut patch,
         )?;
-        if status.recreated && patch.len() < limit {
-            patch.extend_from_slice(b"\nRecreated file\n\n");
-            read_patch(untracked_diff(root, &file.path), true, limit, &mut patch)?;
+        if extra == SupplementalDiff::Recreated {
+            append_patch_section(
+                untracked_diff(root, &file.path),
+                true,
+                b"\nRecreated file\n\n",
+                limit,
+                &mut patch,
+            )?;
         }
     }
     Ok(patch)
+}
+
+#[derive(PartialEq, Eq)]
+enum SupplementalDiff {
+    Staged,
+    Recreated,
+}
+
+fn supplemental_diff(file: &File, combined_empty: bool) -> Option<SupplementalDiff> {
+    let status = file.working_tree?;
+    if !status.has_staged_change() {
+        return None;
+    }
+    if status.recreated {
+        Some(SupplementalDiff::Recreated)
+    } else if combined_empty || status.status[1] != b'.' {
+        Some(SupplementalDiff::Staged)
+    } else {
+        None
+    }
+}
+
+fn append_patch_section(
+    command: Command,
+    untracked: bool,
+    header: &[u8],
+    limit: usize,
+    patch: &mut Vec<u8>,
+) -> Result<()> {
+    if patch.len() == limit {
+        return Ok(());
+    }
+    patch.extend_from_slice(&header[..header.len().min(limit - patch.len())]);
+    if patch.len() < limit {
+        read_patch(command, untracked, limit, patch)?;
+    }
+    Ok(())
 }
 
 fn read_patch(
@@ -889,7 +924,7 @@ pub fn revert_file(root: &Path, target: &PreparedRevert) -> Result<()> {
     check_file_path(root, &file.path)?;
     ensure!(
         diff_fingerprint(root, head, head, file)? == *fingerprint,
-        "The file changed after you opened the confirmation. Review it and try again."
+        "The file changed. Review it and try again."
     );
     if file
         .working_tree
@@ -1423,8 +1458,11 @@ mod tests {
                     .unwrap()
                     .contains("-base\n+staged edit\n")
             );
-            let excerpt = file_patch(root, &snapshot.base, &snapshot.head, file, 32).unwrap();
-            assert_eq!(excerpt.len(), 32);
+            for limit in [1, b"\nStaged changes\n\n".len() - 1, 32] {
+                let excerpt =
+                    file_patch(root, &snapshot.base, &snapshot.head, file, limit).unwrap();
+                assert_eq!(excerpt.len(), limit);
+            }
         }
     }
 

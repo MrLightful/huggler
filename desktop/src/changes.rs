@@ -40,6 +40,12 @@ pub struct Changes {
 }
 
 impl EventEmitter<ReviewRow> for Changes {}
+impl EventEmitter<RevertFinished> for Changes {}
+
+pub(crate) struct RevertFinished {
+    pub paths: Vec<PathBuf>,
+    pub failure: Option<(PathBuf, String)>,
+}
 
 struct FilterMenu {
     view: Entity<PopupMenu>,
@@ -339,6 +345,27 @@ impl Changes {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_revert_dialog(rows, bulk, None, window, cx);
+    }
+
+    pub(crate) fn confirm_document_revert(
+        &self,
+        row: ReviewRow,
+        prepared: Arc<[PreparedRevert]>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_revert_dialog(vec![row], false, Some(prepared), window, cx);
+    }
+
+    fn show_revert_dialog(
+        &self,
+        rows: Vec<ReviewRow>,
+        bulk: bool,
+        targets: Option<Arc<[PreparedRevert]>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(first) = rows.first().filter(|_| self.mutation.is_none()) else {
             return;
         };
@@ -370,26 +397,30 @@ impl Changes {
             "Confirm file revert"
         };
         let root = self.root.clone();
-        let prepared = cx.new(|_| None);
-        let pending = prepared.downgrade();
-        let job = cx.background_spawn(async move {
-            rows.into_iter()
-                .map(|row| {
-                    let path = row.file.path.display().to_string();
-                    PreparedRevert::prepare(&root, row.head, row.file)
-                        .map_err(|error| format!("Could not prepare to revert {path}. {error:#}"))
-                })
-                .collect::<Result<Arc<[_]>, _>>()
-        });
-        cx.spawn_in(window, async move |_, cx| {
-            let result = job.await;
-            let _ = pending.update_in(cx, |prepared, window, cx| {
-                *prepared = Some(result);
-                cx.notify();
-                window.refresh();
+        let prepare_on_open = targets.is_none();
+        let prepared = cx.new(|_| targets.map(Ok));
+        if prepare_on_open {
+            let pending = prepared.downgrade();
+            let job = cx.background_spawn(async move {
+                rows.into_iter()
+                    .map(|row| {
+                        let path = row.file.path.display().to_string();
+                        PreparedRevert::prepare(&root, row.head, row.file).map_err(|error| {
+                            format!("Could not prepare to revert {path}. {error:#}")
+                        })
+                    })
+                    .collect::<Result<Arc<[_]>, _>>()
             });
-        })
-        .detach();
+            cx.spawn_in(window, async move |_, cx| {
+                let result = job.await;
+                let _ = pending.update_in(cx, |prepared, window, cx| {
+                    *prepared = Some(result);
+                    cx.notify();
+                    window.refresh();
+                });
+            })
+            .detach();
+        }
         let view = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _, cx| {
             let view = view.clone();
@@ -460,24 +491,38 @@ impl Changes {
         self.begin_mutation(Mutation::Revert { bulk }, cx);
         let root = self.root.clone();
         let job = cx.background_spawn(async move {
-            for (index, target) in targets.iter().enumerate() {
+            let mut paths = Vec::with_capacity(targets.len());
+            for target in targets.iter() {
                 if let Err(error) = git::revert_file(&root, target) {
                     let failure =
                         format!("Could not revert {}. {error:#}", target.path().display());
-                    return Some(if bulk {
-                        format!("Reverted {index} of {} files. {failure}", targets.len())
+                    let message = if bulk {
+                        format!(
+                            "Reverted {} of {} files. {failure}",
+                            paths.len(),
+                            targets.len()
+                        )
                     } else {
                         failure
-                    });
+                    };
+                    return RevertFinished {
+                        paths,
+                        failure: Some((target.path().to_path_buf(), message)),
+                    };
                 }
+                paths.push(target.path().to_path_buf());
             }
-            None
+            RevertFinished {
+                paths,
+                failure: None,
+            }
         });
         self.mutation_task = Some(cx.spawn(async move |view, cx| {
-            let error = job.await;
+            let result = job.await;
             let _ = view.update(cx, |panel, cx| {
                 panel.snapshot = None;
-                panel.finish_mutation(error, cx);
+                panel.finish_mutation(result.failure.as_ref().map(|(_, error)| error.clone()), cx);
+                cx.emit(result);
             });
         }));
     }
@@ -921,7 +966,7 @@ pub(crate) fn change_colors(cx: &App) -> (Hsla, Hsla, Hsla) {
     }
 }
 
-fn line_counts(counts: LineCounts, cx: &App) -> Div {
+pub(crate) fn line_counts(counts: LineCounts, cx: &App) -> Div {
     let (added, removed, _) = change_colors(cx);
     h_flex()
         .justify_end()

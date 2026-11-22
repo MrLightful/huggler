@@ -22,6 +22,7 @@ pub enum Step {
     NextPromptAnswer(usize),
     OpenedUrl(String),
     FileSize(std::path::PathBuf, u64),
+    ClipboardText(String),
     Resize([u16; 2]),
     Type(String),
     Key(String),
@@ -125,6 +126,12 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             true
         }
         Step::OpenedUrl(url) => cx.default_global::<OpenedUrl>().0.as_ref() == Some(url),
+        Step::ClipboardText(expected) => {
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_ref()
+                == Some(expected)
+        }
         Step::FileSize(path, size) => fs::metadata(path).is_ok_and(|file| file.len() == *size),
         Step::Resize([width, height]) => {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
