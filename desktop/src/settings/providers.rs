@@ -862,22 +862,25 @@ impl Settings {
     }
 }
 
-fn provider_logo(provider: Provider, size: Pixels, cx: &App) -> AnyElement {
+fn provider_logo(provider: Provider, size: Pixels, cx: &App) -> Svg {
     let logo = match provider {
         Provider::Codex => "provider-logos/codex.svg",
         Provider::ClaudeAgent => "provider-logos/claude.svg",
-        _ => {
-            return Icon::new(IconName::SquareTerminal)
-                .size(size)
-                .into_any_element();
-        }
+        Provider::Cursor => "provider-logos/cursor.svg",
+        Provider::Grok => "provider-logos/grok.svg",
+        Provider::Fx => "provider-logos/vercel.svg",
+        Provider::Kiro => "provider-logos/kiro.svg",
+        Provider::Antigravity => "provider-logos/antigravity.svg",
+        Provider::AcpRegistry => "provider-logos/agent-handshake.svg",
+        Provider::OpenCode => "provider-logos/opencode.svg",
+        Provider::Pi => "provider-logos/pi.svg",
+        Provider::Muse => "provider-logos/meta.svg",
     };
     svg()
         .path(logo)
         .size(size)
         .flex_shrink_0()
         .text_color(cx.theme().foreground)
-        .into_any_element()
 }
 
 fn setup_guide(driver: Provider) -> Option<&'static str> {
