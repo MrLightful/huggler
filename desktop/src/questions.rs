@@ -10,8 +10,19 @@ use gpui_component::{
 use huggler::{Huggler, ThreadId, UserAnswer, UserAnswers, UserInputRequest};
 use std::sync::Arc;
 
+#[derive(Clone)]
+enum Backend {
+    Local(Arc<Huggler>),
+    #[cfg(unix)]
+    Remote {
+        client: huggler::machine::Client,
+        executor: tokio::runtime::Handle,
+        project: huggler::ProjectId,
+    },
+}
+
 pub struct Questions {
-    runtime: Arc<Huggler>,
+    backend: Backend,
     thread: ThreadId,
     request: UserInputRequest,
     inputs: Vec<Entity<InputState>>,
@@ -27,13 +38,46 @@ impl Questions {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_backend(Backend::Local(runtime), thread, request, window, cx)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn remote(
+        client: huggler::machine::Client,
+        executor: tokio::runtime::Handle,
+        project: huggler::ProjectId,
+        thread: ThreadId,
+        request: UserInputRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_backend(
+            Backend::Remote {
+                client,
+                executor,
+                project,
+            },
+            thread,
+            request,
+            window,
+            cx,
+        )
+    }
+
+    fn with_backend(
+        backend: Backend,
+        thread: ThreadId,
+        request: UserInputRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let inputs = request
             .questions
             .iter()
             .map(|q| cx.new(|cx| InputState::new(window, cx).masked(q.is_secret)))
             .collect();
         Self {
-            runtime,
+            backend,
             thread,
             request,
             inputs,
@@ -46,7 +90,7 @@ impl Questions {
         if self.pending {
             return;
         }
-        let runtime = self.runtime.clone();
+        let backend = self.backend.clone();
         let thread = self.thread.clone();
         let request = self.request.clone();
         let mut answers = UserAnswers::new();
@@ -65,19 +109,48 @@ impl Questions {
         self.error = None;
         cx.notify();
         cx.spawn(async move |view, cx| {
-            let result = if dismiss {
-                runtime
-                    .dismiss_question(&thread, &request.run_id, &request.id)
-                    .await
-            } else {
-                runtime
-                    .respond_to_question(&thread, &request.run_id, &request.id, answers)
-                    .await
+            let result = match backend {
+                Backend::Local(runtime) => {
+                    let result = if dismiss {
+                        runtime
+                            .dismiss_question(&thread, &request.run_id, &request.id)
+                            .await
+                    } else {
+                        runtime
+                            .respond_to_question(&thread, &request.run_id, &request.id, answers)
+                            .await
+                    };
+                    result.map_err(|err| err.to_string())
+                }
+                #[cfg(unix)]
+                Backend::Remote {
+                    client,
+                    executor,
+                    project,
+                } => {
+                    use huggler::machine::{Reply, Request};
+                    let request = Request::Answer {
+                        project,
+                        thread,
+                        run: request.run_id,
+                        request: request.id,
+                        answers: (!dismiss).then_some(answers),
+                    };
+                    match executor
+                        .spawn(async move { client.request(request).await })
+                        .await
+                    {
+                        Ok(Ok(Reply::Responded)) => Ok(()),
+                        Ok(Ok(_)) => Err("The machine returned an incompatible response.".into()),
+                        Ok(Err(err)) => Err(err.to_string()),
+                        Err(err) => Err(err.to_string()),
+                    }
+                }
             };
             if let Err(err) = result {
                 let _ = view.update(cx, |view, cx| {
                     view.pending = false;
-                    view.error = Some(err.to_string());
+                    view.error = Some(err);
                     cx.notify();
                 });
             }

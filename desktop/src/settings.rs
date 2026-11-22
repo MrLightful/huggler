@@ -2,6 +2,8 @@ mod advanced;
 mod catalog;
 mod environment;
 mod general;
+#[cfg(unix)]
+mod machines;
 mod models;
 mod project_actions;
 pub(crate) mod projects;
@@ -85,6 +87,9 @@ pub struct Preferences {
     provider_environment: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     projects: Vec<projects::SavedProject>,
+    #[cfg(unix)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) machines: Vec<crate::machines::SavedMachine>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     worktree_projects: BTreeMap<PathBuf, PathBuf>,
     pub automatic_worktree_cleanup: bool,
@@ -106,6 +111,8 @@ impl Default for Preferences {
             runtime_overrides: BTreeMap::new(),
             provider_environment: BTreeMap::new(),
             projects: Vec::new(),
+            #[cfg(unix)]
+            machines: Vec::new(),
             worktree_projects: BTreeMap::new(),
             automatic_worktree_cleanup: false,
         }
@@ -156,6 +163,10 @@ impl Preferences {
 pub enum SettingsEvent {
     Back,
     ProviderModels(ProviderInstanceId, bool),
+    #[cfg(unix)]
+    OpenMachine(crate::machines::SavedMachine),
+    #[cfg(unix)]
+    ForgetMachine(crate::machines::SavedMachine),
 }
 
 pub(crate) enum SettingsTarget<'a> {
@@ -174,6 +185,8 @@ enum Page {
     Providers,
     Projects,
     ProjectActions,
+    #[cfg(unix)]
+    Machines,
     Storage,
 }
 
@@ -187,6 +200,8 @@ impl Page {
             Self::Projects => "Projects",
             Self::ProjectActions => "Project actions",
             Self::Storage => "Storage",
+            #[cfg(unix)]
+            Self::Machines => "Machines",
         }
     }
 
@@ -211,6 +226,8 @@ pub struct Settings {
     action_project: PathBuf,
     action_editor: Option<project_actions::ActionEditor>,
     adding_project: bool,
+    #[cfg(unix)]
+    machines: machines::Fields,
     model_catalog: Option<Entity<ProviderCatalog>>,
     catalog_subscription: Option<Subscription>,
     advanced: bool,
@@ -234,6 +251,7 @@ impl Settings {
         state: PathBuf,
         runtime: Arc<Huggler>,
         load_error: Option<String>,
+        _executor: tokio::runtime::Handle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -265,6 +283,8 @@ impl Settings {
             action_project: PathBuf::new(),
             action_editor: None,
             adding_project: false,
+            #[cfg(unix)]
+            machines: machines::Fields::new(_executor, window, cx),
             model_catalog: None,
             catalog_subscription: None,
             advanced: false,
@@ -652,6 +672,12 @@ impl Settings {
                         IconName::Folder,
                         "Manage Git checkouts saved for new conversations",
                     ),
+                    #[cfg(unix)]
+                    (
+                        Page::Machines,
+                        IconName::SquareTerminal,
+                        "Connect to a Git checkout over SSH",
+                    ),
                     (Page::Storage, IconName::Folder, "Clean up unused worktrees"),
                 ],
             ))
@@ -814,6 +840,8 @@ impl Settings {
             Page::Projects => self.projects_panel(cx),
             Page::ProjectActions => self.project_actions_panel(cx),
             Page::Storage => self.storage(cx),
+            #[cfg(unix)]
+            Page::Machines => self.machines_panel(cx),
         };
         let scroll_id = match self.page {
             Page::Providers => self.provider_scroll_id(),

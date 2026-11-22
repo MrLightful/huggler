@@ -10,6 +10,11 @@ include = ["LICENSE", "src/**", "migrations/**", "Cargo.toml", "Cargo.lock", "te
 
 [features]
 application = ["dep:chrono", "dep:chrono-tz", "dep:hmac", "dep:hex", "reqwest/rustls-tls"]
+machine = ["tokio/signal"]
+
+[[bin]]
+name = "hugglerd"
+required-features = ["machine"]
 
 [dependencies]
 base64 = "0.22"

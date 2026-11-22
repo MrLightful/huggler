@@ -16,6 +16,8 @@ mod file_icons;
 mod fonts;
 mod git;
 mod github;
+#[cfg(unix)]
+mod machines;
 mod open_in;
 mod paths;
 mod questions;

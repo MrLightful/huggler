@@ -637,7 +637,7 @@ pub struct ThreadSummary {
 }
 
 /// Lightweight activity for a conversation, including work outside the foreground turn.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConversationSummary {
     pub settled: bool,
     pub id: ThreadId,

@@ -12,7 +12,7 @@ struct Authority {
     operate: bool,
 }
 impl Database {
-    fn environment(&self) -> Result<EnvironmentId> {
+    pub(crate) fn environment(&self) -> Result<EnvironmentId> {
         Ok(EnvironmentId(self.db.query_row(
             "SELECT id FROM environment",
             [],
