@@ -57,6 +57,13 @@ for line in sys.stdin:
             continue
         assert sandbox == "workspace-write"
         assert params["sandboxPolicy"] == {"type": "workspaceWrite", "networkAccess": False}
+        if prompt.startswith(("Fix the failed checks", "Resolve the")):
+            if prompt.startswith("Fix"):
+                assert "fixture/project #12 (https://github.com/fixture/project/pull/12)" in prompt
+            turn = str(uuid4())
+            emit(id=frame["id"], result={"turn": {"id": turn}})
+            complete("Received the pull request task.")
+            continue
         turn = "revise" if file.exists() else "implement"
         emit(id=frame["id"], result={"turn": {"id": turn}})
         if prompt == "Create the answer file.":
