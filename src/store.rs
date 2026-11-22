@@ -1465,21 +1465,27 @@ impl Database {
              )
              SELECT t.id, t.name,
                     coalesce(fg.status, CASE WHEN q.thread_id IS NOT NULL THEN 'queued' END,
-                        (SELECT status FROM run WHERE thread_id=t.id
-                         ORDER BY coalesce(delivery_slot,ordinal) DESC LIMIT 1)),
+                        latest.status),
                     t.id IN (SELECT r.thread_id FROM permission p JOIN run r ON r.id=p.run_id
                              WHERE p.expired=0 AND p.decision IS NULL),
                     t.id IN (SELECT r.thread_id FROM user_question u JOIN run r ON r.id=u.run_id
                              WHERE u.state IN ('pending','answering')),
                     coalesce(q.held,0),
                     t.id IN (SELECT r.thread_id FROM native_child c JOIN run r ON r.id=c.run_id
-                             WHERE c.active), t.settled
+                             WHERE c.active), t.settled,
+                    CASE WHEN latest.status='completed' AND latest.started_at_ms IS NOT NULL
+                         THEN latest.id END
              FROM thread_order o JOIN thread t ON t.id=o.id
              LEFT JOIN run fg ON fg.thread_id=t.id AND fg.status IN ('starting','running','waiting')
-             LEFT JOIN queued q ON q.thread_id=t.id ORDER BY o.activity DESC, o.position DESC",
+             LEFT JOIN queued q ON q.thread_id=t.id
+             LEFT JOIN run latest ON fg.id IS NULL AND q.thread_id IS NULL AND latest.id=(
+                 SELECT id FROM run WHERE thread_id=t.id ORDER BY coalesce(delivery_slot,ordinal) DESC LIMIT 1
+             )
+             ORDER BY o.activity DESC, o.position DESC",
         )?;
         let threads = statement
             .query_map([], |row| {
+                let active_children = row.get(6)?;
                 Ok(ConversationSummary {
                     id: ThreadId(row.get(0)?),
                     name: row.get(1)?,
@@ -1491,8 +1497,13 @@ impl Database {
                     needs_approval: row.get(3)?,
                     needs_answer: row.get(4)?,
                     queue_held: row.get(5)?,
-                    active_children: row.get(6)?,
+                    active_children,
                     settled: row.get(7)?,
+                    completed_run: if active_children {
+                        None
+                    } else {
+                        row.get::<_, Option<String>>(8)?.map(RunId)
+                    },
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
