@@ -39,14 +39,14 @@ def check(binary):
             *launch_thread(checkout, "Implementation"), {"click": "Show conversations"},
             {"see": "Ready/Implementation/New conversation"},
             {"resize": [1120, 740]},
-            {"center_x": ["Resize conversations", 256]}, {"center_x": ["Resize changes", 820]},
-            {"drag_x": ["Resize conversations", 40]}, {"center_x": ["Resize conversations", 296]},
-            {"drag_x": ["Resize changes", 40]}, {"center_x": ["Resize changes", 860]},
+            {"center_x": ["Resize conversations", 288]}, {"center_x": ["Resize changes", 784]},
+            {"drag_x": ["Resize conversations", 40]}, {"center_x": ["Resize conversations", 328]},
+            {"drag_x": ["Resize changes", 40]}, {"center_x": ["Resize changes", 824]},
             {"see": "Changes tab"}, {"absent": "Refresh changes"},
             {"click": "Hide changes"}, {"absent": "Changes tab"},
-            {"drag_x": ["Resize conversations", 200]}, {"center_x": ["Resize conversations", 496]},
-            {"drag_x": ["Resize conversations", -200]}, {"center_x": ["Resize conversations", 296]},
-            {"click": "Show changes"}, {"see": "Changes tab"}, {"center_x": ["Resize changes", 860]},
+            {"drag_x": ["Resize conversations", 200]}, {"center_x": ["Resize conversations", 528]},
+            {"drag_x": ["Resize conversations", -200]}, {"center_x": ["Resize conversations", 328]},
+            {"click": "Show changes"}, {"see": "Changes tab"}, {"center_x": ["Resize changes", 824]},
             {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
             {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open in"]},
@@ -67,7 +67,7 @@ def check(binary):
             {"click": "Hide changes"}, {"absent": f"Changed/{name}"},
             {"click": "Show conversations"}, {"see": "thread/Implementation"},
             {"click": "Show changes"},
-            {"center_x": ["Resize conversations", 296]}, {"center_x": ["Resize changes", 860]},
+            {"center_x": ["Resize conversations", 328]}, {"center_x": ["Resize changes", 824]},
             {"right_of": [f"Changed/{name}", "Message"]}, {"absent": "Publish"}, {"absent": "Checks"},
             *send_message("Use a single line."), {"see": "Codex/Corrected the answer."},
         ], env)
@@ -85,8 +85,9 @@ def check(binary):
             {"right_of": ["Create PR", "Open in"]},
             {"right_of": ["Show changes", "Create PR"]},
             {"absent": f"Changed/{name}"}, {"click": "Show changes"}, {"see": f"Changed/{name}"},
-            {"click": f"Toggle diff/{name}"}, {"see": f"Diff/{name}"},
-            {"click": f"Toggle diff/{name}"}, {"absent": f"Diff/{name}"},
+            {"click": f"Open in/{name}"}, {"see": f"Open Finder/{name}"},
+            {"see": f"Open Terminal/{name}"}, {"see": f"Open VS Code/{name}"},
+            {"key": "escape"}, {"absent": f"Open Finder/{name}"},
             {"click": "Hide changes"}, {"resize": [1120, 740]}, {"click": "Show changes"},
             {"click": "Message"}, {"type": "Wait for my next instruction."},
             {"click": "Create"}, *launch_thread(other, "Review"),
@@ -110,20 +111,22 @@ def check(binary):
             {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review"),
             {"see": f"Changed/{committed_name}"},
             {"click": "All changes"}, {"see": "Change filter/Uncommitted files"},
-            {"key": "down"}, {"key": "enter"},
+            {"key": "down"}, {"key": "down"}, {"key": "enter"},
             {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
             {"click": "thread/Implementation"}, {"see": f"Changed/{name}"},
             {"resize": [1120, 740]}, {"see": "All changes"}, {"see": f"Changed/{other_name}"},
             {"see": f"Changed/{committed_name}"}, {"hover": f"Changed/{committed_name}"},
             {"absent": f"Revert/{committed_name}"},
-            {"click": f"Toggle diff/{name}"}, {"see": f"Diff/{name}"},
-            {"click": f"Toggle diff/{name}"}, {"absent": f"Diff/{name}"},
-            {"click": f"Changed/{name}"}, {"see": f"Diff/{name}"},
+            {"click": f"Open in/{committed_name}"}, {"see": f"Open VS Code/{committed_name}"},
+            {"absent": f"Open VS Code/{name}"}, {"key": "escape"},
+            {"click": f"Open in/{name}"}, {"see": f"Open VS Code/{name}"},
+            {"absent": f"Open VS Code/{committed_name}"}, {"key": "escape"},
+            {"absent": f"Diff/{name}"},
             {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
-            {"see": "Uncommitted files"}, {"see": f"Diff/{name}"},
+            {"see": "Uncommitted files"}, {"see": f"Changed/{name}"},
             {"absent": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
             {"click": "Uncommitted files"}, {"click": "Change filter/All changes"},
-            {"see": f"Changed/{committed_name}"}, {"see": f"Diff/{name}"},
+            {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{name}"},
             {"hover": f"Changed/{name}"}, {"click": f"Revert/{name}"},
             {"see": "Confirm file revert"}, {"key": "escape"},
             {"absent": "Confirm file revert"},
@@ -139,6 +142,70 @@ def check(binary):
         assert git("status", "--short") == ""
         assert (checkout / name).read_text() == "42\n"
         assert not (checkout / other_name).exists()
+
+        (checkout / other_name).write_text("first edit\n")
+        run_window(binary, state, [
+            {"see": "All changes"}, {"see": f"Changed/{committed_name}"},
+            {"hover": f"Changed/{committed_name}"}, {"click": f"Approve/{committed_name}"},
+            {"see": f"Changed/{other_name}"}, {"absent": f"Changed/{committed_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"see": f"Changed/{other_name}"},
+            {"hover": f"Changed/{other_name}"}, {"click": f"Approve/{other_name}"},
+            {"see": "No changes to review"},
+            {"click": "Uncommitted files"}, {"click": "Change filter/All changes"},
+            {"see": f"Changed/{name}"}, {"absent": f"Changed/{other_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Approved"},
+            {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+            {"click": f"Open in/{other_name}"}, {"see": f"Open Finder/{other_name}"},
+            {"key": "escape"}, {"absent": f"Open Finder/{other_name}"},
+        ], env)
+        assert git("status", "--short") == f"?? {other_name}"
+        assert (checkout / other_name).read_text() == "first edit\n"
+        (checkout / other_name).write_text("later edit\n")
+        run_window(binary, state, [
+            {"see": f"Changed/{other_name}"}, {"absent": f"Changed/{committed_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Approved"},
+            {"see": f"Changed/{committed_name}"}, {"absent": f"Changed/{other_name}"},
+            {"hover": f"Changed/{committed_name}"}, {"click": f"Undo approval/{committed_name}"},
+            {"see": "No approved files"},
+            {"click": "Approved"}, {"click": "Change filter/All changes"},
+            {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+        ], env)
+        assert git("status", "--short") == f"?? {other_name}"
+
+        (checkout / name).write_text("bulk staged edit\n")
+        git("add", "--", name)
+        (checkout / name).write_text("bulk working edit\n")
+        protected = "approved-only.txt"
+        (checkout / protected).write_text("keep this approved file\n")
+        run_window(binary, state, [
+            {"see": "All changes"}, {"see": f"Changed/{committed_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"see": "Uncommitted files"}, {"absent": f"Changed/{committed_name}"},
+            {"see": f"Changed/{name}"}, {"see": f"Changed/{other_name}"},
+            {"click": "File actions"}, {"click": "Approve all"},
+            {"see": "No changes to review"},
+            {"click": "Uncommitted files"}, {"click": "Change filter/Approved"},
+            {"see": "Approved"}, {"see": f"Changed/{name}"}, {"see": f"Changed/{other_name}"},
+            {"see": f"Changed/{protected}"}, {"absent": f"Changed/{committed_name}"},
+            {"click": "File actions"}, {"click": "Undo all approvals"},
+            {"see": "No approved files"},
+            {"click": "Approved"}, {"click": "Change filter/Uncommitted files"},
+            {"see": "Uncommitted files"}, {"hover": f"Changed/{protected}"},
+            {"click": f"Approve/{protected}"}, {"absent": f"Changed/{protected}"},
+            {"click": "File actions"}, {"click": "Revert all"},
+            {"see": "Confirm revert all"}, {"click": "Cancel file revert"},
+            {"absent": "Confirm revert all"},
+            {"file_size": [str(checkout / name), len("bulk working edit\n")]},
+            {"file_size": [str(checkout / other_name), len("later edit\n")]},
+            {"click": "File actions"}, {"click": "Revert all"},
+            {"click": "Confirm revert all"}, {"see": "No changes to review"},
+        ], env)
+        assert git("status", "--short") == f"?? {protected}"
+        assert git("show", f":{name}") == "42"
+        assert (checkout / name).read_text() == "42\n"
+        assert not (checkout / other_name).exists()
+        assert (checkout / protected).read_text() == "keep this approved file\n"
     print("Native conversation, queue and sidebar file list passed with a scripted Codex peer")
 
 

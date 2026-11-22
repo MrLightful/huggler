@@ -409,7 +409,7 @@ impl Desktop {
                 .ghost()
                 .small()
                 .icon(IconName::Plus)
-                .tooltip("Attach images, PDFs, or other files")
+                .tooltip("Attach files")
                 .disabled(
                     self.launching.is_some()
                         || draft.loading

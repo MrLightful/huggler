@@ -44,6 +44,7 @@ enum DiffSource {
 struct WorkingTreeStatus {
     status: [u8; 2],
     submodule: bool,
+    recreated: bool,
 }
 
 impl File {
@@ -55,9 +56,17 @@ impl File {
         self.working_tree
             .is_some_and(|status| status.change() == FileChange::Added)
     }
+
+    pub fn can_approve(&self) -> bool {
+        !matches!(self.change, FileChange::Conflict | FileChange::Submodule)
+    }
 }
 
 impl WorkingTreeStatus {
+    fn has_staged_change(self) -> bool {
+        !matches!(self.status[0], b'.' | b'?')
+    }
+
     fn change(self) -> FileChange {
         match &self.status {
             b"DD" | b"AU" | b"UD" | b"UA" | b"DU" | b"AA" | b"UU" => FileChange::Conflict,
@@ -73,7 +82,8 @@ impl WorkingTreeStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChangeScope {
     #[default]
     All,
@@ -204,6 +214,7 @@ fn read_changes(root: &Path, path: Option<&Path>) -> Result<WorkingTree> {
     let mut has_branch = false;
     let mut files = Vec::new();
     let mut tracked_paths = HashSet::new();
+    let mut untracked_paths = HashSet::new();
     for record in output.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         if let Some(oid) = record.strip_prefix(b"# branch.oid ") {
             head = Some(std::str::from_utf8(oid)?.to_owned());
@@ -235,10 +246,16 @@ fn read_changes(root: &Path, path: Option<&Path>) -> Result<WorkingTree> {
             }
             _ => bail!("invalid Git status record"),
         };
-        if status != *b"??" {
+        if status == *b"??" {
+            untracked_paths.insert(path);
+        } else {
             tracked_paths.insert(path);
         }
-        let working_tree = WorkingTreeStatus { status, submodule };
+        let working_tree = WorkingTreeStatus {
+            status,
+            submodule,
+            recreated: false,
+        };
         files.push(File {
             path: file_path(path)?,
             change: working_tree.change(),
@@ -252,9 +269,15 @@ fn read_changes(root: &Path, path: Option<&Path>) -> Result<WorkingTree> {
         });
     }
     // A staged deletion can also appear as an untracked path if it was recreated.
-    files.retain(|file| {
-        file.diff_source != DiffSource::Untracked
-            || !tracked_paths.contains(file.path.as_os_str().as_encoded_bytes())
+    files.retain_mut(|file| {
+        let bytes = file.path.as_os_str().as_encoded_bytes();
+        if file.diff_source == DiffSource::Untracked {
+            return !tracked_paths.contains(bytes);
+        }
+        if let Some(status) = &mut file.working_tree {
+            status.recreated = untracked_paths.contains(bytes);
+        }
+        true
     });
     let mut head = head.context("missing Git checkout revision")?;
     if head == "(initial)" {
@@ -354,6 +377,12 @@ fn branch_changes(root: &Path, base: &str, files: Vec<File>) -> Result<Vec<File>
                 file.change = change;
                 file.lines = lines;
             }
+            rows.push(file);
+        } else if file
+            .working_tree
+            .is_some_and(WorkingTreeStatus::has_staged_change)
+        {
+            // The working copy may cancel out a change that is still staged.
             rows.push(file);
         }
     }
@@ -498,18 +527,97 @@ fn untracked_line_count(root: &Path, path: &Path) -> Result<usize> {
         + usize::from(bytes.last().is_some_and(|b| *b != b'\n')))
 }
 
-pub fn file_diff(root: &Path, base: &str, file: &File) -> Result<String> {
-    const MAX_DIFF_BYTES: u64 = 32 * 1024;
+pub fn diff_fingerprint(root: &Path, base: &str, head: &str, file: &File) -> Result<String> {
     check_file_path(root, &file.path)?;
+    ensure!(file.can_approve(), "This file cannot be approved.");
+    // A full index line identifies binary changes. Hash the complete output
+    // without loading the patch into memory or writing an object to Git.
+    let (command, _index) = diff_command(root, base, file)?;
+    let mut fingerprint = hash_patch(root, command, file.diff_source == DiffSource::Untracked)?;
+    let empty = execute(git(root).args(["hash-object", "--stdin"]))?;
+    let net_empty = empty.strip_suffix(b"\n") == Some(fingerprint.as_bytes());
+    if let Some(status) = file.working_tree
+        && status.has_staged_change()
+        && (net_empty || status.status[1] != b'.' || status.recreated)
+    {
+        // The combined patch can conceal staged changes when unstaged edits cancel them out.
+        let mut command = git(root);
+        command
+            .args([
+                "--no-optional-locks",
+                "diff-index",
+                "--cached",
+                "--patch",
+                "--full-index",
+                "--no-renames",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                head,
+                "--",
+            ])
+            .arg(&file.path);
+        let staged = hash_patch(root, command, false)?;
+        ensure!(
+            empty.strip_suffix(b"\n") != Some(staged.as_bytes()),
+            "The staged diff changed."
+        );
+        fingerprint.push(':');
+        fingerprint.push_str(&staged);
+        if status.recreated {
+            // A staged deletion hides the recreated, untracked file from diff-index.
+            fingerprint.push(':');
+            fingerprint.push_str(&hash_patch(root, untracked_diff(root, &file.path), true)?);
+        }
+        return Ok(fingerprint);
+    }
+    ensure!(!net_empty, "The file no longer has a diff.");
+    Ok(fingerprint)
+}
+
+fn hash_patch(root: &Path, mut command: Command, untracked: bool) -> Result<String> {
+    let mut diff = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stream = diff.stdout.take().context("missing Git diff output")?;
+    let hash = execute(git(root).args(["hash-object", "--stdin"]).stdin(stream));
+    let status = diff.wait()?;
+    ensure!(
+        status.success() || (untracked && status.code() == Some(1)),
+        "Git could not read the file diff."
+    );
+    Ok(String::from_utf8(hash?)?.trim_end().to_owned())
+}
+
+fn untracked_diff(root: &Path, path: &Path) -> Command {
+    let mut command = git(root);
+    command
+        .args([
+            "--no-optional-locks",
+            "diff",
+            "--no-index",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--full-index",
+            "--",
+            "/dev/null",
+        ])
+        .arg(path);
+    command
+}
+
+fn diff_command(
+    root: &Path,
+    base: &str,
+    file: &File,
+) -> Result<(Command, Option<tempfile::TempDir>)> {
+    if file.diff_source == DiffSource::Untracked {
+        return Ok((untracked_diff(root, &file.path), None));
+    }
     let mut command = git(root);
     command.arg("--no-optional-locks");
-    if file.diff_source != DiffSource::Index {
-        const MAX_PREVIEW_INPUT_BYTES: u64 = 1024 * 1024;
-        if fs::symlink_metadata(root.join(&file.path))?.len() > MAX_PREVIEW_INPUT_BYTES {
-            return Ok("File is too large to preview.\n".into());
-        }
-    }
-    let untracked = file.diff_source == DiffSource::Untracked;
     let index = if file.diff_source == DiffSource::IntentToAdd {
         Some(intent_to_add_index(root, [&*file.path])?)
     } else {
@@ -518,18 +626,8 @@ pub fn file_diff(root: &Path, base: &str, file: &File) -> Result<String> {
     if let Some(index) = &index {
         command.env("GIT_INDEX_FILE", index.path().join("index"));
     }
-    if untracked {
-        command.args([
-            "diff",
-            "--no-index",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--",
-            "/dev/null",
-        ]);
-    } else {
-        command.args([
+    command
+        .args([
             "diff-index",
             "--patch",
             "--no-renames",
@@ -537,40 +635,12 @@ pub fn file_diff(root: &Path, base: &str, file: &File) -> Result<String> {
             "--no-ext-diff",
             "--no-textconv",
             "--ignore-submodules=dirty",
+            "--full-index",
             base,
             "--",
-        ]);
-    }
-    let mut child = command
-        .arg(&file.path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let mut bytes = Vec::new();
-    let result = child
-        .stdout
-        .take()
-        .context("missing Git diff output")?
-        .take(MAX_DIFF_BYTES + 1)
-        .read_to_end(&mut bytes);
-    let truncated = bytes.len() as u64 > MAX_DIFF_BYTES;
-    if result.is_err() || truncated {
-        let _ = child.kill();
-    }
-    let status = child.wait()?;
-    result?;
-    ensure!(
-        truncated || status.success() || (untracked && status.code() == Some(1)),
-        "Git could not read the file diff."
-    );
-    if truncated {
-        bytes.truncate(MAX_DIFF_BYTES as usize);
-    }
-    let mut diff = String::from_utf8_lossy(&bytes).into_owned();
-    if truncated {
-        diff.push_str("\nPreview truncated.\n");
-    }
-    Ok(diff)
+        ])
+        .arg(&file.path);
+    Ok((command, index))
 }
 
 fn check_file_path(root: &Path, path: &Path) -> Result<()> {
@@ -602,15 +672,41 @@ fn check_file_path(root: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn revert_file(root: &Path, head: &str, file: &File) -> Result<()> {
-    ensure!(
-        file.can_revert(),
-        "Resolve this file in Git before reverting it."
-    );
+pub struct PreparedRevert {
+    file: File,
+    head: String,
+    fingerprint: String,
+}
+
+impl PreparedRevert {
+    pub fn prepare(root: &Path, head: String, file: File) -> Result<Self> {
+        ensure!(
+            file.can_revert(),
+            "Resolve this file in Git before reverting it."
+        );
+        let fingerprint = diff_fingerprint(root, &head, &head, &file)?;
+        Ok(Self {
+            file,
+            head,
+            fingerprint,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.file.path
+    }
+}
+
+pub fn revert_file(root: &Path, target: &PreparedRevert) -> Result<()> {
+    let PreparedRevert {
+        file,
+        head,
+        fingerprint,
+    } = target;
     check_file_path(root, &file.path)?;
     let current = read_changes(root, Some(&file.path))?;
     ensure!(
-        current.head == head
+        current.head == *head
             && matches!(current.files.as_slice(), [latest]
                 if latest.path == file.path && latest.working_tree == file.working_tree && latest.can_revert()),
         "The checkout changed. Review the file and try again."
@@ -623,6 +719,10 @@ pub fn revert_file(root: &Path, head: &str, file: &File) -> Result<()> {
         );
     }
     check_file_path(root, &file.path)?;
+    ensure!(
+        diff_fingerprint(root, head, head, file)? == *fingerprint,
+        "The file changed after you opened the confirmation. Review it and try again."
+    );
     if file
         .working_tree
         .is_some_and(|status| status.status == *b"??")
@@ -758,13 +858,12 @@ mod tests {
                 removed: 0
             }
         );
-        assert!(
-            file_diff(root, &snapshot.base, text)
-                .unwrap()
-                .contains("+second")
-        );
+        let (mut command, _index) = diff_command(root, &snapshot.base, text).unwrap();
+        let patch = String::from_utf8(execute(&mut command).unwrap()).unwrap();
+        assert!(patch.contains("+second"));
 
-        revert_file(root, &snapshot.head, text).unwrap();
+        let target = PreparedRevert::prepare(root, snapshot.head.clone(), text.clone()).unwrap();
+        revert_file(root, &target).unwrap();
         assert!(!root.join(staged).exists());
         assert_eq!(
             changed_files(root, ChangeScope::Uncommitted).unwrap().files,
@@ -789,8 +888,16 @@ mod tests {
             }
         );
 
+        let target = PreparedRevert::prepare(root, snapshot.head.clone(), file.clone()).unwrap();
+        fs::write(root.join("file"), "newer edit\n").unwrap();
+        assert!(revert_file(root, &target).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("file")).unwrap(),
+            "newer edit\n"
+        );
+        fs::write(root.join("file"), "modified\n").unwrap();
         execute(git(root).args(["add", "--", "file"])).unwrap();
-        assert!(revert_file(root, &snapshot.head, file).is_err());
+        assert!(revert_file(root, &target).is_err());
         assert_eq!(fs::read_to_string(root.join("file")).unwrap(), "modified\n");
 
         fs::remove_file(root.join("file")).unwrap();
@@ -802,7 +909,7 @@ mod tests {
             .iter()
             .find(|file| file.path == Path::new("file"))
             .unwrap();
-        assert!(revert_file(root, &snapshot.head, file).is_err());
+        assert!(PreparedRevert::prepare(root, snapshot.head.clone(), file.clone()).is_err());
         assert_eq!(
             fs::read_to_string(root.join("file/keep")).unwrap(),
             "unrelated\n"
@@ -842,7 +949,8 @@ mod tests {
                 removed: 1
             }
         );
-        let patch = file_diff(root, &all.base, file).unwrap();
+        let (mut command, _index) = diff_command(root, &all.base, file).unwrap();
+        let patch = String::from_utf8(execute(&mut command).unwrap()).unwrap();
         assert!(patch.contains("-base\n+working tree\n"));
         assert_eq!(fs::read(root.join(".git/index")).unwrap(), index_before);
 
@@ -852,9 +960,86 @@ mod tests {
         assert_eq!(local.files[0].path, restored);
         assert_eq!(local.files[0].change, FileChange::Added);
         assert!(file.revert_removes_file());
-        revert_file(root, &all.head, file).unwrap();
+        let target = PreparedRevert::prepare(root, all.head.clone(), file.clone()).unwrap();
+        revert_file(root, &target).unwrap();
         assert!(!root.join(restored).exists());
         assert!(root.join(committed).exists());
+    }
+
+    #[test]
+    fn approving_a_binary_diff_distinguishes_same_size_edits() {
+        let dir = fixture();
+        let root = dir.path();
+        let path = root.join("font.bin");
+        fs::write(&path, b"\0ab").unwrap();
+        let untracked = changed_files(root, ChangeScope::Uncommitted).unwrap();
+        let file = &untracked.files[0];
+        let original = diff_fingerprint(root, &untracked.base, &untracked.head, file).unwrap();
+        fs::write(&path, b"\0ac").unwrap();
+        assert_ne!(
+            original,
+            diff_fingerprint(root, &untracked.base, &untracked.head, file).unwrap()
+        );
+
+        commit_fixture(root);
+        fs::write(&path, b"\0ad").unwrap();
+        let tracked = changed_files(root, ChangeScope::Uncommitted).unwrap();
+        let file = &tracked.files[0];
+        let original = diff_fingerprint(root, &tracked.base, &tracked.head, file).unwrap();
+        fs::write(&path, b"\0ae").unwrap();
+        assert_ne!(
+            original,
+            diff_fingerprint(root, &tracked.base, &tracked.head, file).unwrap()
+        );
+    }
+
+    #[test]
+    fn staged_changes_remain_reviewable_when_the_working_copy_matches_the_base() {
+        let dir = fixture();
+        let root = dir.path();
+        let path = root.join("file");
+        fs::write(&path, "base\n").unwrap();
+        commit_fixture(root);
+        execute(git(root).args(["branch", "-M", "main"])).unwrap();
+        create_branch(root, "topic").unwrap();
+        fs::write(root.join("branch"), "branch change\n").unwrap();
+        commit_fixture(root);
+        fs::write(&path, "staged edit\n").unwrap();
+        execute(git(root).args(["add", "--", "file"])).unwrap();
+        fs::write(&path, "base\n").unwrap();
+
+        for scope in [ChangeScope::All, ChangeScope::Uncommitted] {
+            let snapshot = changed_files(root, scope).unwrap();
+            let file = snapshot
+                .files
+                .iter()
+                .find(|file| file.path == Path::new("file"))
+                .unwrap();
+            assert!(diff_fingerprint(root, &snapshot.base, &snapshot.head, file).is_ok());
+        }
+    }
+
+    #[test]
+    fn approval_and_revert_detect_edits_to_a_recreated_staged_deletion() {
+        let dir = fixture();
+        let root = dir.path();
+        let path = root.join("file");
+        fs::write(&path, "base\n").unwrap();
+        commit_fixture(root);
+        execute(git(root).args(["rm", "--", "file"])).unwrap();
+        fs::write(&path, "recreated\n").unwrap();
+        let snapshot = changed_files(root, ChangeScope::Uncommitted).unwrap();
+        assert_eq!(snapshot.files.len(), 1);
+        let file = &snapshot.files[0];
+        let target = PreparedRevert::prepare(root, snapshot.head.clone(), file.clone()).unwrap();
+        let original = diff_fingerprint(root, &snapshot.base, &snapshot.head, file).unwrap();
+        fs::write(&path, "edited\n").unwrap();
+        assert_ne!(
+            original,
+            diff_fingerprint(root, &snapshot.base, &snapshot.head, file).unwrap()
+        );
+        assert!(revert_file(root, &target).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "edited\n");
     }
 
     #[test]

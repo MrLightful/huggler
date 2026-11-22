@@ -1,7 +1,6 @@
 use super::*;
-use anyhow::{Context as _, ensure};
+use crate::open_in::OpenIn;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
-use std::process::Command;
 
 impl Desktop {
     pub(super) fn project_actions(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -18,29 +17,17 @@ impl Desktop {
             )
             .tooltip("Open in")
             .dropdown_menu_with_anchor(Corner::TopRight, move |mut menu, _, _| {
-                for (name, bundle) in [
-                    ("Finder", "com.apple.finder"),
-                    ("Terminal", "com.apple.Terminal"),
-                    ("VS Code", "com.microsoft.VSCode"),
-                ] {
+                for destination in OpenIn::OPTIONS {
                     let view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(name).on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            view.run_project_action(cx, move |root| {
-                                let output = Command::new("/usr/bin/open")
-                                    .args(["-b", bundle])
-                                    .arg(root)
-                                    .output()
-                                    .with_context(|| format!("Could not open {name}"))?;
-                                ensure!(
-                                    output.status.success(),
-                                    "Could not open {name}. {}",
-                                    String::from_utf8_lossy(&output.stderr).trim()
-                                );
-                                Ok(None)
+                    menu = menu.item(PopupMenuItem::new(destination.label()).on_click(
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |view, cx| {
+                                view.run_project_action(cx, move |root| {
+                                    destination.open_workspace(&root).map(|()| None)
+                                });
                             });
-                        });
-                    }));
+                        },
+                    ));
                 }
                 menu
             });
@@ -53,7 +40,7 @@ impl Desktop {
                 Button::new("create-pr")
                     .small()
                     .label("Create PR")
-                    .tooltip("Create a pull request on GitHub")
+                    .tooltip("Open PR form")
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.run_project_action(cx, |root| git::pull_request_url(&root).map(Some));
                     }))

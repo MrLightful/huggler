@@ -142,8 +142,8 @@ impl Desktop {
         let mut view = Self {
             settings,
             show_settings: false,
-            navigation: sidebar::Sidebar::new(256.),
-            changes_sidebar: sidebar::Sidebar::new(300.),
+            navigation: sidebar::Sidebar::new(288.),
+            changes_sidebar: sidebar::Sidebar::new(336.),
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
@@ -352,7 +352,8 @@ impl Desktop {
     ) -> huggler::Result<()> {
         if !self.workspaces.contains_key(id) {
             let root = self.runtime.thread_checkout(id)?;
-            let changes = cx.new(|cx| Changes::new(root.clone(), window, cx));
+            let approvals_file = self.selection_file.with_file_name("file-approvals.json");
+            let changes = cx.new(|cx| Changes::new(root.clone(), approvals_file, id.0.clone(), cx));
             let draft = cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(2, 5)
@@ -857,7 +858,7 @@ impl Desktop {
                             self.send_controls(
                                 &self.starter_attachments,
                                 "Send first message",
-                                Self::send_icon("send-first", "Send first message (Enter)")
+                                Self::send_icon("send-first", "Send (Enter)")
                                     .disabled(empty_message || self.starter_attachments.loading)
                                     .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
                                 cx,
@@ -945,7 +946,7 @@ impl Desktop {
                                     .label("Open conversation")
                                     .icon(IconName::ArrowRight)
                             } else {
-                                Self::send_icon("launch", "Send first message")
+                                Self::send_icon("launch", "Send")
                             })
                             .disabled(
                                 self.starter_attachments.loading
@@ -982,7 +983,7 @@ impl Desktop {
                                 Button::new("browse")
                                     .ghost()
                                     .icon(IconName::FolderOpen)
-                                    .tooltip("Browse for a checkout")
+                                    .tooltip("Browse")
                                     .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
                             )),
                     ),
@@ -1079,7 +1080,7 @@ impl Desktop {
                             .rounded_sm()
                             .bg(cx.theme().primary_foreground),
                     )
-                    .tooltip("Stop thread")
+                    .tooltip("Stop")
                     .on_click(cx.listener(move |view, _, _, cx| {
                         let result = view
                             .runtime
@@ -1090,7 +1091,7 @@ impl Desktop {
             )
         } else {
             let (label, tooltip) = if busy {
-                ("Queue message", "Queue message (Enter)")
+                ("Queue message", "Queue (Enter)")
             } else {
                 ("Send", "Send (Enter)")
             };

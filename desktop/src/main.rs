@@ -13,6 +13,7 @@ macro_rules! control {
 mod changes;
 mod fonts;
 mod git;
+mod open_in;
 mod paths;
 mod questions;
 mod settings;
