@@ -98,6 +98,17 @@ impl Settings {
             });
         v_flex()
             .child(setting(
+                "Auto-settle merged PRs",
+                "Move idle conversations to Settled when their pull request is merged. Checks all conversations every minute.",
+                control!("Auto-settle merged PRs", toggle("auto-settle-merged-prs", "Auto-settle merged PRs", self.prefs.auto_settle_merged_prs)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        let mut prefs = view.prefs.clone();
+                        prefs.auto_settle_merged_prs = !prefs.auto_settle_merged_prs;
+                        view.persist(prefs, cx);
+                    }))),
+                cx,
+            ))
+            .child(setting(
                 "Send message with",
                 match self.prefs.send_shortcut {
                     SendShortcut::Enter => "Shift+Enter adds a new line.",

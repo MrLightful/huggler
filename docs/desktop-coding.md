@@ -89,7 +89,7 @@ The conversation sidebar is visible when Huggler opens. Use the left sidebar but
 - **Needs attention** shows conversations that need an answer or approval, have a paused queue, or ended in an error. The reason appears below the conversation name.
 - **Ready** shows new conversations and conversations whose work completed or was stopped.
 - **Working** shows conversations with queued or active work, including running subagents. By default, only your open conversation appears in this group. A request for your input moves the conversation into **Needs attention** automatically.
-- **Settled** holds conversations you have marked as finished. Hover over an idle conversation and click its checkmark to settle it. Expand **Settled** to browse its history. Hover over a settled conversation and click its undo arrow to unsettle it. Sending a message also reopens the conversation. Settlement persists across restarts.
+- **Settled** holds conversations you have marked as finished. Hover over an idle conversation and click its checkmark to settle it. Expand **Settled** to browse its history. Hover over a settled conversation and click its undo arrow to unsettle it. Sending a message also reopens the conversation. Settlement persists across restarts. By default, Huggler also checks idle conversations every minute and settles them when their branch’s pull request has merged. The checkout must be clean and its current commit must match the merged PR’s head; reused branches with new work stay open. Turn off **Auto-settle merged PRs** in **Settings → General** to disable this behavior. Active or queued work prevents settlement.
 
 ## Desktop data directory
 

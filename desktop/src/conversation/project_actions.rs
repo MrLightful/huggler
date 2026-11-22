@@ -3,6 +3,7 @@ use crate::github::{Action as PrAction, Checkout, Status};
 use crate::open_in::OpenIn;
 use anyhow::Context as _;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use huggler::RunStatus;
 use huggler::repository::github::{MergeMethod, PullRequestUpdate};
 use std::time::Duration;
 
@@ -141,6 +142,80 @@ impl Desktop {
                 .into_any_element()
         };
         Some(control!(label, button))
+    }
+
+    // The consumer owns the policy; dispatch revalidates eligibility in the store.
+    pub(super) fn watch_merged_prs(&mut self, cx: &mut Context<Self>) {
+        let runtime = self.runtime.clone();
+        let executor = self.executor.clone();
+        let background = cx.background_executor().clone();
+        self.merged_pr_watch = Some(cx.spawn(async move |view, cx| {
+            loop {
+                let candidates = view.update(cx, |view, cx| {
+                    if !view.settings.read(cx).preferences().auto_settle_merged_prs {
+                        return Vec::new();
+                    }
+                    view.threads
+                        .iter()
+                        .filter(|thread| eligible_for_auto_settlement(thread))
+                        .map(|thread| thread.id.clone())
+                        .collect::<Vec<_>>()
+                });
+                let Ok(candidates) = candidates else { break };
+                for id in candidates {
+                    let runtime = runtime.clone();
+                    let target = id.clone();
+                    let checked_sequence = executor
+                        .spawn(async move {
+                            let Ok(thread) = runtime.detail(&target, None, "", 1) else {
+                                return None;
+                            };
+                            let Ok(root) = runtime.thread_checkout(&target) else {
+                                return None;
+                            };
+                            let sequence = thread.history.sequence;
+                            let checkout = Checkout {
+                                runtime,
+                                thread: target,
+                                root,
+                                provider: thread.provider_instance,
+                                model: thread.model,
+                            };
+                            checkout.has_current_merged_pr().await.then_some(sequence)
+                        })
+                        .await
+                        .unwrap_or(None);
+                    if let Some(sequence) = checked_sequence
+                        && view
+                            .update(cx, |view, cx| {
+                                if view.settings.read(cx).preferences().auto_settle_merged_prs
+                                    && view.threads.iter().any(|thread| {
+                                        thread.id == id && eligible_for_auto_settlement(thread)
+                                    })
+                                    && view
+                                        .runtime
+                                        .detail(&id, None, "", 1)
+                                        .is_ok_and(|thread| thread.history.sequence == sequence)
+                                {
+                                    // Busy means work arrived after the list snapshot; retry next poll.
+                                    if let Err(error) = view.runtime.dispatch(Command {
+                                        id: CommandId(Uuid::new_v4().to_string()),
+                                        thread_id: id,
+                                        action: Action::SetSettled { settled: true },
+                                    }) && !matches!(error, huggler::Error::Busy)
+                                    {
+                                        view.report(Err(error), cx);
+                                    }
+                                }
+                            })
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+                background.timer(Duration::from_secs(60)).await;
+            }
+        }));
     }
 
     pub(super) fn watch_pull_request(&mut self, cx: &mut Context<Self>) {
@@ -379,5 +454,71 @@ impl Desktop {
             });
         })
         .detach();
+    }
+}
+
+fn eligible_for_auto_settlement(thread: &ConversationSummary) -> bool {
+    !thread.settled
+        && !thread.needs_approval
+        && !thread.needs_answer
+        && !thread.active_children
+        && !thread.queue_held
+        && thread.status.is_none_or(RunStatus::terminal)
+}
+
+#[cfg(test)]
+mod auto_settlement_tests {
+    use super::eligible_for_auto_settlement;
+    use huggler::{ConversationSummary, RunStatus, ThreadId};
+
+    #[test]
+    fn only_idle_unsettled_conversations_are_candidates() {
+        let idle = ConversationSummary {
+            id: ThreadId("idle".into()),
+            name: "Idle".into(),
+            settled: false,
+            status: Some(RunStatus::Completed),
+            completed_run: None,
+            needs_approval: false,
+            needs_answer: false,
+            queue_held: false,
+            active_children: false,
+        };
+        assert!(eligible_for_auto_settlement(&idle));
+        for status in [
+            RunStatus::Queued,
+            RunStatus::Starting,
+            RunStatus::Running,
+            RunStatus::Waiting,
+        ] {
+            assert!(!eligible_for_auto_settlement(&ConversationSummary {
+                status: Some(status),
+                ..idle.clone()
+            }));
+        }
+        for blocked in [
+            ConversationSummary {
+                settled: true,
+                ..idle.clone()
+            },
+            ConversationSummary {
+                needs_approval: true,
+                ..idle.clone()
+            },
+            ConversationSummary {
+                needs_answer: true,
+                ..idle.clone()
+            },
+            ConversationSummary {
+                active_children: true,
+                ..idle.clone()
+            },
+            ConversationSummary {
+                queue_held: true,
+                ..idle
+            },
+        ] {
+            assert!(!eligible_for_auto_settlement(&blocked));
+        }
     }
 }

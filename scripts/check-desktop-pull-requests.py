@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -57,6 +58,16 @@ def github_response(fixture, query, variables):
     if isinstance(pr, dict) and "next" in pr:
         fixture.write_text(json.dumps(pr["next"]))
         pr = pr["current"]
+    if isinstance(pr, dict) and "fixture_change" in pr and variables.get("head") == "review":
+        # Apply new local work while the final status request is in flight.
+        change = pr.pop("fixture_change")
+        if change == "edit":
+            (fixture.parent / "checkout" / "new-work.txt").write_text("New work\n")
+        else:
+            subprocess.run(["git", "-C", fixture.parent / "checkout", "switch", "-q", "other-topic"], check=True)
+        fixture.write_text(json.dumps(pr))
+    if variables.get("head") == "other-topic":
+        pr = None
     multiple = isinstance(pr, list)
     assert pr is not None or "mutation" not in query
     if "mutation" in query:
@@ -103,6 +114,14 @@ class GitHubHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         assert self.headers["Authorization"] == "Bearer fixture-token"
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if payload.get("query", "").lstrip().startswith("query BranchPullRequests"):
+            with self.server.lock:
+                scenario = json.loads(self.server.fixture.read_text())
+                changing = isinstance(scenario, dict) and "fixture_change" in scenario
+            if changing:
+                # Both the selected-PR watcher and auto-settlement watcher must
+                # snapshot the old checkout before the fixture changes it.
+                self.server.settlement_barrier.wait(timeout=10)
         with self.server.lock:
             if self.path == "/graphql":
                 response = github_response(self.server.fixture, payload["query"], payload["variables"])
@@ -143,6 +162,7 @@ def github_api(fixture):
     with ThreadingHTTPServer(("127.0.0.1", 0), GitHubHandler) as server:
         server.fixture = fixture
         server.lock = threading.Lock()
+        server.settlement_barrier = threading.Barrier(2)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
@@ -152,7 +172,7 @@ def github_api(fixture):
             thread.join()
 
 
-def check(binary):
+def check(binary, *, settlement_only=False):
     with (
         tempfile.TemporaryDirectory(prefix="huggler desktop PR ") as tmp,
         github_api(Path(tmp) / "pr.json") as origin,
@@ -218,6 +238,16 @@ def check(binary):
                            "mergeCommitAllowed": False, "squashMergeAllowed": True, "rebaseMergeAllowed": True},
             "commits": {"nodes": [{"commit": {"statusCheckRollup": None}}]},
         }
+
+        if settlement_only:
+            pr["headRefOid"] = commit("Review settlement")
+            git("branch", "other-topic")
+            check_settlement(binary, state, checkout, env, fixture, pr)
+            return
+
+        # Keep one-shot PR-action fixtures independent of background policy polling.
+        state.mkdir()
+        (state / "preferences.json").write_text(json.dumps({"autoSettleMergedPrs": False}))
 
         def show(data, *steps):
             fixture.write_text(json.dumps(data))
@@ -394,5 +424,51 @@ def check(binary):
     print("Native PR actions passed with a local GitHub fixture and a scripted Codex peer")
 
 
+def check_settlement(binary, state, checkout, env, fixture, pr):
+    state.mkdir()
+    preferences = state / "preferences.json"
+    preferences.write_text(json.dumps({"autoSettleMergedPrs": False}))
+
+    def show(data, *steps):
+        fixture.write_text(json.dumps(data))
+        run_window(binary, state, steps, env)
+
+    def assert_settled(expected):
+        with sqlite3.connect(state / "huggler.sqlite3") as db:
+            rows = db.execute("SELECT settled FROM thread ORDER BY name").fetchall()
+            assert rows == [(int(expected),), (int(expected),)], rows
+
+    # Leave one conversation unselected; the policy must cover it too.
+    show(pr, *launch_thread(checkout, "Background", current=True),
+         *launch_thread(checkout, "Selected", current=True))
+    merged = dict(pr, state="MERGED")
+    show(merged, {"see": "Merged"})
+    assert_settled(False)
+    # Exercise the actual preference control and its persisted opt-out.
+    show(pr, {"click": "Settings"}, {"click": "General"},
+         {"click": "Auto-settle merged PRs"})
+    assert json.loads(preferences.read_text())["autoSettleMergedPrs"] is True
+
+    for change in ("edit", "switch"):
+        show(dict(merged, fixture_change=change), {"see": "Merged"}, {"absent": "section/Settled/2"})
+        assert "fixture_change" not in json.loads(fixture.read_text())
+        assert_settled(False)
+        (checkout / "new-work.txt").unlink(missing_ok=True)
+        subprocess.run(["git", "-C", checkout, "switch", "-q", "review"], check=True)
+
+    show(dict(pr, state="CLOSED"), {"see": "PR closed"})
+    assert_settled(False)
+    show(merged, {"see": "section/Settled/2"})
+    assert_settled(True)
+    show(pr, {"click": "Settings"}, {"click": "General"},
+         {"click": "Auto-settle merged PRs"})
+    assert json.loads(preferences.read_text())["autoSettleMergedPrs"] is False
+    with sqlite3.connect(state / "huggler.sqlite3") as db:
+        db.execute("UPDATE thread SET settled=0")
+    show(merged, {"see": "Merged"})
+    assert_settled(False)
+    print("Merged PR settlement, background conversations, checkout races and opt-out passed")
+
+
 if __name__ == "__main__":
-    check(Path(sys.argv[1]).resolve())
+    check(Path(sys.argv[1]).resolve(), settlement_only="--settlement-only" in sys.argv[2:])
