@@ -57,6 +57,13 @@ for line in sys.stdin:
             continue
         assert sandbox == "workspace-write"
         assert params["sandboxPolicy"] == {"type": "workspaceWrite", "networkAccess": False}
+        if prompt.startswith(("Fix the failed checks", "Resolve the")):
+            if prompt.startswith("Fix"):
+                assert "fixture/project #12 (https://github.com/fixture/project/pull/12)" in prompt
+            turn = str(uuid4())
+            emit(id=frame["id"], result={"turn": {"id": turn}})
+            complete("Received the pull request task.")
+            continue
         turn = "revise" if file.exists() else "implement"
         emit(id=frame["id"], result={"turn": {"id": turn}})
         if prompt == "Create the answer file.":
@@ -74,6 +81,9 @@ for line in sys.stdin:
             notify("item/agentMessage/delta", delta="Waiting for your instruction.")
         elif prompt == "Review the staged result.":
             complete("Reviewed the staged result.")
+        elif prompt == "Start from default [base-only.txt](base-only.txt) ":
+            assert Path(".git").is_file() and Path("base-only.txt").is_file() and not file.exists()
+            complete("Started from the default branch.")
         elif prompt == "Watch for the review signal.":
             deadline = time.monotonic() + 30
             while not Path(".git/huggler-review-signal").exists():

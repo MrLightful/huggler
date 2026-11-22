@@ -129,6 +129,95 @@ pub fn checkout_root(path: &Path) -> Result<PathBuf> {
     file_path(output.strip_suffix(b"\n").unwrap_or(&output))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Branch {
+    pub reference: String,
+    pub name: String,
+    pub remote: bool,
+    pub current: bool,
+}
+
+impl Branch {
+    pub fn base_label(&self) -> String {
+        match self.reference.strip_prefix("refs/remotes/origin/") {
+            Some(name) => format!("From {name} (remote)"),
+            None => format!("From {}", self.name),
+        }
+    }
+}
+
+pub struct Branches {
+    pub branches: Vec<Branch>,
+    pub default: Option<Branch>,
+}
+
+pub fn branches(path: &Path) -> Result<Branches> {
+    let root = checkout_root(path)?;
+    let output = execute(git(&root).args([
+        "for-each-ref",
+        "--format=%(HEAD)%00%(refname)%00%(symref)",
+        "refs/heads/",
+        "refs/remotes/",
+    ]))?;
+    let mut branches = Vec::new();
+    let mut remote_heads = Vec::new();
+    for line in std::str::from_utf8(&output)?.lines() {
+        let mut fields = line.split('\0');
+        let (Some(head), Some(reference), Some(target)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let remote = reference.starts_with("refs/remotes/");
+        if !target.is_empty() {
+            if remote && reference.ends_with("/HEAD") {
+                remote_heads.push((reference, target));
+            }
+            continue;
+        }
+        let name = reference
+            .strip_prefix(if remote {
+                "refs/remotes/"
+            } else {
+                "refs/heads/"
+            })
+            .context("Expected a Git branch ref")?;
+        branches.push(Branch {
+            reference: reference.to_owned(),
+            name: name.to_owned(),
+            remote,
+            current: head == "*",
+        });
+    }
+    let lookup = |reference: &str| branches.iter().find(|branch| branch.reference == reference);
+    let default = remote_heads
+        .iter()
+        .find(|(head, _)| *head == "refs/remotes/origin/HEAD")
+        .and_then(|(_, target)| lookup(target))
+        .or_else(|| remote_heads.iter().find_map(|(_, target)| lookup(target)))
+        .or_else(|| {
+            ["main", "master"].into_iter().find_map(|name| {
+                lookup(&format!("refs/remotes/origin/{name}"))
+                    .or_else(|| lookup(&format!("refs/heads/{name}")))
+            })
+        })
+        .or_else(|| branches.iter().find(|branch| branch.current))
+        .cloned()
+        .or_else(|| {
+            execute(git(&root).args(["rev-parse", "--verify", "HEAD^{commit}"]))
+                .ok()
+                .map(|_| Branch {
+                    reference: "HEAD".into(),
+                    name: "HEAD".into(),
+                    remote: false,
+                    current: true,
+                })
+        })
+        .or_else(|| branches.first().cloned());
+    branches.sort_by_key(|branch| (!branch.current, branch.remote));
+    Ok(Branches { branches, default })
+}
+
 pub fn workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
     let output = execute(git(root).args([
         "ls-files",
@@ -137,6 +226,22 @@ pub fn workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
         "--others",
         "--exclude-standard",
     ]))?;
+    parse_file_paths(&output)
+}
+
+pub fn files_at(root: &Path, reference: &str) -> Result<Vec<PathBuf>> {
+    let output = execute(git(root).args(["ls-tree", "-rz", reference, "--"]))?;
+    output
+        .split(|byte| *byte == 0)
+        .filter(|entry| entry.starts_with(b"100"))
+        .filter_map(|entry| {
+            let separator = entry.iter().position(|byte| *byte == b'\t')?;
+            Some(file_path(&entry[separator + 1..]))
+        })
+        .collect()
+}
+
+fn parse_file_paths(output: &[u8]) -> Result<Vec<PathBuf>> {
     output
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
@@ -178,6 +283,20 @@ pub fn create_branch(root: &Path, branch: &str) -> Result<()> {
         "switch",
         "--no-track",
         "-c",
+        branch,
+    ]))?;
+    Ok(())
+}
+
+pub fn switch_branch(root: &Path, branch: &str) -> Result<()> {
+    execute(git(root).args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "switch",
+        "--no-guess",
+        "--no-overwrite-ignore",
+        "--no-recurse-submodules",
+        "--",
         branch,
     ]))?;
     Ok(())
@@ -742,7 +861,21 @@ pub fn revert_file(root: &Path, target: &PreparedRevert) -> Result<()> {
     Ok(())
 }
 
-pub fn pull_request_url(root: &Path) -> Result<String> {
+pub fn has_conflicts(root: &Path) -> bool {
+    execute(git(root).args(["ls-files", "--unmerged", "-z"])).is_ok_and(|output| !output.is_empty())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubBranch {
+    pub owner: String,
+    pub repo: String,
+    pub head: String,
+    local_ref: String,
+    pub local_oid: String,
+    synced: bool,
+}
+
+pub fn github_branch(root: &Path) -> Result<GitHubBranch> {
     ensure!(
         root.join(".git").exists(),
         "Create PR requires a Git checkout."
@@ -752,7 +885,7 @@ pub fn pull_request_url(root: &Path) -> Result<String> {
     let branch = std::str::from_utf8(&branch)?.trim_end();
     let tracking = execute(git(root).args([
         "for-each-ref",
-        "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)",
+        "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)%00%(objectname)",
         branch,
     ]))?;
     let tracking = std::str::from_utf8(&tracking)?.lines().find_map(|line| {
@@ -769,16 +902,32 @@ pub fn pull_request_url(root: &Path) -> Result<String> {
         .next()
         .and_then(|r| r.strip_prefix("refs/heads/"))
         .context(message)?;
-    ensure!(
-        fields.next() == Some(""),
-        "Sync the branch with its upstream before creating a pull request."
-    );
+    let synced = fields.next() == Some("");
+    let local_oid = fields.next().context(message)?.to_owned();
     let url = execute(git(root).args(["remote", "get-url", "--", remote]))?;
-    github_compare(std::str::from_utf8(&url)?.trim_end(), head)
-        .context("Create PR requires a GitHub.com upstream.")
+    let (owner, repo) = github_repository(std::str::from_utf8(&url)?.trim_end())
+        .context("Create PR requires a GitHub.com upstream.")?;
+    Ok(GitHubBranch {
+        owner,
+        repo,
+        head: head.to_owned(),
+        local_ref: branch.to_owned(),
+        local_oid,
+        synced,
+    })
 }
 
-fn github_compare(remote: &str, branch: &str) -> Option<String> {
+impl GitHubBranch {
+    pub fn compare_url(&self) -> Result<String> {
+        ensure!(
+            self.synced,
+            "Sync the branch with its upstream before creating a pull request."
+        );
+        Ok(github_compare(&self.owner, &self.repo, &self.head))
+    }
+}
+
+fn github_repository(remote: &str) -> Option<(String, String)> {
     let path = if let Some(path) = remote.strip_prefix("git@github.com:") {
         path.to_owned()
     } else {
@@ -799,12 +948,16 @@ fn github_compare(remote: &str, branch: &str) -> Option<String> {
             return None;
         }
     }
-    let mut url = url::Url::parse("https://github.com").ok()?;
+    Some((owner.to_owned(), repo.to_owned()))
+}
+
+fn github_compare(owner: &str, repo: &str, branch: &str) -> String {
+    let mut url = url::Url::parse("https://github.com").unwrap();
     url.path_segments_mut()
-        .ok()?
+        .unwrap()
         .extend([owner, repo, "compare", branch]);
     url.set_query(Some("expand=1"));
-    Some(url.into())
+    url.into()
 }
 
 #[cfg(test)]
@@ -1050,9 +1203,10 @@ mod tests {
             "https://github.com/org/project",
             "https://sample@example.invalid@github.com/org/project.git",
         ] {
+            let (owner, repo) = github_repository(remote).unwrap();
             assert_eq!(
-                github_compare(remote, "fix/parser#12").as_deref(),
-                Some("https://github.com/org/project/compare/fix%2Fparser%2312?expand=1")
+                github_compare(&owner, &repo, "fix/parser#12"),
+                "https://github.com/org/project/compare/fix%2Fparser%2312?expand=1"
             );
         }
         for remote in [
@@ -1060,7 +1214,7 @@ mod tests {
             "git@gitlab.com:org/project.git",
             "https://github.com/org",
         ] {
-            assert!(github_compare(remote, "topic").is_none());
+            assert!(github_repository(remote).is_none());
         }
     }
 }

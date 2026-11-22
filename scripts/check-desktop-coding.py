@@ -2,6 +2,7 @@
 """Drive a complete local coding cycle in the native macOS qualification window."""
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -25,8 +26,18 @@ def check(binary):
         git("config", "user.email", "fixture@example.test")
         git("config", "commit.gpgsign", "false")
         git("config", "core.hooksPath", os.devnull)
-        git("commit", "--allow-empty", "-qm", "Base for review")
+        (checkout / "base-only.txt").touch()
+        (checkout / "base-only-link.txt").symlink_to("base-only.txt")
+        git("add", "base-only.txt", "base-only-link.txt")
+        git("commit", "-qm", "Default branch")
+        default_commit = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/main", default_commit)
+        git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
         git("switch", "-qc", "topic")
+        git("rm", "-q", "base-only.txt", "base-only-link.txt")
+        git("commit", "-qm", "Topic branch")
+        topic_commit = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/topic", topic_commit)
         env = isolated_env(root)
         # A host launched from another repository must still run the provider
         # against each conversation's selected worktree.
@@ -34,9 +45,10 @@ def check(binary):
         env.update(GIT_DIR=str(root / ".git"), GIT_WORK_TREE=str(root),
                    GIT_COMMON_DIR=str(root / ".git"), GIT_INDEX_FILE=str(root / ".git/index"))
         env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
+        env["HUGGLER_PROMPT_SUGGESTIONS"] = "1"
         run_window(binary, state, [
             {"see": "First message"}, {"right_of": ["Send first message", "Attach files"]}, {"absent": "Conversation options"},
-            *launch_thread(checkout, "Implementation"), {"click": "Show conversations"},
+            *launch_thread(checkout, "Implementation", current=True), {"click": "Show conversations"},
             {"see": "Ready/Implementation/New conversation"},
             {"resize": [1120, 740]},
             {"center_x": ["Resize conversations", 288]}, {"center_x": ["Resize changes", 784]},
@@ -108,8 +120,12 @@ def check(binary):
         (checkout / other_name).write_text("keep this\n")
         run_window(binary, state, [
             {"click": "Show conversations"}, {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
-            {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review"),
-            {"see": f"Changed/{committed_name}"},
+            {"click": "Create"}, {"next_file_selection": [str(checkout)]}, {"click": "Choose project"},
+            {"see": "From main (remote)"}, {"click": "First message"}, {"type": "Start from default @base-only"},
+            {"see": "suggestion/base-only.txt"}, {"absent": "suggestion/base-only-link.txt"}, {"key": "enter"},
+            {"click": "Send first message"}, {"see": "Codex/Started from the default branch."},
+            {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review", base="origin/topic"),
+            {"see": "Changed/base-only.txt"},
             {"click": "All changes"}, {"see": "Change filter/Uncommitted files"},
             {"key": "down"}, {"key": "down"}, {"key": "enter"},
             {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
@@ -206,6 +222,52 @@ def check(binary):
         assert (checkout / name).read_text() == "42\n"
         assert not (checkout / other_name).exists()
         assert (checkout / protected).read_text() == "keep this approved file\n"
+
+        (checkout / name).write_text("staged change\n")
+        git("add", "--", name)
+        (checkout / name).write_text("later edit\n")
+        with sqlite3.connect(state / "huggler.sqlite3") as db:
+            roots = dict(db.execute("SELECT t.name,p.root FROM thread t JOIN project p ON t.project=p.id"))
+        assert Path(roots["Implementation"]) == checkout.resolve()
+        for thread, expected_commit in [("Start from default [base-only.txt](base-only.txt)", default_commit),
+                                        ("Isolated review", topic_commit)]:
+            worktree = Path(roots[thread])
+            assert worktree != checkout.resolve() and worktree.joinpath(".git").is_file()
+            assert subprocess.check_output(["git", "-C", worktree, "rev-parse", "HEAD"], text=True).strip() == expected_commit
+        assert git("branch", "--show-current") == "topic"
+        assert git("rev-parse", "feature/review") == topic_commit
+        git("branch", "checkout-review")
+        conflicting = root / "conflicting"
+        git("worktree", "add", "-qb", "ignored-file-conflict", str(conflicting))
+        (conflicting / "base-only.txt").write_text("tracked on the target branch\n")
+        git("-C", str(conflicting), "add", "base-only.txt")
+        git("-C", str(conflicting), "commit", "-qm", "Track the local filename")
+        git("worktree", "remove", str(conflicting))
+        (checkout / ".git/info/exclude").write_text("base-only.txt\n")
+        private_file = checkout / "base-only.txt"
+        private_file.write_text("keep this local file\n")
+        run_window(binary, state, [
+            {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
+            {"click": "Conversation name"}, {"type": "Current branch review"},
+            {"see": "From main (remote)"}, {"click": "Choose workspace"}, {"click": "Current checkout"},
+            {"click": "Choose checkout branch"}, {"see": "branch/checkout-review"},
+            {"type": "checkout-review"}, {"key": "down"}, {"key": "enter"},
+            {"see": "Switch to checkout-review"}, {"click": "Open conversation"}, {"see": "status/Ready"},
+            {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Conflicting branch"},
+            {"see": "From main (remote)"}, {"click": "Choose workspace"}, {"click": "Current checkout"},
+            {"click": "Choose checkout branch"}, {"see": "branch/checkout-review"},
+            {"type": "ignored-file-conflict"}, {"click": "branch/ignored-file-conflict"},
+            {"see": "Switch to ignored-file-conflict"}, {"click": "Open conversation"},
+            {"contains": "untracked working tree files would be overwritten"},
+        ], env)
+        with sqlite3.connect(state / "huggler.sqlite3") as db:
+            roots = dict(db.execute("SELECT t.name,p.root FROM thread t JOIN project p ON t.project=p.id"))
+        assert Path(roots["Current branch review"]) == checkout.resolve()
+        assert "Conflicting branch" not in roots
+        assert git("branch", "--show-current") == "checkout-review"
+        assert private_file.read_text() == "keep this local file\n"
+        assert git("show", f":{name}") == "staged change"
+        assert (checkout / name).read_text() == "later edit\n"
     print("Native conversation, queue and sidebar file list passed with a scripted Codex peer")
 
 

@@ -1,4 +1,5 @@
 mod attachments;
+mod launch_workspace;
 mod models;
 mod project_actions;
 mod sidebar;
@@ -7,6 +8,7 @@ mod transcript;
 
 use attachments::Attachments;
 use gpui_component::list::ListState;
+use launch_workspace::{LaunchWorkspace, WorkspaceMode};
 use models::{Models, ProviderCatalog};
 use transcript::TurnClock;
 
@@ -67,6 +69,9 @@ pub struct Desktop {
     threads: Vec<ConversationSummary>,
     expanded_sections: HashMap<sidebar::Section, bool>,
     current: Option<ConversationDetail>,
+    pull_request: Option<crate::github::Status>,
+    pull_request_watch: Option<Task<()>>,
+    pull_request_action: HashSet<ThreadId>,
     checkout_unavailable: bool,
     before: Option<HistoryCursor>,
     subscription: Option<Task<()>>,
@@ -78,6 +83,7 @@ pub struct Desktop {
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
     checkout: Entity<InputState>,
+    launch_workspace: LaunchWorkspace,
     branch: Entity<InputState>,
     launching: Option<ThreadId>,
     name: Entity<InputState>,
@@ -152,6 +158,9 @@ impl Desktop {
             threads: Vec::new(),
             expanded_sections: HashMap::new(),
             current: None,
+            pull_request: None,
+            pull_request_watch: None,
+            pull_request_action: HashSet::new(),
             checkout_unavailable: false,
             before: None,
             subscription: None,
@@ -173,9 +182,8 @@ impl Desktop {
                     )
                     .placeholder("/path/to/project")
             }),
-            branch: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("Leave blank to use this checkout")
-            }),
+            branch: cx.new(|cx| InputState::new(window, cx).placeholder("Generated automatically")),
+            launch_workspace: LaunchWorkspace::default(),
             launching: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Name this conversation…")),
             launch_setup: false,
@@ -201,6 +209,8 @@ impl Desktop {
                 }
                 view.launch_model = None;
                 view.model_picker = None;
+                view.launch_workspace = LaunchWorkspace::default();
+                view.load_launch_branches(true, cx);
                 let delay = cx
                     .background_executor()
                     .timer(std::time::Duration::from_millis(300));
@@ -219,6 +229,12 @@ impl Desktop {
         })
         .detach();
         Self::observe_composer(&view.starter, window, cx);
+        cx.observe_window_activation(window, |view, window, cx| {
+            if window.is_window_active() {
+                view.watch_pull_request(cx);
+            }
+        })
+        .detach();
         let restored = view.restore(window, cx);
         if let Ok(mut revision) = restored {
             let runtime = view.runtime.clone();
@@ -265,6 +281,7 @@ impl Desktop {
             self.select(thread.id.clone(), window, cx)?;
         } else {
             self.starter.focus_handle(cx).focus(window);
+            self.load_launch_branches(false, cx);
             self.preload_models(cx);
         }
         Ok(list.revision)
@@ -284,6 +301,7 @@ impl Desktop {
         if self.current.as_ref().is_some_and(|thread| thread.id == id) {
             self.focus_workspace(window, cx);
             self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
+            self.watch_pull_request(cx);
             return Ok(());
         }
         let snapshot = self.runtime.detail(&id, None, "", 32)?;
@@ -296,7 +314,10 @@ impl Desktop {
         self.prompt = self.workspaces[&id].draft.clone();
         self.suggestions = Default::default();
         self.model_picker = None;
+        self.launch_workspace.close_picker();
         self.current = Some(snapshot);
+        self.pull_request = None;
+        self.watch_pull_request(cx);
         self.preload_models(cx);
         self.before = None;
         self.focus_workspace(window, cx);
@@ -328,12 +349,14 @@ impl Desktop {
                                 .as_ref()
                                 .is_none_or(|(id, status)| id != &r.id || *status != r.status)
                     });
+                    let sequence = thread.history.sequence;
                     if finished || latest_finished {
                         view.workspaces[&selected]
                             .changes
                             .update(cx, |panel, cx| panel.refresh(cx));
+                        view.watch_pull_request(cx);
                     }
-                    Some(thread.history.sequence)
+                    Some(sequence)
                 }) {
                     Ok(Some(next)) => cursor = next,
                     _ => break,
@@ -424,6 +447,13 @@ impl Desktop {
     }
 
     fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(all(feature = "qualification", target_os = "macos"))]
+        if let Some(paths) = crate::qualification::take_file_selection(cx) {
+            if let Some(path) = paths.first() {
+                self.choose_checkout(path.clone(), window, cx);
+            }
+            return;
+        }
         let choice = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -436,10 +466,7 @@ impl Desktop {
                 match result {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.first() {
-                            v.checkout.update(cx, |s, cx| {
-                                s.set_value(path.to_string_lossy().into_owned(), window, cx)
-                            });
-                            v.focus_workspace(window, cx);
+                            v.choose_checkout(path.clone(), window, cx);
                         }
                     }
                     Ok(Err(e)) => v.error = Some(e.to_string()),
@@ -451,9 +478,17 @@ impl Desktop {
         .detach();
     }
 
+    fn choose_checkout(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.checkout.update(cx, |input, cx| {
+            input.set_value(path.to_string_lossy().into_owned(), window, cx)
+        });
+        self.focus_workspace(window, cx);
+    }
+
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
+        self.launch_workspace.close_picker();
         self.show_settings = true;
         self.settings.read(cx).focus.focus(window);
         cx.notify();
@@ -491,6 +526,7 @@ impl Desktop {
             None => return,
         };
         self.model_picker = None;
+        self.launch_workspace.close_picker();
         input.focus_handle(cx).focus(window);
         cx.notify();
     }
@@ -498,6 +534,7 @@ impl Desktop {
     fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
+        self.launch_workspace.close_picker();
         self.show_settings = false;
         self.launch_setup = setup;
         if self.current.is_none() {
@@ -510,6 +547,10 @@ impl Desktop {
         self.subscription = None;
         self.command_log = None;
         self.current = None;
+        self.pull_request_watch = None;
+        self.pull_request = None;
+        self.launch_workspace = LaunchWorkspace::default();
+        self.load_launch_branches(false, cx);
         self.preload_models(cx);
         self.error = None;
         self.name
@@ -549,11 +590,17 @@ impl Desktop {
         let checkout = self.checkout.read(cx).value();
         let scratch_root = self.scratch_root.clone();
         let branch = self.branch.read(cx).value();
+        let workspace_mode = self.launch_workspace.requested_mode();
+        let selected_branch = self
+            .launch_workspace
+            .selected_branch(workspace_mode)
+            .cloned();
         let model = self.launch_model.clone();
         let instance = self.instance.clone();
         let runtime = self.runtime.clone();
         let id = ThreadId(Uuid::new_v4().to_string());
         self.launching = Some(id.clone());
+        self.launch_workspace.close_picker();
         self.suggestions = Default::default();
         self.focus.focus(window);
         self.error = None;
@@ -573,18 +620,18 @@ impl Desktop {
             } else {
                 runtime.open_project(checkout.trim())?
             };
-            let branch = if scratch { "" } else { branch.trim() };
-            let project = if branch.is_empty() {
-                source
-            } else {
-                git::validate_new_branch(&source.root, branch)?;
-                let project = runtime.allocate_workspace(&source.id)?;
-                if let Err(error) = git::create_branch(&project.root, branch) {
-                    runtime.release_workspace(&project.id)?;
-                    return Err(error);
-                }
-                project
-            };
+            let (project, allocated) = launch_workspace::prepare(
+                &runtime,
+                source,
+                if scratch {
+                    WorkspaceMode::Current
+                } else {
+                    workspace_mode
+                },
+                selected_branch,
+                branch.trim(),
+                &thread,
+            )?;
             if let Err(error) = runtime.dispatch(Command {
                 id: CommandId(Uuid::new_v4().to_string()),
                 thread_id: thread.clone(),
@@ -595,10 +642,12 @@ impl Desktop {
                     model,
                 },
             }) {
-                if !branch.is_empty() {
-                    runtime.release_workspace(&project.id)?;
-                }
-                return Err(error.into());
+                let error = error.into();
+                return Err(if allocated {
+                    launch_workspace::release_after_failure(&runtime, &project, error)
+                } else {
+                    error
+                });
             }
             let sent = if let Some(action) = first_message {
                 runtime
@@ -894,15 +943,30 @@ impl Desktop {
                     ))
                 })
                 .child(composer)
-                .child(h_flex().w_full().justify_between().child(control!(
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_between()
+                        .flex_wrap()
+                        .child(control!(
                             "Choose project",
                             Button::new("project")
                                 .ghost()
                                 .small()
                                 .icon(IconName::FolderOpen)
-                                .label(project.unwrap_or("Choose project").to_owned())
+                                .child(
+                                    div()
+                                        .max_w(px(220.))
+                                        .truncate()
+                                        .child(project.unwrap_or("Choose project").to_owned())
+                                )
                                 .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
-                        )));
+                        ))
+                        .when(!checkout_empty, |row| {
+                            row.child(self.launch_checkout_controls(cx))
+                        }),
+                );
             return v_flex()
                 .id("starter")
                 .flex_1()
@@ -988,12 +1052,17 @@ impl Desktop {
                             )),
                     ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .when(compact, |field| field.w_full().flex_none())
-                    .child(field("New worktree branch (optional)", &self.branch)),
+            .when(
+                !checkout_empty && self.launch_workspace.mode() == WorkspaceMode::Worktree,
+                |row| {
+                    row.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .when(compact, |field| field.w_full().flex_none())
+                            .child(field("New worktree branch (optional)", &self.branch)),
+                    )
+                },
             );
         let body = v_flex()
             .w_full()
@@ -1010,6 +1079,9 @@ impl Desktop {
             ))
             .child(launcher)
             .child(context)
+            .when(!checkout_empty, |body| {
+                body.child(self.launch_checkout_controls(cx))
+            })
             .child(
                 h_flex()
                     .gap_2()

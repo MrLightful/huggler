@@ -97,13 +97,19 @@ impl FileMatch {
     }
 }
 
-fn checkout_files(root: &Path, starter: bool) -> anyhow::Result<Vec<FileMatch>> {
+fn checkout_files(
+    root: &Path,
+    starter: bool,
+    base: Option<&str>,
+) -> anyhow::Result<Vec<FileMatch>> {
     let root = if starter {
         git::checkout_root(root)?
     } else {
         root.to_path_buf()
     };
-    let paths = if root.join(".git").exists() {
+    let paths = if let Some(base) = base {
+        git::files_at(&root, base)?
+    } else if root.join(".git").exists() {
         git::workspace_files(&root)?
             .into_iter()
             .filter(|path| fs::symlink_metadata(root.join(path)).is_ok_and(|m| m.is_file()))
@@ -360,13 +366,30 @@ impl Desktop {
         } else {
             let kind = menu.trigger.kind;
             let starter = self.current.is_none();
+            let mode = self.launch_workspace.requested_mode();
+            let worktree = starter && mode == WorkspaceMode::Worktree;
+            let selected = self
+                .launch_workspace
+                .selected_branch(mode)
+                .filter(|_| starter)
+                .map(|branch| branch.reference.clone());
             let state_dir = self.selection_file.parent().unwrap().to_owned();
             let runtime = self.runtime.clone();
             let job = cx.background_spawn(async move {
                 match kind {
-                    Kind::Files => checkout_files(&checkout, starter)
-                        .map(Catalog::Files)
-                        .map_err(|_| "Could not read workspace files"),
+                    Kind::Files => {
+                        let base = if worktree && selected.is_none() {
+                            git::branches(&checkout)
+                                .map_err(|_| "Could not read workspace files")?
+                                .default
+                                .map(|branch| branch.reference)
+                        } else {
+                            selected
+                        };
+                        checkout_files(&checkout, starter, base.as_deref())
+                            .map(Catalog::Files)
+                            .map_err(|_| "Could not read workspace files")
+                    }
                     Kind::Skills => {
                         let cwd = if checkout.as_os_str().is_empty() {
                             state_dir

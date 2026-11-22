@@ -15,7 +15,7 @@ Check Huggler’s public interface and tests for current support. Record provide
 
 ## Composer suggestions
 
-The desktop owns trigger detection, file search, selection, and draft edits. For `@`, it searches tracked and non-ignored untracked files in the selected checkout, or files in a scratch conversation. The selected relative path is sent as a Markdown link in the existing message. This follows T3 Code's file reference format. [T3 Code menu and selection](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/ChatComposer.tsx) · [T3 Code workspace search regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/workspace/WorkspaceEntries.test.ts)
+The desktop owns trigger detection, file search, selection, and draft edits. For `@`, it searches the target branch before creating a worktree or switching the current checkout. Otherwise, it searches tracked and non-ignored untracked files in the current checkout or files in a scratch conversation. The selected relative path is sent as a Markdown link in the existing message. This follows T3 Code's file reference format. [T3 Code menu and selection](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/ChatComposer.tsx) · [T3 Code workspace search regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/workspace/WorkspaceEntries.test.ts)
 
 | Harness | Version and transport | Skill discovery and delivery |
 | --- | --- | --- |
@@ -24,9 +24,23 @@ The desktop owns trigger detection, file search, selection, and draft edits. For
 
 The [provider fixture test](../tests/provider_instances.rs) verifies checkout scope, disabled skills, same-named skills, and independent model discovery. The [macOS qualification check](../scripts/check-provider-desktop.py) drives the composer with keyboard and mouse and inspects the resulting Codex `turn/start` input. The live protocol check used `skills/list` only.
 
+## Desktop conversation checkout
+
+Desktop owns the workspace mode and the searchable branch picker. It follows T3 Code's rule that a default worktree base must resolve to a commit. Desktop reads Git's cached remote default at launch, prefers `origin` when present, and falls back to `main`, `master`, the current commit, or another available branch. The worktree picker includes local and remote-tracking refs. **Current checkout** uses the chosen directory and can switch to a selected local branch at launch. Git refuses switches that would overwrite local files or use a branch checked out in another worktree. A repository without a base commit falls back to **Current checkout**. Remote-tracking refs reflect the last Git fetch. [T3 Code default branch regression](https://github.com/pingdotgg/t3code/commit/bc7fe11002aaa29a98d7429eb765765bc366b59d) · [Desktop workflow](../scripts/check-desktop-coding.py)
+
+The Rust allocator resolves the chosen ref to an immutable commit before reserving a managed checkout. The desktop check verifies the provider's working directory and the worktree's starting commit using a scripted Codex app-server peer over stdio. [Rust workspace API](../src/workspace.rs) · [Allocation and release check](../tests/application_profile.rs)
+
+## Desktop pull request actions
+
+The desktop reads GitHub’s status for the tracked head branch and chooses the header action. GitHub owns merge eligibility, merge queues, auto-merge and the final head check on each mutation. Huggler’s existing message queue delivers **Fix** and **Resolve** to the current conversation. As in T3 Code, conflicts take priority and a PR waiting on requirements can offer auto-merge. Huggler uses **Fix** for failing checks or requested review changes, and opens drafts on GitHub. [T3 Code primary action](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/pullRequest/pullRequestDetail.logic.ts) · [T3 Code regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/pullRequest/pullRequestDetail.logic.test.ts)
+
+GitHub CLI 2.103.2 was verified with an authenticated GraphQL read. The native desktop check uses a scripted CLI and Codex app-server peer over stdio to verify the header, confirmed writes, and task delivery. The browser compare form is the fallback when GitHub status is unavailable. [Desktop workflow](desktop-coding.md#reproduce-the-desktop-check)
+
 ## Desktop storage layout
 
 Desktop chooses a base directory with sibling `userdata`, `worktrees` and `scratch` directories, following T3 Code at the pinned revision. A name in the Rust or TypeScript SDK supplies the provider and MCP identifier and defaults storage to `userdata` and `worktrees` under `~/.<identifier>`. Embedders can set a base directory, database path, or provider identity explicitly. Desktop reopens legacy state in place because saved checkout paths are absolute. [Upstream desktop path resolution](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/desktop/src/app/DesktopStatePaths.ts) · [Upstream server paths](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/config.ts) · [Huggler desktop paths and tests](../desktop/src/paths.rs)
+
+Huggler exposes conservative orphan inspection and cleanup for managed worktrees. It removes only unreferenced checkouts that remain at their recorded base commit with no tracked, untracked or ignored files. Huggler Desktop defaults automatic cleanup off, offers manual cleanup, and checks at startup and hourly when enabled. T3 Code's inactive, settled, merged and unchanged-worktree policies remain deferred until Huggler can preserve the latest commit and recreate a removed ready checkout. [Huggler cleanup API and contract](../docs-app/content/docs/bindings/rust/application-integrations.mdx#clean-up-managed-worktrees) · [Upstream cleanup behavior](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/docs/user/project-settings.md#storage-cleanup)
 
 ## Desktop working-tree review
 
