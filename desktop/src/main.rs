@@ -142,6 +142,7 @@ fn main() -> Result<()> {
             ],
         }]);
 
+        let handle = executor.handle().clone();
         let owner = runtime.clone();
         cx.on_app_quit(move |_| {
             // GPUI bounds the time it will poll a quit future. Join provider workers
@@ -171,8 +172,9 @@ fn main() -> Result<()> {
                 },
                 |window, cx| {
                     window.set_window_title("Huggler");
-                    let view =
-                        cx.new(|cx| Desktop::new(runtime, paths, prefs, load_error, window, cx));
+                    let view = cx.new(|cx| {
+                        Desktop::new(runtime, handle, paths, prefs, load_error, window, cx)
+                    });
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )
