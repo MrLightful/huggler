@@ -212,9 +212,16 @@ def check_mcp_status(executable, tmp, env):
         {"above": ["MCP servers", trigger]},
         {"key": "tab"}, "release_enter", {"see": "Checking MCP servers…"},
         {"key": "escape"}, {"absent": "MCP servers"},
+        {"click": trigger}, {"click": "Authenticate MCP/Notes"},
+        {"file_text": [str(state / "mcp-login.json"), json.dumps(["mcp", "login", "Notes"])]},
+    ], env)
+    run_window(executable, state, [
         *launch_thread(checkout, "MCP status"),
         {"resize": [640, 440]}, {"click": trigger}, {"see": "MCP/Workspace Tools/3 tools"},
-        {"above": ["MCP servers", trigger]}, {"key": "escape"}, {"absent": "MCP servers"},
+        {"above": ["MCP servers", trigger]},
+        {"click": "Authenticate MCP/Notes"},
+        {"file_text": [str(checkout / "mcp-login.json"), json.dumps(["mcp", "login", "Notes"])]},
+        {"see": "Terminal grid"}, {"absent": "MCP servers"},
     ], env)
     for cwd in (state, checkout):
         frames = [json.loads(line) for line in (cwd / "frames.ndjson").read_text().splitlines()]

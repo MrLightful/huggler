@@ -155,30 +155,24 @@ def check_project_actions(binary, root):
         *add_action("Run", original),
         *add_action("Check", multiline),
         {"click": "Back to workspace"},
-        {"click": "Prefill Run"}, {"see": "Prefilled terminal command"},
-        {"click": "Collapse terminal"}, {"absent": "Prefilled terminal command"},
-        {"click": "Expand terminal"}, {"see": "Prefilled terminal command"},
-        {"key": "cmd-a"}, {"key": "cmd-c"}, {"clipboard_text": original},
-        {"type": "echo edited > edited.txt"}, {"key": "enter"},
-        {"file_text": [str(checkout / "edited.txt"), "edited\n"]},
-        {"click": "Terminal project actions"}, {"click": "Terminal action/Check"},
-        {"see": "Prefilled terminal command"}, {"key": "escape"},
+        {"click": "Run Run"},
+        {"file_text": [str(checkout / "unconfirmed.txt"), "unexpected\n"]},
         {"absent": "Prefilled terminal command"},
+        {"click": "Terminal project actions"}, {"click": "Terminal action/Check"},
+        {"file_text": [str(checkout / "action.txt"), "first\nsecond\n"]},
         {"click": "Terminal project actions"}, {"click": "Configure project actions"},
         {"click": "Make default/Check"},
         {"click": "Edit action/Run"}, {"click": "Action name"}, {"key": "cmd-a"},
         {"type": "Run project"}, {"click": "Save action"}, {"click": "Back to workspace"},
-        {"click": "Prefill Check"}, {"key": "cmd-a"}, {"key": "cmd-c"},
-        {"clipboard_text": multiline}, {"key": "enter"},
+        {"click": "Run Check"},
         {"file_text": [str(checkout / "action.txt"), "first\nsecond\n"]},
     ], env)
-    assert not (checkout / "unconfirmed.txt").exists()
+    assert (checkout / "unconfirmed.txt").read_text() == "unexpected\n"
 
     run_window(binary, state, [
         *launch_thread(checkout, "Action worktree", branch="action-worktree"),
-        {"click": "Expand terminal"}, {"click": "Prefill Check"},
-        {"see": "Prefilled terminal command"}, {"key": "cmd-a"}, {"key": "cmd-c"},
-        {"clipboard_text": multiline}, {"key": "enter"}, {"absent": "Prefilled terminal command"},
+        {"click": "Expand terminal"}, {"click": "Run Check"},
+        {"absent": "Prefilled terminal command"},
         {"see": "Shell exited"},
         {"click": "Terminal project actions"}, {"see": "Terminal action/Run project"},
         {"click": "Configure project actions"}, {"click": "Remove action/Run project"},
@@ -199,11 +193,11 @@ def check_project_actions(binary, root):
         *add_action("Alternate", "echo alternate > alternate.txt"),
         {"click": "Back to Projects"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
         *launch_thread(alternate_alias, "Alternate action worktree", branch="alternate-action-worktree"),
-        {"click": "Expand terminal"}, {"see": "Prefill Alternate"}, {"absent": "Prefill Check"},
+        {"click": "Expand terminal"}, {"see": "Run Alternate"}, {"absent": "Run Check"},
     ], env)
     run_window(binary, state, [
-        {"click": "Expand terminal"}, {"click": "Prefill Alternate"},
-        {"see": "Prefilled terminal command"}, {"key": "enter"}, {"see": "Shell exited"},
+        {"click": "Expand terminal"}, {"click": "Run Alternate"},
+        {"absent": "Prefilled terminal command"}, {"see": "Shell exited"},
     ], env)
     alternate_output, = (state / "worktrees").glob("*/alternate.txt")
     assert alternate_output.read_text() == "alternate\n"

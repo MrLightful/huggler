@@ -26,8 +26,6 @@ use gpui_component::list::ListState;
 use launch_workspace::{LaunchWorkspace, WorkspaceMode};
 use models::Models;
 pub(crate) use models::ProviderCatalog;
-#[cfg(target_os = "macos")]
-pub(crate) use terminal_actions::bind_keys as bind_terminal_action_keys;
 use transcript::TurnClock;
 #[cfg(unix)]
 pub(crate) use transcript::permission_card;

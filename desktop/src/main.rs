@@ -175,8 +175,6 @@ fn main() -> Result<()> {
                 Some(conversation::DOCUMENT_CONTEXT),
             ),
         ]);
-        #[cfg(target_os = "macos")]
-        conversation::bind_terminal_action_keys(cx);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),
             items: vec![
