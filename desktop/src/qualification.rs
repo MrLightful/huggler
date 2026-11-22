@@ -27,6 +27,9 @@ pub enum Step {
     Key(String),
     See(String),
     RightOf([String; 2]),
+    SameLine([String; 2]),
+    RememberX(String),
+    SameX(String),
     Above([String; 2]),
     InLowerHalf(String),
     InUpperHalf(String),
@@ -52,6 +55,10 @@ pub fn load() -> Result<Option<Vec<Step>>> {
 #[derive(Default)]
 struct Controls(HashMap<SharedString, Bounds<Pixels>>);
 impl Global for Controls {}
+
+#[derive(Default)]
+struct RememberedX(Option<Pixels>);
+impl Global for RememberedX {}
 
 // Script the OS picker boundary while exercising the real composer and filesystem.
 #[derive(Default)]
@@ -206,6 +213,26 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             .get(item.as_str())
             .zip(controls.get(reference.as_str()))
             .is_some_and(|(item, reference)| item.left() >= reference.right()),
+        Step::SameLine([item, reference]) => controls
+            .get(item.as_str())
+            .zip(controls.get(reference.as_str()))
+            .is_some_and(|(item, reference)| {
+                (item.center().y - reference.center().y).abs() < px(2.)
+            }),
+        Step::RememberX(key) => {
+            let Some(bounds) = controls.get(key.as_str()) else {
+                return false;
+            };
+            let x = bounds.center().x;
+            cx.default_global::<RememberedX>().0 = Some(x);
+            true
+        }
+        Step::SameX(key) => {
+            let x = controls.get(key.as_str()).map(|bounds| bounds.center().x);
+            let remembered = cx.default_global::<RememberedX>().0;
+            x.zip(remembered)
+                .is_some_and(|(x, saved)| (x - saved).abs() < px(2.))
+        }
         Step::Above([item, reference]) => controls
             .get(item.as_str())
             .zip(controls.get(reference.as_str()))

@@ -17,6 +17,10 @@ const CUSTOM_ASSETS: &[(&str, &[u8])] = &[
         "icons/provider-refresh.svg",
         include_bytes!("../assets/icons/provider-refresh.svg"),
     ),
+    (
+        "icons/image-attachment.svg",
+        include_bytes!("../assets/icons/image-attachment.svg"),
+    ),
 ];
 
 impl AssetSource for Assets {

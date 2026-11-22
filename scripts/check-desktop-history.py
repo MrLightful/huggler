@@ -164,15 +164,21 @@ def main():
         attachment.unlink()
         other.unlink()
         first_file = f"attachment/{messages[0][0]}/0/notes.txt"
-        second_message = f"attachment/{messages[1][0]}"
+        first_note = f"attachment/{messages[1][0]}/0/notes.txt"
+        second_note = f"attachment/{messages[1][0]}/1/notes.txt"
         plain = 'Text attachment "ordinary.txt"'
         run_window(executable, attachment_state, [
+            {"resize": [1080, 640]},
             {"see": first_file}, {"see": "You/Review"}, {"absent": "You/"},
+            {"right_of": [first_note, "You/Review"]},
+            {"same_line": [first_note, "You/Review"]},
+            {"same_line": [second_note, "You/Review"]},
             {"absent": "file preview/attachment fixture"}, {"click": first_file},
             {"see": "file preview/attachment fixture"}, {"click": first_file},
             {"absent": "file preview/attachment fixture"},
-            {"click": second_message + "/1/notes.txt"}, {"see": "file preview/second file"},
-            {"click": second_message + "/0/notes.txt"}, {"see": "file preview/attachment fixture"},
+            {"remember_x": second_note}, {"click": second_note}, {"see": "file preview/second file"},
+            {"same_x": second_note},
+            {"click": first_note}, {"see": "file preview/attachment fixture"},
             {"absent": "file preview/second file"}, *send_message(plain), {"see": "You/" + plain},
         ], env)
 
@@ -184,11 +190,14 @@ def main():
         pdf.write_bytes((fixtures / pdf.name).read_bytes())
         binary = checkout / "payload.bin"
         binary.write_bytes(b"\x00\xff")
+        caption = "Request 🖼️\n\n" + "Ｗ" * 48 + "\nFiles:"
+        caption_control = "You/" + caption
         run_window(executable, mixed_state, [
+            {"click": "First message"}, {"type": caption},
             {"next_file_selection": [str(image), str(pdf), str(binary)]},
             {"click": "Attach files"}, {"see": "Remove diagram.png"}, {"see": "Remove report.pdf"},
             {"see": "Remove payload.bin"}, {"click": "Send first message"},
-            {"see": "Ready/diagram.png/Completed"},
+            {"see": "Ready/Request 🖼️/Completed"},
         ], env)
         image.unlink()
         pdf.unlink()
@@ -201,6 +210,8 @@ def main():
         pdf_bytes = (fixtures / "report.pdf").read_bytes()
         saved_binary = checkout / "saved.bin"
         run_window(executable, mixed_state, [
+            {"resize": [640, 640]}, {"same_line": [prefix + "/0/diagram.png", caption_control]},
+            {"right_of": [prefix + "/0/diagram.png", caption_control]},
             {"click": prefix + "/0/diagram.png"}, {"see": "image preview/diagram.png"},
             {"see": "Save diagram.png"}, {"click": prefix + "/0/diagram.png"},
             {"click": prefix + "/1/report.pdf"}, {"see": "pdf preview/report.pdf"},
