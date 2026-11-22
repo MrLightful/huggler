@@ -438,6 +438,7 @@ impl Desktop {
             .ghost()
             .icon(IconName::Folder)
             .label(mode.label())
+            .text_color(cx.theme().muted_foreground)
             .dropdown_caret(true)
             .dropdown_menu_with_anchor(Corner::BottomLeft, move |mut menu, _, _| {
                 for option in [WorkspaceMode::Current, WorkspaceMode::Worktree] {
@@ -462,7 +463,9 @@ impl Desktop {
                 menu
             });
         h_flex()
+            .w_full()
             .min_w_0()
+            .justify_between()
             .gap_2()
             .flex_wrap()
             .child(control!("Choose workspace", workspace))
@@ -500,6 +503,9 @@ impl Desktop {
         let trigger = Button::new("choose-branch")
             .small()
             .ghost()
+            .when(can_pick, |button| {
+                button.text_color(cx.theme().muted_foreground)
+            })
             .dropdown_caret(true)
             .disabled(!can_pick)
             .tooltip(control_label)

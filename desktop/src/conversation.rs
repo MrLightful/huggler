@@ -1354,12 +1354,12 @@ impl Desktop {
                     h_flex()
                         .flex_wrap()
                         .gap_1()
-                        .child(self.project_control(window, cx))
-                        .when(!checkout_empty, |row| {
-                            row.child(self.launch_checkout_controls(cx))
-                        }),
+                        .child(self.project_control(window, cx)),
                 )
-                .child(composer);
+                .child(composer)
+                .when(!checkout_empty, |body| {
+                    body.child(self.launch_checkout_controls(cx))
+                });
             return v_flex()
                 .id("starter")
                 .flex_1()
@@ -1470,15 +1470,15 @@ impl Desktop {
                     .on_click(cx.listener(|v, _, w, cx| v.new_conversation(false, w, cx)))
             )))
             .child(launcher)
+            .when(!checkout_empty, |body| {
+                body.child(self.launch_checkout_controls(cx))
+            })
             .child(context)
             .child(
                 h_flex()
                     .gap_2()
                     .flex_wrap()
-                    .child(self.project_control(window, cx))
-                    .when(!checkout_empty, |row| {
-                        row.child(self.launch_checkout_controls(cx))
-                    }),
+                    .child(self.project_control(window, cx)),
             )
             .child(
                 h_flex()
@@ -1530,10 +1530,20 @@ impl Desktop {
         let attachments = &self.workspaces[&thread.id].attachments;
         let empty_draft = attachments.loading
             || (self.prompt.read(cx).value().trim().is_empty() && attachments.is_empty());
+        #[cfg(all(feature = "qualification", target_os = "macos"))]
         let status = match last_run.map(|run| run.status) {
             Some(huggler::RunStatus::Running | huggler::RunStatus::Completed) => None,
             Some(status) => Some(format!("{status:?}")),
             None => Some("Ready".to_owned()),
+        };
+        let message_input = self.message_input("Message", &self.prompt, window, cx);
+        // Qualification checks observe conversation state without rendering a status label.
+        #[cfg(all(feature = "qualification", target_os = "macos"))]
+        let message_input = match status {
+            Some(status) => {
+                crate::qualification::observe(format!("status/{status}").into(), message_input)
+            }
+            None => message_input,
         };
         let workspace = &self.workspaces[&thread.id];
         let stop = can_stop.then(|| {
@@ -1695,7 +1705,7 @@ impl Desktop {
                 .when_some(last_run.filter(|_| !self.checkout_unavailable).and_then(|r| r.error.clone()), |area, error| {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
-                .child(self.message_input("Message", &self.prompt, window, cx))
+                .child(message_input)
                 .children(self.attachment_list(attachments, cx))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
@@ -1733,9 +1743,7 @@ impl Desktop {
                     h_flex()
                         .flex_wrap().gap_2()
                         .child(self.model_control(cx))
-                        .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
-                            format!("status/{status}"), hint(status, cx).truncate()
-                        ))))
+                        .child(div().flex_1().min_w_0())
                         .child(self.mcp_status_control(window, cx))
                         .child(h_flex().gap_2().flex_shrink_0()
                             .child(self.attach_button(attachments, cx))
