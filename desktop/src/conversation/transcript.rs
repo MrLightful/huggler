@@ -203,9 +203,9 @@ impl Desktop {
             .track_scroll(&self.history_scroll)
             .size_full()
             .items_center()
-            .pt_3()
+            .pt_4()
             .pb_4()
-            .gap_5()
+            .gap_6()
             .overflow_y_scroll();
         let pager = h_flex()
             .w(width)
@@ -240,7 +240,7 @@ impl Desktop {
         let messages = &thread.history.messages;
         let content_width = (width - GUTTER * 2.).max(px(0.));
         let response_width = content_width.min(MAX_RESPONSE_WIDTH);
-        let column = || v_flex().w(width).px(GUTTER).gap_5().flex_shrink_0();
+        let column = || v_flex().w(width).px(GUTTER).gap_3().flex_shrink_0();
         let mut previews = Vec::new();
         let mut shown = HashSet::new();
         let foreground = thread

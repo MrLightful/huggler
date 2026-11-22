@@ -226,6 +226,7 @@ impl Desktop {
                                     .w_full()
                                     .truncate()
                                     .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().muted_foreground)
                                     .child(format!("{title} ({count})")),
                             ),
@@ -276,7 +277,14 @@ impl Desktop {
         let content = v_flex()
             .w(px(width - 76.))
             .items_start()
-            .child(div().w_full().truncate().child(thread.name.clone()))
+            .child(
+                div()
+                    .w_full()
+                    .truncate()
+                    .text_size(crate::ui::control_text_size())
+                    .when(selected, |title| title.font_weight(FontWeight::SEMIBOLD))
+                    .child(thread.name.clone()),
+            )
             .when(attention, |row| {
                 row.child(
                     div()
@@ -330,7 +338,7 @@ impl Desktop {
                 .w_full()
                 .compact()
                 .justify_start()
-                .when(attention, |button| button.h_12())
+                .when(attention, |button| button.h_10())
                 .child(control!(
                     format!("{}/{}/{}", section.label(), thread.name, status),
                     content
@@ -340,7 +348,9 @@ impl Desktop {
                 .ghost()
                 .selected(selected)
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    view.show_settings = false;
+                    if !view.leave_settings(cx) {
+                        return;
+                    }
                     let result = view.select(id.clone(), window, cx);
                     view.report(result, cx);
                 })),

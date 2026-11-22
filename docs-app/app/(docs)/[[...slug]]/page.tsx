@@ -22,9 +22,11 @@ export default async function Page({ params }: Props) {
   const Content = page.data.body;
   return (
     <DocsPage toc={page.data.toc} footer={{ enabled: !legacy && page.slugs.length > 0 }}>
-      <BindingNavigation slugs={page.slugs} />
-      <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription>{page.data.description}</DocsDescription>
+      <header className="docs-page-heading">
+        <DocsTitle>{page.data.title}</DocsTitle>
+        <DocsDescription>{page.data.description}</DocsDescription>
+        <BindingNavigation slugs={page.slugs} />
+      </header>
       {legacy && <p className="legacy-location"><a href={page.url}>Open this page in the binding docs</a></p>}
       <DocsBody>
         <Content components={useMDXComponents()} />

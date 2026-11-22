@@ -414,10 +414,7 @@ impl Desktop {
                     .icon(IconName::Settings)
                     .tooltip("Edit provider settings")
                     .on_click(cx.listener(move |view, _, window, cx| {
-                        view.open_settings(window, cx);
-                        view.settings.update(cx, |settings, cx| {
-                            settings.open_provider_settings(&instance, window, cx);
-                        });
+                        view.open_settings(SettingsTarget::Provider(&instance), window, cx);
                     }))
             )
             .flex_shrink_0();

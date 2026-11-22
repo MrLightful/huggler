@@ -884,7 +884,7 @@ fn file_path_label(directory: String, filename: String, muted: Hsla) -> impl Int
         move |bounds, window, cx| {
             let label = |clipped| {
                 h_flex()
-                    .text_sm()
+                    .text_size(crate::ui::control_text_size())
                     .when(!directory.is_empty(), |label| {
                         label.when(clipped, |label| label.gap_1()).child(
                             div().min_w_0().overflow_hidden().child(

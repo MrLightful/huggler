@@ -106,10 +106,14 @@ fn attachment_chip(
             Path::new(name),
             cx.theme().muted_foreground,
         ))
-        .child(div().text_sm().child(AttachmentLabel {
-            text: name.replace(['\r', '\n', '\t'], " ").into(),
-            max_width: max_label_width,
-        }))
+        .child(
+            div()
+                .text_size(crate::ui::control_text_size())
+                .child(AttachmentLabel {
+                    text: name.replace(['\r', '\n', '\t'], " ").into(),
+                    max_width: max_label_width,
+                }),
+        )
 }
 
 #[derive(IntoElement)]

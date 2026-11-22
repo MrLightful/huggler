@@ -18,7 +18,7 @@ def check_general(executable, state, env):
     question_prompt = "ask one question"
     run_window(executable, state, [
         {"resize": [640, 440]}, *general,
-        {"click": "⌘Enter"}, {"click": "Keep awake while agents run"}, {"click": "Done"},
+        {"click": "⌘Enter"}, {"click": "Keep awake while agents run"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
         {"click": "First message"}, {"type": "Shortcut check"}, {"key": "enter"},
         {"type": "Second line"}, {"see": "First message"}, {"key": "cmd-enter"},
         {"contains": "Codex/reply"}, {"absent": notification},
@@ -27,7 +27,7 @@ def check_general(executable, state, env):
         {"click": "Message"}, {"type": "Queued follow-up"}, {"click": "Queue message"},
         {"see": "1 queued message"}, {"click": "Dismiss questions"},
         {"see": "Codex/reply Queued follow-up"}, {"absent": notification},
-        *general, {"click": "Steer"}, {"click": "Agent notifications"}, {"click": "Done"},
+        *general, {"click": "Steer"}, {"click": "Agent notifications"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
         {"click": "Message"}, {"type": question_prompt}, {"key": "cmd-enter"}, {"see": "Dismiss questions"},
         {"click": "Message"}, {"type": "Steered follow-up"}, {"click": "Send follow-up"},
         {"see": "You/Steered follow-up"}, {"absent": "1 queued message"},
@@ -58,12 +58,14 @@ def check_general(executable, state, env):
 def check_storage(executable, state, env):
     run_window(executable, state, [
         {"resize": [640, 440]}, {"key": "cmd-,"}, {"center_x": ["Appearance", 320]},
+        {"absent": "Done"}, {"same_line": ["Show conversations", "Back to workspace"]},
         *({"right_of": [f"settings-chevron/{name}", f"settings-summary/{name}"]}
           for name in ("Appearance", "Providers", "Storage")),
         {"click": "Storage"},
+        {"same_line": ["Show conversations", "Back to Settings"]},
         {"see": "automatic-cleanup/Off"}, {"click": "Clean up worktrees now"},
         {"see": "No unused worktrees found."}, {"click": "automatic-cleanup/On"},
-        {"click": "Back to Settings"}, {"see": "Providers"}, {"click": "Done"},
+        {"click": "Back to Settings"}, {"see": "Providers"}, {"click": "Back to workspace"},
     ], env)
     assert json.loads((state / "preferences.json").read_text())["automaticWorktreeCleanup"] is True
 
@@ -79,6 +81,7 @@ def check_projects(executable, root, env):
     nested.mkdir()
     env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
     run_window(executable, state, [
+        {"above": ["Choose project", "First message"]},
         {"click": "Choose project"}, {"next_file_selection": [str(nested)]}, {"click": "Add project"},
         {"see": "Choose workspace"}, {"click": "Choose project"}, {"see": "project/atlas"},
         {"next_file_selection": [str(first)]}, {"click": "Add project"},
@@ -101,7 +104,7 @@ def check_projects(executable, root, env):
         {"click": "Conversation name"}, {"type": "Reuse Atlas"}, {"click": "Open conversation"},
         {"see": "Ready/Reuse Atlas/New conversation"},
         {"click": "Settings"}, {"click": "Projects"}, {"click": "Remove project/Atlas App"},
-        {"absent": "Rename project/Atlas App"}, {"click": "Done"},
+        {"absent": "Rename project/Atlas App"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
         {"key": "cmd-shift-n"}, {"next_file_selection": [str(local)]}, {"click": "Browse"},
         {"see": "Choose workspace"}, {"click": "Conversation name"}, {"type": "One-time checkout"},
         {"click": "Open conversation"}, {"see": "Ready/One-time checkout/New conversation"},
@@ -150,8 +153,8 @@ fi
         {"above": ["provider/codex", "Provider title"]},
         {"absent": "CLI executable"},
         {"see": "Sign-in needed"}, {"see": "v0.169.0"}, {"absent": "Update to v0.170.0"},
-        {"above": ["Done", "v0.169.0"]}, {"above": ["Done", "Refresh setup"]},
-        {"above": ["Done", "Provider title"]}, {"above": ["Provider title", "provider-status-message"]},
+        {"above": ["Back to Settings", "v0.169.0"]}, {"above": ["Back to Settings", "Refresh setup"]},
+        {"above": ["Back to Settings", "Provider title"]}, {"above": ["Provider title", "provider-status-message"]},
         {"see": "Copy sign-in command"}, {"see": "Advanced settings"}, {"absent": "CLI executable"},
         {"absent": "API key"}, {"absent": "Sign in with ChatGPT"},
         {"click": "Refresh setup"}, {"see": "Connected"},
@@ -170,7 +173,7 @@ fi
         {"click": "Custom executable"}, {"see": "CLI executable"}, {"absent": "Save path"},
         {"click": "provider/codex"}, {"see": "Connected"}, {"absent": "CLI executable"},
         {"click": "Back to Settings"},
-        {"see": "Appearance"}, {"absent": "provider/codex"}, {"click": "Done"},
+        {"see": "Appearance"}, {"absent": "provider/codex"}, {"click": "Back to workspace"},
     ], dict(env, HUGGLER_CODEX=str(codex)))
     assert (Path(env["HOME"]) / "status-checked").exists()
     managed = state / "providers/codex/bin/codex"
@@ -182,20 +185,20 @@ fi
     run_window(executable, state, [
         {"key": "cmd-,"}, {"click": "Providers"}, {"absent": "provider/codex"},
         {"click": "Add provider"}, {"click": "provider/codex"}, {"see": "Install Codex"},
-        {"click": "Done"},
+        {"click": "Back to Settings"},
     ], env)
     managed.with_name("codex-code-mode-host").write_bytes(codex.read_bytes())
     managed.with_name("codex-code-mode-host").chmod(0o755)
     run_window(executable, state, [
         {"resize": [640, 440]}, {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/codex"},
-        {"above": ["Done", "v0.169.0"]}, {"right_of": ["v0.169.0", "Provider title"]},
+        {"above": ["Back to Settings", "v0.169.0"]}, {"right_of": ["v0.169.0", "Provider title"]},
         {"right_of": ["Update to v0.170.0", "v0.169.0"]}, {"absent": "Connected"},
-        {"above": ["Done", "Reset to defaults"]},
-        {"click": "Done"},
+        {"above": ["Back to Settings", "Reset to defaults"]},
+        {"click": "Back to Settings"},
     ], env)
     run_window(executable, state, [
         {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/codex"},
-        {"right_of": ["Connected", "v0.170.0"]}, {"absent": "Update to v0.170.0"}, {"click": "Done"},
+        {"right_of": ["Connected", "v0.170.0"]}, {"absent": "Update to v0.170.0"}, {"click": "Back to Settings"},
     ], dict(env, FIXTURE_CODEX_VERSION="0.170.0"))
 
     # Block the provider directory so installation fails before any download.
@@ -211,7 +214,7 @@ fi
         {"click": "Install Codex"}, {"see": "Setup failed"},
         {"right_of": ["Setup failed", "Provider title"]},
         {"above": ["Provider title", error]}, {"above": [error, "Install Codex"]},
-        {"click": "Done"},
+        {"click": "Back to Settings"},
     ], env)
 
 
@@ -237,7 +240,7 @@ exec "$MODEL_FIXTURE" "$@"
         {"absent": "Refresh models"}, {"click": "Refresh setup"},
         {"see": "Connected"}, {"see": "No models"},
         {"absent": "model-enabled/fixture-fast"}, {"absent": "Refresh models"},
-        {"click": "Done"},
+        {"click": "Back to Settings"},
     ], dict(env, HUGGLER_CODEX=str(codex), MODEL_FIXTURE=str(fixture)))
 
 
@@ -278,7 +281,7 @@ exec "$MODEL_FIXTURE" "$@"
         {"click": "model-up/fixture-deep"},
         {"above": ["model-enabled/fixture-deep", "model-enabled/fixture-fast"]},
         {"click": "model-enabled/fixture-deep"}, {"absent": "model-up/fixture-deep"},
-        {"click": "Done"}, {"click": "model-automatic"},
+        {"click": "Back to Settings"}, {"click": "Back to workspace"}, {"click": "model-automatic"},
         {"see": "model-option/fixture-fast"}, {"absent": "model-option/fixture-deep"},
         {"click": "model-option-automatic"},
     ], env)
@@ -292,10 +295,11 @@ exec "$MODEL_FIXTURE" "$@"
         {"click": "Save runtime settings"}, {"click": "Advanced settings"},
         {"see": "Environment"}, {"click": "Add variable"},
         {"click": "variable-value/0"}, {"type": "value with spaces=1"},
-        {"click": "Done"},
+        {"click": "Back to Settings"},
         {"see": "settings-error/Start variable names with a letter or underscore and use only letters, numbers, and underscores."},
+        {"key": "cmd-n"}, {"see": "variable-name/0"},
         {"click": "variable-name/0"}, {"type": "FIXTURE_PROVIDER_VARIABLE"},
-        {"click": "Done"},
+        {"click": "thread/Models check"},
         {"click": "model-automatic"},
         {"above": ["model-option/fixture-deep", "model-option/fixture-fast"]},
         {"click": "model-option-automatic"},
@@ -309,7 +313,7 @@ exec "$MODEL_FIXTURE" "$@"
     run_window(executable, state, [
         *open_provider, {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"},
         {"click": "Edit variables"}, {"click": "remove-variable/0"}, {"click": "Cancel variable changes"},
-        {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"}, {"click": "Done"},
+        {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"}, {"click": "Back to Settings"},
     ], env)
     assert (home / "received-runtime-options").is_file()
     assert (home / "received-environment").is_file()
@@ -319,7 +323,7 @@ exec "$MODEL_FIXTURE" "$@"
         {"above": ["model-enabled/fixture-deep", "model-enabled/fixture-fast"]},
         {"click": "Reset to defaults"}, {"click": "Restore defaults"},
         {"above": ["model-enabled/fixture-fast", "model-enabled/fixture-deep"]},
-        {"absent": "environment-variable/FIXTURE_PROVIDER_VARIABLE"}, {"click": "Done"},
+        {"absent": "environment-variable/FIXTURE_PROVIDER_VARIABLE"}, {"click": "Back to Settings"},
     ], env)
     assert json.loads((state / "preferences.json").read_text()) == {
         "appearance": "system", "codexExecutable": None, "automaticWorktreeCleanup": False,
@@ -360,7 +364,7 @@ def check(executable):
             {"click": "CLI executable"}, {"key": "cmd-a"}, {"type": str(fixture)},
             {"click": "Add provider"}, {"click": "provider/claudeAgent"},
             {"see": "Installation guide"}, {"absent": "CLI executable"},
-            {"click": "Done"},
+            {"click": "Back to Settings"}, {"click": "Back to workspace"},
             {"click": "model-automatic"}, {"absent": "provider/Claude Agent"},
             {"see": "Edit"}, {"key": "escape"},
             {"click": "Open conversation"}, {"see": "status/Ready"},
@@ -393,14 +397,14 @@ exec /usr/bin/git "$@"
             {"click": "Open conversation"}, {"key": "cmd-,"}, {"see": "Show conversations"},
             {"click": "Appearance"}, {"click": "Light"},
             {"resize": [1120, 740]},
-            {"see": "thread/After restart"}, {"click": "Done"}, {"resize": [640, 440]}, {"see": "status/Ready"},
+            {"see": "thread/After restart"}, {"click": "Back to Settings"}, {"click": "Back to workspace"}, {"resize": [640, 440]}, {"see": "status/Ready"},
             {"see": "thread/After restart"},
-            {"click": "Settings"}, {"resize": [1120, 740]}, {"click": "Appearance"}, {"click": "Dark"}, {"click": "Done"},
+            {"click": "Settings"}, {"resize": [1120, 740]}, {"click": "Appearance"}, {"click": "Dark"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
             {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Background"},
             {"click": "Open conversation"}, {"click": "thread/Original"},
-            {"click": "Settings"}, {"click": "Appearance"}, {"click": "Light"}, {"see": "thread/Background"}, {"click": "Done"},
+            {"click": "Settings"}, {"click": "Appearance"}, {"click": "Light"}, {"see": "thread/Background"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
             {"click": "Message"}, {"type": "Review my draft"},
-            {"click": "Settings"}, {"click": "Done"},
+            {"click": "Settings"}, {"click": "Back to workspace"},
             {"see": "All changes"},
             {"click": "Hide changes"}, {"absent": "Changes tab"}, {"click": "Send"},
             {"see": "Codex/reply Review my draft"},
@@ -416,7 +420,7 @@ exec /usr/bin/git "$@"
         run_window(executable, state, [
             {"key": "cmd-,"}, {"click": "Providers"}, {"click": "Add provider"}, {"click": "provider/codex"},
             {"click": "Custom executable"}, {"see": "CLI executable"}, {"absent": "Save path"},
-            {"click": "Done"}, {"click": "Message"}, {"type": "Check override"}, {"click": "Send"},
+            {"click": "Back to Settings"}, {"click": "Back to workspace"}, {"click": "Message"}, {"type": "Check override"}, {"click": "Send"},
             {"see": "status/Failed"},
         ], dict(env, HUGGLER_CODEX=str(root / "missing")))
         run_window(executable, state, [
@@ -424,7 +428,7 @@ exec /usr/bin/git "$@"
             {"click": "Back to Settings"}, {"click": "Providers"}, {"click": "provider/codex"},
             {"click": "Advanced settings"}, {"click": "CLI executable"},
             {"key": "cmd-a"}, {"key": "backspace"}, {"click": "Add provider"}, {"click": "provider/claudeAgent"},
-            {"see": "provider/codex"}, {"click": "Done"}, {"see": "Message"},
+            {"see": "provider/codex"}, {"click": "Back to Settings"}, {"click": "Back to workspace"}, {"see": "Message"},
         ], env)
         assert json.loads(prefs.read_text()) == {
             "appearance": "system", "codexExecutable": None, "automaticWorktreeCleanup": False,
@@ -438,7 +442,7 @@ exec /usr/bin/git "$@"
         run_window(executable, state, [
             {"key": "cmd-,"}, {"click": "Providers"}, {"absent": "provider/claudeAgent"},
             {"click": "Add provider"}, {"click": "provider/claudeAgent"}, {"see": "Installation guide"},
-            {"click": "Custom executable"}, {"click": "CLI executable"}, {"key": "cmd-a"}, {"type": str(claude)}, {"click": "Save path"}, {"click": "Done"},
+            {"click": "Custom executable"}, {"click": "CLI executable"}, {"key": "cmd-a"}, {"type": str(claude)}, {"click": "Save path"}, {"click": "Back to Settings"},
         ], claude_env)
         assert json.loads(prefs.read_text())["claudeAgentExecutable"] == str(claude)
         run_window(executable, state, [
@@ -446,7 +450,7 @@ exec /usr/bin/git "$@"
             {"absent": "Custom executable"}, {"right_of": ["provider/claudeAgent", "provider/codex"]},
             {"right_of": ["Add provider", "provider/claudeAgent"]},
             {"click": "Add provider"}, {"see": "Choose a provider"}, {"see": "provider/opencode"},
-            {"click": "provider/claudeAgent"}, {"see": "Connected"}, {"click": "Done"},
+            {"click": "provider/claudeAgent"}, {"see": "Connected"}, {"click": "Back to Settings"},
         ], dict(claude_env, HUGGLER_CODEX=str(fixture)))
         check_models_and_runtime(executable, root, checkout, fixture, env)
     print("Native settings, shortcuts, drafts and provider persistence passed")

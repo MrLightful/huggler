@@ -1,4 +1,4 @@
-use super::{Page, Settings, catalog, setup};
+use super::{Page, Settings, catalog, settings_column, setup};
 use crate::ui::{heading, label, section_title};
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -357,15 +357,7 @@ impl Settings {
             .collect::<Vec<_>>();
         let add = control!(
             "Add provider",
-            Button::new("add-provider")
-                .outline()
-                .h(px(72.))
-                .w_full()
-                .px_3()
-                .justify_start()
-                .cursor_pointer()
-                .selected(add_selected)
-                .when(add_selected, |button| button.border_color(cx.theme().ring))
+            provider_tile_button("add-provider", add_selected, cx)
                 .child(
                     h_flex()
                         .gap_3()
@@ -384,7 +376,7 @@ impl Settings {
         )
         .w(px(168.))
         .flex_shrink_0();
-        div().w_full().max_w(px(720.)).px_5().flex_shrink_0().child(
+        settings_column().flex_shrink_0().child(
             h_flex()
                 .id("provider-selector")
                 .w_full()
@@ -456,23 +448,18 @@ impl Settings {
             div()
                 .relative()
                 .child(
-                    Button::new(SharedString::from(format!("provider-{id}")))
-                        .outline()
-                        .h(px(72.))
-                        .w_full()
-                        .px_3()
-                        .justify_start()
-                        .overflow_hidden()
-                        .cursor_pointer()
-                        .selected(selected)
-                        .when(selected, |button| button
-                            .pr_9()
-                            .border_color(cx.theme().ring))
-                        .tooltip(name)
-                        .child(summary)
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            view.select_provider(&id, window, cx);
-                        })),
+                    provider_tile_button(
+                        SharedString::from(format!("provider-{id}")),
+                        selected,
+                        cx
+                    )
+                    .overflow_hidden()
+                    .when(selected, |button| button.pr_9())
+                    .tooltip(name)
+                    .child(summary)
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.select_provider(&id, window, cx);
+                    })),
                 )
                 .when(selected, |card| {
                     card.child(
@@ -602,9 +589,7 @@ impl Settings {
                                     .child(
                                         control!(
                                             "Provider title",
-                                            heading(self.provider_name(&instance.id))
-                                                .text_2xl()
-                                                .truncate()
+                                            heading(self.provider_name(&instance.id)).truncate()
                                         )
                                         .min_w_0(),
                                     )
@@ -860,6 +845,18 @@ impl Settings {
                 )
             })
     }
+}
+
+fn provider_tile_button(id: impl Into<ElementId>, selected: bool, cx: &App) -> Button {
+    Button::new(id)
+        .outline()
+        .h(px(64.))
+        .w_full()
+        .px_3()
+        .justify_start()
+        .cursor_pointer()
+        .selected(selected)
+        .when(selected, |button| button.border_color(cx.theme().ring))
 }
 
 fn provider_logo(provider: Provider, size: Pixels, cx: &App) -> Svg {
