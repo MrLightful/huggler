@@ -366,9 +366,13 @@ impl Desktop {
                 if *open {
                     view.open_models(window, cx);
                 } else {
-                    view.model_picker = None;
+                    let picker = view.model_picker.take();
                     view.show_model_efforts = false;
-                    view.focus_workspace(window, cx);
+                    // The list handles Escape and returns focus to the composer.
+                    // The setup-only popover has no list to handle it.
+                    if picker.is_some_and(|list| list.read(cx).delegate().catalog.is_none()) {
+                        view.focus_workspace(window, cx);
+                    }
                     cx.notify();
                 }
             }));
