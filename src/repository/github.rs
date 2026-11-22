@@ -335,14 +335,65 @@ impl PullRequestUpdate {
 }
 
 impl RepositoryClient {
+    /// Read the bound repository's default branch from GitHub.
+    pub async fn github_default_branch(&self) -> Result<String> {
+        self.require_github()?;
+        let (owner, repo) = self
+            .binding
+            .repository
+            .split_once('/')
+            .ok_or_else(malformed)?;
+        let data: Value = self
+            .github_graphql(
+                "query PullRequestBase($owner: String!, $repo: String!) {\n\
+                repository(owner: $owner, name: $repo) { defaultBranchRef { name } }\n\
+            }",
+                json!({"owner": owner, "repo": repo}),
+            )
+            .await?;
+        data["repository"]["defaultBranchRef"]["name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| Error::NotFound("GitHub default branch".into()))
+    }
+
+    /// Open a pull request between two published branches in the bound repository.
+    pub async fn create_github_pull_request(
+        &self,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<u64> {
+        self.require_github()?;
+        let response = self
+            .request(
+                Method::POST,
+                &format!("/repos/{}/pulls", self.binding.repository),
+                Some(json!({"head": head, "base": base, "title": title, "body": body})),
+            )
+            .await?;
+        response["number"]
+            .as_u64()
+            .filter(|number| *number > 0)
+            .ok_or_else(malformed)
+    }
+
+    fn require_github(&self) -> Result<()> {
+        if self.binding.driver == Driver::GitHub {
+            Ok(())
+        } else {
+            Err(Error::Unsupported(
+                "pull request operations require GitHub".into(),
+            ))
+        }
+    }
+
     /// Read open requests and the most recently updated retired requests using this head branch.
     /// A fork can return a PR whose base is in another GitHub repository.
     pub async fn github_pull_requests(&self, branch: &str) -> Result<BranchPullRequests> {
-        if self.binding.driver != Driver::GitHub {
-            return Err(Error::Unsupported(
-                "pull request operations require GitHub".into(),
-            ));
-        }
+        self.require_github()?;
         if branch.trim().is_empty() {
             return Err(Error::Invalid("expected a head branch name".into()));
         }

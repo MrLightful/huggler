@@ -20,14 +20,31 @@ import sys
 import time
 
 assert sys.argv[1:] == ["auth", "token", "--hostname", "github.com"]
-if json.loads(Path(os.environ["PR_FIXTURE"]).read_text()) == "timeout":
+scenario = json.loads(Path(os.environ["PR_FIXTURE"]).read_text())
+if scenario == "offline":
+    sys.exit(1)
+if scenario == "timeout":
     time.sleep(120)
     sys.exit(1)
 print("fixture-token")
 """
 
+SSH = """#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+if "-G" in sys.argv:
+    sys.exit(0)
+assert sys.argv[-2:] == ["git@github.com", "git-receive-pack '/fixture/project.git'"]
+os.execvp("git", ["git", "receive-pack", str(Path(__file__).with_name("remote.git"))])
+"""
+
 
 def github_response(fixture, query, variables):
+    if query.startswith("query PullRequestBase"):
+        assert variables == {"owner": "fixture", "repo": "project"}
+        return {"data": {"repository": {"defaultBranchRef": {"name": "main"}}}}
     pr = json.loads(fixture.read_text())
     if isinstance(pr, dict) and "next" in pr:
         fixture.write_text(json.dumps(pr["next"]))
@@ -57,6 +74,10 @@ def github_response(fixture, query, variables):
         receipt = "mergeQueueEntry" if operation == "enqueuePullRequest" else "pullRequest"
         return {"data": {operation: {receipt: {"id": pr["id"]}}}}
     else:
+        if variables["head"] == "main":
+            assert variables == {"owner": "fixture", "repo": "project", "head": "main", "ref": "refs/heads/main"}
+            assert pr is None
+            return {"data": {"repository": {"ref": None, "recent": {"nodes": []}}}}
         assert variables == {"owner": "fixture", "repo": "project", "head": "review", "ref": "refs/heads/review"}
         opened = pr if multiple else [pr] if pr and pr["state"] == "OPEN" else []
         recent = [pr] if pr and not opened else []
@@ -68,14 +89,17 @@ def github_response(fixture, query, variables):
 
 class GitHubHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        assert self.path == "/graphql"
         assert self.headers["Authorization"] == "Bearer fixture-token"
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         with self.server.lock:
-            data = json.dumps(github_response(
-                self.server.fixture, payload["query"], payload["variables"]
-            )).encode("utf-8")
-        self.send_response(200)
+            if self.path == "/graphql":
+                response = github_response(self.server.fixture, payload["query"], payload["variables"])
+                status = 200
+            else:
+                assert self.path == "/repos/fixture/project/pulls"
+                response, status = create_pr(self.server.fixture, payload)
+        data = json.dumps(response).encode("utf-8")
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -83,6 +107,21 @@ class GitHubHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass
+
+
+def create_pr(fixture, payload):
+    scenario = json.loads(fixture.with_name("create.json").read_text())
+    assert json.loads(fixture.read_text()) is None
+    assert payload == scenario["payload"]
+    remote = fixture.with_name("remote.git")
+    published = subprocess.check_output(
+        ["git", "--git-dir", remote, "rev-parse", "refs/heads/review"], text=True,
+    ).strip()
+    assert published == scenario["pr"]["headRefOid"]
+    fixture.write_text(json.dumps(scenario["pr"]))
+    if scenario.get("lost_receipt"):
+        return {"message": "Simulated response failure after creation"}, 503
+    return {"number": scenario["pr"]["number"]}, 201
 
 
 @contextmanager
@@ -105,25 +144,43 @@ def check(binary):
         github_api(Path(tmp) / "pr.json") as origin,
     ):
         root = Path(tmp)
-        checkout = root / "checkout"
+        checkout = root / "repository"
         state = root / "state"
+        remote = root / "remote.git"
 
         def git(*args):
             return subprocess.check_output(["git", "-C", checkout, *args], text=True).strip()
 
+        def commit(message, *body):
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", message, *body)
+            return git("rev-parse", "HEAD")
+
+        def remote_ref(branch):
+            return subprocess.check_output(
+                ["git", "--git-dir", remote, "rev-parse", f"refs/heads/{branch}"], text=True,
+            ).strip()
+
         checkout.mkdir()
-        git("init", "-q", "-b", "review")
-        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
-            "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Review head")
-        head = git("rev-parse", "HEAD")
-        git("remote", "add", "origin", "https://github.com/fixture/project.git")
-        git("update-ref", "refs/remotes/origin/review", head)
-        git("branch", "--set-upstream-to=origin/review", "review")
+        git("init", "-q", "-b", "main")
+        git("init", "-q", "--bare", "-b", "main", str(remote))
+        base = commit("Base")
+        git("push", str(remote), "main")
+        git("remote", "add", "origin", "ssh://git@github.com/fixture/project.git")
+        git("update-ref", "refs/remotes/origin/main", base)
+        git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        worktree = root / "checkout"
+        git("worktree", "add", "-qb", "review", str(worktree))
+        checkout = worktree
         env = isolated_env(root)
         env.update(PATH=f"{root}:{env['PATH']}",
                    HUGGLER_CODEX=str(ROOT / "tests/fixtures/desktop-coding-peer.py"),
                    PR_FIXTURE=str(root / "pr.json"),
                    HUGGLER_QUALIFICATION_GITHUB_API=origin)
+        ssh = root / "fixture-ssh"
+        ssh.write_text(SSH)
+        ssh.chmod(0o755)
+        env["GIT_SSH_COMMAND"] = "'" + str(ssh) + "'"
         gh = root / "gh"
         gh.write_text(GH)
         gh.chmod(0o755)
@@ -131,7 +188,7 @@ def check(binary):
 
         pr = {
             "id": "fixture-pr", "number": 12, "url": "https://github.com/fixture/project/pull/12",
-            "state": "OPEN", "isDraft": False, "baseRefName": "main", "headRefOid": head,
+            "state": "OPEN", "isDraft": False, "baseRefName": "main",
             "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "canBeRebased": True, "reviewDecision": None,
             "viewerCanEnableAutoMerge": False, "autoMergeRequest": None, "isMergeQueueEnabled": False,
             "mergeQueueEntry": None, "isCrossRepository": False,
@@ -145,7 +202,66 @@ def check(binary):
             fixture.write_text(json.dumps(data))
             run_window(binary, state, steps, env)
 
-        show(None, *launch_thread(checkout, "Review", current=True), {"see": "Create PR"})
+        def expect_creation(pr, title, body="", *, lost_receipt=False, base="main"):
+            fixture.with_name("create.json").write_text(json.dumps({
+                "pr": pr,
+                "payload": {"head": "review", "base": base, "title": title, "body": body},
+                "lost_receipt": lost_receipt,
+            }))
+
+        hidden = ({"absent": "Checking PR…"}, {"absent": "Create PR"})
+        show(None, *launch_thread(checkout, "Review", current=True), {"see": "Open in"}, *hidden)
+        (checkout / "local-note.txt").write_text("Leave this out of the PR.")
+        show(None, {"see": "Open in"}, *hidden)
+
+        # The first commit makes Create PR available. The click publishes it.
+        head = commit("Review head", "-m", "Review body")
+        pr["headRefOid"] = head
+        expect_creation(pr, "Review head", "Review body")
+        show(None, {"see": "Create PR"}, {"right_of": ["Create PR", "Open in"]},
+             {"click": "Create PR"}, {"opened_url": pr["url"]}, {"see": "Merge"})
+        assert git("rev-parse", "@{upstream}") == head
+        assert git("status", "--porcelain") == "?? local-note.txt"
+        show(None, {"see": "Create PR"})
+
+        # A tracked branch can also be ahead. Reconcile a lost create receipt.
+        git("config", "branch.review.gh-merge-base", "release")
+        git("push", str(remote), f"{base}:refs/heads/release")
+        git("update-ref", "refs/remotes/origin/release", base)
+        # Status and creation both use the topic head if its upstream is the PR base.
+        git("branch", "--set-upstream-to=origin/release")
+        show(pr, {"see": "Merge"})
+        head = commit("Second review")
+        pr = dict(pr, headRefOid=head, baseRefName="release")
+        expect_creation(pr, "Second review", lost_receipt=True, base="release")
+        show(None, {"click": "Create PR"}, {"opened_url": pr["url"]}, {"see": "Merge"})
+        assert git("rev-parse", "@{upstream}") == head
+        show("offline", {"click": "Create PR"},
+             {"opened_url": "https://github.com/fixture/project/compare/release...review?expand=1"})
+
+        git("config", "branch.review.pushRemote", "fork")
+        show(None, {"click": "Create PR"}, {"contains": "different Git push remote configured"})
+        assert json.loads(fixture.read_text()) is None
+        git("config", "--unset", "branch.review.pushRemote")
+
+        # A stale tracking ref must not let Create PR overwrite newer remote work.
+        git("switch", "-qc", "other-work")
+        newer = commit("Another developer's commit")
+        git("push", str(remote), "HEAD:refs/heads/review")
+        git("switch", "-q", "review")
+        show(None, {"click": "Create PR"}, {"contains": "Push the selected branch"})
+        assert remote_ref("review") == newer
+        assert git("rev-parse", "HEAD") == head
+        assert json.loads(fixture.read_text()) is None
+
+        # Single-branch clones can have an upstream configured outside the fetch refspec.
+        git("config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+        git("update-ref", "-d", "refs/remotes/origin/review")
+        show(pr, {"see": "Merge"})
+        assert git("config", "branch.review.merge") == "refs/heads/review"
+        git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+        git("update-ref", "refs/remotes/origin/review", head)
+
         show({"current": None, "next": pr}, {"click": "Create PR"},
              {"contains": "The checkout or pull request status changed"})
         show("timeout", {"see": "Checking PR…"}, {"see": "Create PR"})
@@ -190,6 +306,11 @@ def check(binary):
                        text=True, check=True)
         show(None, {"see": "Resolve"}, {"click": "Resolve"},
              {"contains": "You/Resolve the Git merge conflicts in this checkout."})
+
+        # Local commits on the base branch do not make it a PR head.
+        checkout = root / "repository"
+        commit("Local commit on main")
+        show(None, *launch_thread(checkout, "Base checkout", current=True), {"see": "Open in"}, *hidden)
     print("Native PR actions passed with a local GitHub fixture and a scripted Codex peer")
 
 
