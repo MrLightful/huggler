@@ -122,9 +122,10 @@ def check(binary):
         run_window(binary, state, [
             {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
             {"click": "Create"}, {"next_file_selection": [str(checkout)]}, {"click": "Choose project"},
-            {"see": "From main (remote)"}, {"click": "First message"}, {"type": "Start from default @base-only"},
+            {"see": "From main (remote)"}, {"click": "First message"}, {"type": "Please start from default @base-only"},
             {"see": "suggestion/base-only.txt"}, {"absent": "suggestion/base-only-link.txt"}, {"key": "enter"},
             {"click": "Send first message"}, {"see": "Codex/Started from the default branch."},
+            {"see": "thread/Start from default base-only.txt"},
             {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review", base="origin/topic"),
             {"see": "Changed/base-only.txt"},
             {"click": "All changes"}, {"see": "Change filter/Uncommitted files"},
@@ -230,11 +231,15 @@ def check(binary):
         with sqlite3.connect(state / "huggler.sqlite3") as db:
             roots = dict(db.execute("SELECT t.name,p.root FROM thread t JOIN project p ON t.project=p.id"))
         assert Path(roots["Implementation"]) == checkout.resolve()
-        for thread, expected_commit in [("Start from default [base-only.txt](base-only.txt)", default_commit),
-                                        ("Isolated review", topic_commit)]:
+        for thread, expected_commit, expected_branch in [
+            ("Start from default base-only.txt", default_commit, "huggler/start-from-default-base-only-txt"),
+            ("Isolated review", topic_commit, "feature/review"),
+        ]:
             worktree = Path(roots[thread])
             assert worktree != checkout.resolve() and worktree.joinpath(".git").is_file()
+            assert worktree.name.startswith(expected_branch.split("/")[-1] + "-")
             assert subprocess.check_output(["git", "-C", worktree, "rev-parse", "HEAD"], text=True).strip() == expected_commit
+            assert subprocess.check_output(["git", "-C", worktree, "branch", "--show-current"], text=True).strip() == expected_branch
         assert git("branch", "--show-current") == "topic"
         assert git("rev-parse", "feature/review") == topic_commit
         git("branch", "checkout-review")

@@ -1,4 +1,4 @@
-//! Preparation for locally delegated Git worktrees.
+//! Git operations for managed worktrees.
 use crate::{Error, Result};
 use std::{path::Path, process::Command};
 
@@ -21,6 +21,12 @@ pub(crate) fn command(cwd: &Path) -> Command {
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String> {
+    String::from_utf8(git_bytes(cwd, args)?)
+        .map(|s| s.strip_suffix('\n').unwrap_or(&s).to_owned())
+        .map_err(|_| Error::Invalid("Git worktree output requires UTF-8".into()))
+}
+
+fn git_bytes(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = command(cwd).args(args).output()?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
@@ -30,9 +36,7 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String> {
             String::from_utf8_lossy(&output.stderr).trim_end()
         )));
     }
-    String::from_utf8(output.stdout)
-        .map(|s| s.strip_suffix('\n').unwrap_or(&s).to_owned())
-        .map_err(|_| Error::Invalid("Git worktree output requires UTF-8".into()))
+    Ok(output.stdout)
 }
 
 pub(crate) fn common_dir(cwd: &Path) -> Result<String> {
@@ -45,6 +49,152 @@ pub(crate) fn common_dir(cwd: &Path) -> Result<String> {
 #[cfg(feature = "application")]
 pub(crate) fn repository(cwd: &Path) -> Result<String> {
     checkout_info(cwd, &[])
+}
+
+#[cfg(feature = "application")]
+fn slug(title: &str, max_bytes: usize) -> String {
+    let mut slug = String::new();
+    for word in title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+    {
+        if !slug.is_empty() {
+            slug.push('-');
+        }
+        slug.extend(word.chars().flat_map(char::to_lowercase));
+        if slug.len() >= max_bytes {
+            slug.truncate(slug.floor_char_boundary(max_bytes));
+            break;
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "conversation".into()
+    } else {
+        slug.into()
+    }
+}
+
+#[cfg(feature = "application")]
+pub(crate) fn named_checkout_id(branch: &str, name_bytes: usize) -> String {
+    let leaf = branch.rsplit('/').next().unwrap_or(branch);
+    let name = slug(leaf, name_bytes);
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("{name}-{}", &suffix[..12])
+}
+
+#[cfg(feature = "application")]
+struct LocalBranches {
+    names: Vec<Vec<u8>>,
+    ignore_case: bool,
+}
+
+#[cfg(feature = "application")]
+impl LocalBranches {
+    fn read(cwd: &Path) -> Result<Self> {
+        let ignore_case = git(
+            cwd,
+            &[
+                "config",
+                "--bool",
+                "--get",
+                "--default=false",
+                "core.ignoreCase",
+            ],
+        )? == "true";
+        // Git refs can contain non-UTF-8 bytes, including in a conflicting namespace.
+        let refs = git_bytes(
+            cwd,
+            &["for-each-ref", "--format=%(refname:strip=2)", "refs/heads"],
+        )?;
+        let names = refs
+            .split(|byte| *byte == b'\n')
+            .filter(|name| !name.is_empty())
+            .map(|name| Self::key(name, ignore_case).into_owned())
+            .collect();
+        Ok(Self { names, ignore_case })
+    }
+
+    fn key(name: &[u8], ignore_case: bool) -> std::borrow::Cow<'_, [u8]> {
+        if ignore_case {
+            return match std::str::from_utf8(name) {
+                Ok(text) => text.to_lowercase().into_bytes().into(),
+                Err(_) => name.to_ascii_lowercase().into(),
+            };
+        }
+        name.into()
+    }
+
+    fn conflicts(&self, candidate: &str) -> bool {
+        let candidate = Self::key(candidate.as_bytes(), self.ignore_case);
+        self.names.iter().any(|branch| {
+            branch.as_slice() == candidate.as_ref()
+                || branch
+                    .strip_prefix(candidate.as_ref())
+                    .is_some_and(|tail| tail.starts_with(b"/"))
+                || candidate
+                    .strip_prefix(branch.as_slice())
+                    .is_some_and(|tail| tail.starts_with(b"/"))
+        })
+    }
+
+    fn suggest(&self, title: &str) -> String {
+        let prefix = if self.names.iter().any(|name| name == b"huggler") {
+            "huggler-"
+        } else {
+            "huggler/"
+        };
+        let preferred = format!("{prefix}{}", slug(title, 48));
+        if !self.conflicts(&preferred) {
+            return preferred;
+        }
+        (2..)
+            .map(|suffix| format!("{preferred}-{suffix}"))
+            .find(|candidate| !self.conflicts(candidate))
+            .expect("a finite ref list leaves a suffix available")
+    }
+}
+
+#[cfg(feature = "application")]
+pub(crate) fn resolve_new_branch(
+    cwd: &Path,
+    naming: crate::workspace::WorktreeBranch<'_>,
+) -> Result<String> {
+    use crate::workspace::WorktreeBranch;
+    match naming {
+        WorktreeBranch::Exact(branch) => {
+            // Git also accepts shorthand such as @{-1} here. Require the literal name.
+            if git(cwd, &["check-ref-format", "--branch", branch])? != branch {
+                return Err(Error::Invalid("enter a literal branch name".into()));
+            }
+            if LocalBranches::read(cwd)?.conflicts(branch) {
+                return Err(Error::Invalid(format!(
+                    "branch name is already in use: {branch}"
+                )));
+            }
+            Ok(branch.to_owned())
+        }
+        WorktreeBranch::FromTitle(title) => Ok(LocalBranches::read(cwd)?.suggest(title)),
+    }
+}
+
+#[cfg(feature = "application")]
+pub(crate) fn attach_new_branch(
+    cwd: &Path,
+    naming: crate::workspace::WorktreeBranch<'_>,
+    branch: &str,
+) -> Result<()> {
+    let switch = |name: &str| git(cwd, &["switch", "--no-track", "-c", name]).map(drop);
+    let result = switch(branch);
+    // Checkout can take long enough for another Git process to claim the name.
+    if result.is_err()
+        && let crate::workspace::WorktreeBranch::FromTitle(title) = naming
+        && let Ok(refs) = LocalBranches::read(cwd)
+        && refs.conflicts(branch)
+    {
+        return switch(&refs.suggest(title));
+    }
+    result
 }
 
 fn checkout_info(cwd: &Path, extra_args: &[&str]) -> Result<String> {

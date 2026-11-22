@@ -24,7 +24,8 @@ pub struct StorageLayout {
     pub database_path: PathBuf,
     /// Directory shared by isolated delegations, checkpoint forks and allocated workspaces.
     pub worktree_root: WorktreeRoot,
-    /// One directory name containing `{id}`, replaced by Huggler's generated UUID.
+    /// One directory name containing `{id}`, replaced by a generated identifier.
+    /// Named workspaces include a readable branch-derived component in that identifier.
     pub worktree_name: String,
 }
 

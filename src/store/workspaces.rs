@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     workspace::{
         OrphanedWorktreeEntry, OrphanedWorktreeOutcome, OrphanedWorktreeReport, SetupStatus,
+        WorktreeBranch,
     },
     worktree::{self, git},
 };
@@ -323,10 +324,28 @@ impl Database {
         Ok(report)
     }
 
-    pub fn allocate_workspace(&mut self, source: &ProjectId, revision: &str) -> Result<Project> {
+    pub fn allocate_workspace(
+        &mut self,
+        source: &ProjectId,
+        revision: &str,
+        branch: Option<WorktreeBranch<'_>>,
+    ) -> Result<Project> {
         let root = self.project_root(source)?;
         let (repository, commit) = worktree::base_at(&root, revision)?;
-        let path = self.storage.checkout(&self.state_dir, &root, &new_id())?;
+        let named_branch = branch
+            .map(|naming| worktree::resolve_new_branch(&root, naming).map(|name| (naming, name)))
+            .transpose()?;
+        let checkout_path = |id: &str| self.storage.checkout(&self.state_dir, &root, id);
+        let path = match &named_branch {
+            Some((_, name)) => match checkout_path(&worktree::named_checkout_id(name, 48)) {
+                // A custom template can leave only enough room for the usual 36-byte UUID.
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::InvalidFilename => {
+                    checkout_path(&worktree::named_checkout_id(name, 23))
+                }
+                result => result,
+            },
+            None => checkout_path(&new_id()),
+        }?;
         let checkout = Worktree {
             path: path
                 .to_str()
@@ -358,6 +377,17 @@ impl Database {
                     .execute("DELETE FROM project WHERE id=?", [&project.id.0])?;
             }
             return Err(error);
+        }
+        if let Some((naming, name)) = named_branch
+            && let Err(error) = worktree::attach_new_branch(&project.root, naming, &name)
+        {
+            return match self.release_workspace(&project.id) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(Error::Invalid(format!(
+                    "{error}. Could not release {}. {cleanup}",
+                    project.root.display()
+                ))),
+            };
         }
         Ok(project)
     }

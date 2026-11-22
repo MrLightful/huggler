@@ -28,7 +28,7 @@ Use `HugglerOptions::new(state_dir)` to choose a state directory with `huggler.s
 | `auto_resume_usage_limits` | `false`. Allows one eligible continuation after a provider-reported Codex quota reset. A newer message or stop can cancel it. |
 | `prompt_suggestions` | `false`. Enables extra Codex sampling for an eligible follow-up, exposed as `Run.prompt_suggestion`. |
 
-Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_dir`. Use `WorktreeRoot::ProjectRelative` for a directory relative to each registered project. The `worktree_name` is a single path component containing the literal placeholder `{id}`, which is replaced with a generated UUID.
+Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_dir`. Use `WorktreeRoot::ProjectRelative` for a directory relative to each registered project. The `worktree_name` is a single path component containing the literal placeholder `{id}`. Huggler replaces it with a generated identifier, which includes a branch-derived name for workspaces created with `allocate_workspace_on_branch`.
 
 ```rust
 let mut options = HugglerOptions::new(state_dir).with_name("Studio Workbench")?;
