@@ -642,23 +642,7 @@ pub fn diff_fingerprint(root: &Path, base: &str, head: &str, file: &File) -> Res
         && (net_empty || status.status[1] != b'.' || status.recreated)
     {
         // The combined patch can conceal staged changes when unstaged edits cancel them out.
-        let mut command = git(root);
-        command
-            .args([
-                "--no-optional-locks",
-                "diff-index",
-                "--cached",
-                "--patch",
-                "--full-index",
-                "--no-renames",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-                head,
-                "--",
-            ])
-            .arg(&file.path);
-        let staged = hash_patch(root, command, false)?;
+        let staged = hash_patch(root, staged_diff(root, head, &file.path), false)?;
         ensure!(
             empty.strip_suffix(b"\n") != Some(staged.as_bytes()),
             "The staged diff changed."
@@ -674,6 +658,89 @@ pub fn diff_fingerprint(root: &Path, base: &str, head: &str, file: &File) -> Res
     }
     ensure!(!net_empty, "The file no longer has a diff.");
     Ok(fingerprint)
+}
+
+pub(crate) fn file_patch(
+    root: &Path,
+    base: &str,
+    head: &str,
+    file: &File,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    check_file_path(root, &file.path)?;
+    let (command, _index) = diff_command(root, base, file)?;
+    let mut patch = Vec::new();
+    read_patch(
+        command,
+        file.diff_source == DiffSource::Untracked,
+        limit,
+        &mut patch,
+    )?;
+    if let Some(status) = file.working_tree
+        && status.has_staged_change()
+        && (patch.is_empty() || status.status[1] != b'.' || status.recreated)
+        && patch.len() < limit
+    {
+        patch.extend_from_slice(b"\nStaged changes\n\n");
+        read_patch(
+            staged_diff(root, head, &file.path),
+            false,
+            limit,
+            &mut patch,
+        )?;
+        if status.recreated && patch.len() < limit {
+            patch.extend_from_slice(b"\nRecreated file\n\n");
+            read_patch(untracked_diff(root, &file.path), true, limit, &mut patch)?;
+        }
+    }
+    Ok(patch)
+}
+
+fn read_patch(
+    mut command: Command,
+    untracked: bool,
+    limit: usize,
+    patch: &mut Vec<u8>,
+) -> Result<()> {
+    let mut diff = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stream = diff.stdout.take().expect("piped Git output");
+    let result = stream
+        .take(limit.saturating_sub(patch.len()) as u64)
+        .read_to_end(patch);
+    let clipped = patch.len() >= limit;
+    if result.is_err() || clipped {
+        let _ = diff.kill();
+    }
+    let status = diff.wait()?;
+    result?;
+    ensure!(
+        clipped || status.success() || (untracked && status.code() == Some(1)),
+        "Git could not read the file diff."
+    );
+    Ok(())
+}
+
+fn staged_diff(root: &Path, head: &str, path: &Path) -> Command {
+    let mut command = git(root);
+    command
+        .args([
+            "--no-optional-locks",
+            "diff-index",
+            "--cached",
+            "--patch",
+            "--full-index",
+            "--no-renames",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            head,
+            "--",
+        ])
+        .arg(path);
+    command
 }
 
 fn hash_patch(root: &Path, mut command: Command, untracked: bool) -> Result<String> {
@@ -1350,6 +1417,14 @@ mod tests {
                 .find(|file| file.path == Path::new("file"))
                 .unwrap();
             assert!(diff_fingerprint(root, &snapshot.base, &snapshot.head, file).is_ok());
+            let patch = file_patch(root, &snapshot.base, &snapshot.head, file, 1024).unwrap();
+            assert!(
+                String::from_utf8(patch)
+                    .unwrap()
+                    .contains("-base\n+staged edit\n")
+            );
+            let excerpt = file_patch(root, &snapshot.base, &snapshot.head, file, 32).unwrap();
+            assert_eq!(excerpt.len(), 32);
         }
     }
 

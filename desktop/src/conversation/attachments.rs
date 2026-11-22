@@ -120,7 +120,7 @@ impl Preview {
     }
 }
 
-fn image_preview(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+pub(super) fn image_preview(bytes: &[u8]) -> Option<Arc<RenderImage>> {
     use image::{Frame, ImageReader, Limits};
     let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()

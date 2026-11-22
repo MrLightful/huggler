@@ -41,7 +41,8 @@ actions!(
         OpenSettings,
         NewConversation,
         NewConversationWithSetup,
-        FocusMessage
+        FocusMessage,
+        CloseDocument
     ]
 );
 
@@ -148,6 +149,11 @@ fn main() -> Result<()> {
                 Some(conversation::COMPOSER_CONTEXT),
             ),
             KeyBinding::new("secondary-l", FocusMessage, None),
+            KeyBinding::new(
+                "secondary-w",
+                CloseDocument,
+                Some(conversation::DOCUMENT_CONTEXT),
+            ),
         ]);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),

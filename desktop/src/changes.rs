@@ -6,7 +6,8 @@ use crate::{
     ui::{hint, label},
 };
 use anyhow::Context as _;
-use approvals::{Approval, Approvals, ReviewRow};
+pub(crate) use approvals::ReviewRow;
+use approvals::{Approval, Approvals};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
@@ -37,6 +38,8 @@ pub struct Changes {
     refresh_task: Option<Task<()>>,
     mutation_task: Option<Task<()>>,
 }
+
+impl EventEmitter<ReviewRow> for Changes {}
 
 struct FilterMenu {
     view: Entity<PopupMenu>,
@@ -626,6 +629,8 @@ impl Changes {
         let group = "changed-file";
         let _row_path = path.clone();
         let full_path = path.clone();
+        let diff = row.clone();
+        let ring = cx.theme().ring;
         let filter = self.filter;
         let reviewed = filter == Filter::Approved;
         let action_opacity = if self.mutation.is_none() { 1. } else { 0.5 };
@@ -660,9 +665,14 @@ impl Changes {
                                 .min_w_0()
                                 .flex_1()
                                 .h_full()
+                                .rounded_sm()
+                                .tab_index(0)
+                                .focus(move |style| style.border_1().border_color(ring))
+                                .cursor_pointer()
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(full_path.clone()).build(window, cx)
                                 })
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(diff.clone())))
                                 .child(file_path_label(directory, filename, muted)),
                         )
                         .child(
@@ -895,7 +905,7 @@ fn file_action(
         .child(Icon::new(icon).small())
 }
 
-fn change_colors(cx: &App) -> (Hsla, Hsla, Hsla) {
+pub(crate) fn change_colors(cx: &App) -> (Hsla, Hsla, Hsla) {
     if cx.theme().is_dark() {
         (
             rgb(0x4cdb85).into(),

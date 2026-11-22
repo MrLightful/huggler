@@ -53,18 +53,20 @@ pub(super) fn save(path: &Path, thread: &str, approvals: &Approvals) -> Result<(
 }
 
 #[derive(Clone)]
-pub(super) struct ReviewRow {
+pub(crate) struct ReviewRow {
     pub file: File,
     pub base: String,
     pub head: String,
+    pub scope: ChangeScope,
 }
 
 impl ChangesSnapshot {
-    fn into_rows(self) -> impl Iterator<Item = ReviewRow> {
+    fn into_rows(self, scope: ChangeScope) -> impl Iterator<Item = ReviewRow> {
         self.files.into_iter().map(move |file| ReviewRow {
             file,
             base: self.base.clone(),
             head: self.head.clone(),
+            scope,
         })
     }
 }
@@ -87,7 +89,7 @@ pub(super) fn visible_rows(
             Err(_) if selected.is_some() && !is_selected => continue,
             result => result?,
         };
-        for row in snapshot.into_rows() {
+        for row in snapshot.into_rows(scope) {
             let is_approved = approvals
                 .get(&path_key(&row.file.path))
                 .is_some_and(|mark| {
