@@ -35,7 +35,7 @@ use gpui_component::{
 };
 use huggler::{
     Action, Command, CommandId, ConversationDetail, ConversationSummary, HistoryCursor, Huggler,
-    Provider, ProviderInstanceId, RunId, ThreadId,
+    ModelOptions, Provider, ProviderInstanceId, RunId, ThreadId,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -133,7 +133,9 @@ pub struct Desktop {
     suggestions: suggestions::Suggestions,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
+    launch_model_options: ModelOptions,
     model_picker: Option<Entity<ListState<Models>>>,
+    show_model_efforts: bool,
     mcp_status: Option<mcp_status::McpStatus>,
     mcp_status_focus: FocusHandle,
     model_catalogs: HashMap<(ProviderInstanceId, PathBuf), Entity<ProviderCatalog>>,
@@ -170,6 +172,8 @@ impl Desktop {
             )
         });
         let catalog_fallback = state.clone();
+        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
+        settings.update(cx, |settings, cx| settings.refresh_provider_setup(cx));
         cx.subscribe_in(
             &settings,
             window,
@@ -251,7 +255,9 @@ impl Desktop {
             suggestions: suggestions::Suggestions::default(),
             instance: Provider::Codex.key().into(),
             launch_model: None,
+            launch_model_options: ModelOptions::default(),
             model_picker: None,
+            show_model_efforts: false,
             mcp_status: None,
             mcp_status_focus: cx.focus_handle(),
             model_catalogs: HashMap::new(),
@@ -264,6 +270,7 @@ impl Desktop {
                     view.suggestions = Default::default();
                 }
                 view.launch_model = None;
+                view.launch_model_options = ModelOptions::default();
                 view.model_picker = None;
                 view.mcp_status = None;
                 view.launch_workspace = LaunchWorkspace::default();
@@ -631,6 +638,7 @@ impl Desktop {
             return;
         }
         self.launch_model = None;
+        self.launch_model_options = ModelOptions::default();
         self.instance = Provider::Codex.key().into();
         self.subscription = None;
         self.command_log = None;
@@ -681,6 +689,7 @@ impl Desktop {
             .selected_branch(workspace_mode)
             .cloned();
         let model = self.launch_model.clone();
+        let model_options = self.launch_model_options.clone();
         let instance = self.instance.clone();
         let runtime = self.runtime.clone();
         let id = ThreadId(Uuid::new_v4().to_string());
@@ -727,11 +736,12 @@ impl Desktop {
             if let Err(error) = runtime.dispatch(Command {
                 id: CommandId(Uuid::new_v4().to_string()),
                 thread_id: thread.clone(),
-                action: Action::LaunchInstance {
+                action: Action::LaunchModelSelection {
                     project: project.id.clone(),
                     instance,
                     name,
                     model,
+                    options: model_options,
                 },
             }) {
                 let error = error.into();
@@ -841,6 +851,7 @@ impl Desktop {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
+            self.launch_model_options = ModelOptions::default();
             self.mcp_status = None;
             if self.current.is_none() {
                 self.suggestions = Default::default();

@@ -6,6 +6,7 @@ use super::{
 use crate::{Error, Provider, ProviderInstance, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -16,8 +17,20 @@ pub struct ProviderReport {
     /// None means the protocol did not verify login.
     pub authenticated: Option<bool>,
     pub models: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_details: BTreeMap<String, ModelDetails>,
     pub resume: bool,
     pub agent_tools: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ModelDetails {
+    pub name: String,
+    pub is_default: bool,
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+    pub fast_tier: Option<String>,
+    pub default_service_tier: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -54,6 +67,7 @@ impl ProviderReport {
             version: None,
             authenticated: None,
             models: vec![],
+            model_details: BTreeMap::new(),
             resume: false,
             agent_tools: false,
         }
@@ -98,12 +112,79 @@ pub(crate) async fn inspect(
                 let page = rpc
                     .request(3, "model/list", json!({"cursor":cursor}))
                     .await?;
-                report.models.extend(ids(&page["data"], "id"));
+                for model in page["data"].as_array().into_iter().flatten() {
+                    let Some(id) = model["id"].as_str() else {
+                        continue;
+                    };
+                    report.models.push(id.into());
+                    let mut tiers = ids(&model["serviceTiers"], "id");
+                    if tiers.is_empty() {
+                        tiers.extend(
+                            model["additionalSpeedTiers"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned),
+                        );
+                    }
+                    report.model_details.insert(
+                        id.into(),
+                        ModelDetails {
+                            name: model["displayName"]
+                                .as_str()
+                                .filter(|name| !name.trim().is_empty())
+                                .unwrap_or(id)
+                                .into(),
+                            is_default: model["isDefault"] == true,
+                            efforts: ids(&model["supportedReasoningEfforts"], "reasoningEffort"),
+                            default_effort: model["defaultReasoningEffort"]
+                                .as_str()
+                                .map(str::to_owned),
+                            fast_tier: tiers
+                                .into_iter()
+                                .find(|tier| matches!(tier.as_str(), "fast" | "priority")),
+                            default_service_tier: model["defaultServiceTier"]
+                                .as_str()
+                                .map(str::to_owned),
+                        },
+                    );
+                }
                 cursor = page["nextCursor"].clone();
                 let Some(next) = cursor.as_str() else { break };
                 if !seen.insert(next.to_owned()) {
                     return Err(protocol("model/list repeated a cursor"));
                 }
+            }
+            let config = rpc
+                .request_frame(4, "config/read", json!({"cwd":cwd,"includeLayers":false}))
+                .await?;
+            let settings = &config["result"]["config"];
+            for (id, details) in &mut report.model_details {
+                if let Some(configured) = settings["model"].as_str() {
+                    details.is_default = id == configured;
+                }
+                if let Some(effort) = settings["model_reasoning_effort"].as_str()
+                    && details.efforts.iter().any(|supported| supported == effort)
+                {
+                    details.default_effort = Some(effort.into());
+                }
+                if let Some(tier) = settings["service_tier"].as_str() {
+                    details.default_service_tier = Some(tier.into());
+                }
+            }
+            if let Some(configured) = settings["model"].as_str() {
+                report
+                    .model_details
+                    .entry(configured.into())
+                    .or_insert_with(|| ModelDetails {
+                        name: configured.into(),
+                        is_default: true,
+                        default_effort: settings["model_reasoning_effort"]
+                            .as_str()
+                            .map(str::to_owned),
+                        ..Default::default()
+                    });
             }
             report.resume = true;
             report.agent_tools = true;
@@ -128,14 +209,46 @@ pub(crate) async fn inspect(
                 return Err(protocol("missing ACP session ID"));
             }
             // A successful session/new can precede a login challenge at prompt time.
-            report.models = ids(&info["models"]["availableModels"], "modelId");
-            if let Some(opt) = claude_agent::model_option(&info) {
-                for entry in opt["options"].as_array().into_iter().flatten() {
-                    if let Some(value) = entry["value"].as_str() {
-                        report.models.push(value.into());
-                    }
-                    report.models.extend(ids(&entry["options"], "value"));
+            let legacy = &info["models"];
+            let option = claude_agent::model_option(&info);
+            report.models = ids(&legacy["availableModels"], "modelId");
+            let entries = option
+                .and_then(|opt| opt["options"].as_array())
+                .into_iter()
+                .flatten();
+            for entry in entries.clone() {
+                if let Some(value) = entry["value"].as_str() {
+                    report.models.push(value.into());
                 }
+                report.models.extend(ids(&entry["options"], "value"));
+            }
+            if let Some(id) = option
+                .and_then(|opt| opt["currentValue"].as_str())
+                .or_else(|| legacy["currentModelId"].as_str())
+                .filter(|id| *id != "default" && !id.is_empty())
+            {
+                let name = entries
+                    .flat_map(|entry| {
+                        std::iter::once(entry)
+                            .chain(entry["options"].as_array().into_iter().flatten())
+                    })
+                    .find(|model| model["value"] == id)
+                    .or_else(|| {
+                        legacy["availableModels"]
+                            .as_array()?
+                            .iter()
+                            .find(|model| model["modelId"] == id)
+                    })
+                    .and_then(|model| model["name"].as_str())
+                    .unwrap_or(id);
+                report.model_details.insert(
+                    id.into(),
+                    ModelDetails {
+                        name: name.into(),
+                        is_default: true,
+                        ..Default::default()
+                    },
+                );
             }
             rpc.finish(Ok(())).await?;
             report
@@ -205,7 +318,11 @@ pub(super) async fn open_codex_probe(
     command.arg("app-server");
     let mut rpc = Rpc::open(command, cwd, output)?;
     let init = rpc
-        .request(1, "initialize", json!({"clientInfo":output.client_info()}))
+        .request(
+            1,
+            "initialize",
+            json!({"clientInfo":output.client_info(),"capabilities":{"experimentalApi":true}}),
+        )
         .await?;
     rpc.write(json!({"method":"initialized"})).await?;
     Ok((rpc, init))

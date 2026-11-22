@@ -15,22 +15,34 @@ def check_models(executable, tmp, env):
     state = tmp / "model-state"
     subprocess.run(["git", "init", "--quiet", checkout], check=True)
     env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
-    default = "model/Provider default"
+    default = "model-automatic"
     run_window(executable, state, [
-        {"click": default}, {"click": "provider/available"}, {"click": "provider/Codex"}, {"key": "escape"}, {"click": "First message"},
+        {"click": default}, {"see": "provider/available"}, {"see": "provider/Codex"},
+        {"absent": "provider/Claude Agent"}, {"absent": "provider/unavailable"},
+        {"key": "escape"}, {"click": "First message"},
         {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
         {"see": "provider-status/Codex app-server · version unknown · login unverified · 2 models"},
-        {"click": default},
-        {"see": "model-option/fixture-fast"}, {"type": "deep"},
+        {"click": default}, {"see": "model-option-automatic/name/Fixture Fast"},
+        {"right_of": ["Edit", "Model search and results"]},
+        {"see": "model-option/fixture-fast"}, {"type": "Fixture Deep"},
         {"absent": "model-option/fixture-fast"}, {"key": "enter"}, {"see": "model/fixture-deep"},
         {"click": "model/fixture-deep"}, {"click": "provider/available"}, {"see": default},
         {"see": "model-option/grok-build"}, {"absent": "model-option/fixture-deep"},
         {"key": "escape"}, {"click": default}, {"click": "provider/Codex"},
-        {"click": "model-option/fixture-deep"}, {"click": "Conversation name"}, {"type": "Models"},
+        {"click": "model-option/fixture-deep"}, {"click": "model/fixture-deep"},
+        {"click": "Effort"}, {"click": "effort/high"}, {"click": "Fast mode off"}, {"see": "Fast mode on"},
+        {"key": "escape"}, {"click": "Conversation name"}, {"type": "Models"},
         {"click": "Open conversation"}, {"see": "status/Ready"}, {"see": "model/fixture-deep"},
         *send_message("First turn"), {"see": "Ready/Models/Completed"},
+        {"click": "model/fixture-deep"}, {"see": "Fast mode on"},
+        {"click": "Fast mode on"}, {"see": "Fast mode off"},
+        {"click": "Edit"}, {"see": "Models"}, {"see": "provider/codex"},
+        {"click": "Done"}, *send_message("Standard turn"), {"see": "Codex/reply Standard turn"},
+        {"see": "Ready/Models/Completed"},
         {"click": "Message"}, {"type": "Second turn"}, {"click": "model/fixture-deep"},
         {"click": "model-option/fixture-fast"}, {"see": "model/fixture-fast"},
+        {"click": "model/fixture-fast"}, {"see": "Effort"}, {"absent": "Fast mode on"},
+        {"absent": "Fast mode off"}, {"key": "escape"},
         {"click": "Send"}, {"see": "Codex/reply Second turn"}, {"see": "Ready/Models/Completed"},
     ], env)
     frames_path = checkout / "frames.ndjson"
@@ -38,18 +50,38 @@ def check_models(executable, tmp, env):
     assert sum(frame.get("method") == "model/list" for frame in frames) == 1
     run_window(executable, state, [
         {"see": "model/fixture-fast"}, {"click": "model/fixture-fast"},
-        {"click": "model-option/Provider default"}, {"see": default},
+        {"click": "model-option-automatic"}, {"see": default},
         *send_message("Default turn"), {"see": "Codex/reply Default turn"},
         {"see": "Ready/Models/Completed"},
     ], env)
     frames = [json.loads(line) for line in (checkout / "frames.ndjson").read_text().splitlines()]
     for methods in (("thread/start", "thread/resume"), ("turn/start",)):
         assert [f["params"].get("model") for f in frames if f.get("method") in methods] == [
-            "fixture-deep", "fixture-fast", None]
+            "fixture-deep", "fixture-deep", "fixture-fast", None]
+    turns = [f["params"] for f in frames if f.get("method") == "turn/start"]
+    assert [p.get("effort") for p in turns] == ["high", "high", None, None]
+    assert [p.get("serviceTierForTurn") for p in turns] == ["priority", "default", None, None]
+    assert turns[0]["collaborationMode"]["settings"]["reasoning_effort"] == "high"
+    config = checkout / "codex-fixture-config.json"
+    config.write_text(json.dumps({"model": "fixture-deep", "model_reasoning_effort": "high", "service_tier": "priority"}))
+    run_window(executable, state, [
+        {"click": default}, {"see": "model-option-automatic/name/Fixture Deep"},
+        {"see": "Fast mode on"}, {"click": "Effort"},
+        {"click": "effort/medium"}, {"click": "Effort"}, {"click": "effort/default"},
+        {"key": "escape"}, *send_message("Configured defaults"),
+        {"see": "Codex/reply Configured defaults"}, {"see": "Ready/Models/Completed"},
+    ], env)
+    frames = [json.loads(line) for line in frames_path.read_text().splitlines()]
+    configured = [f["params"] for f in frames if f.get("method") == "turn/start"][-1]
+    assert configured["model"] == "fixture-deep"
+    assert configured["effort"] == configured["collaborationMode"]["settings"]["reasoning_effort"] == "high"
+    assert "serviceTierForTurn" not in configured
+    config.unlink()
     (checkout / "empty-model-list").touch()
     run_window(executable, state, [
         {"click": default}, {"see": "model-status/This provider listed no models."},
-        {"see": "Retry models"}, {"click": "model-option/Provider default"},
+        {"see": "model-option-automatic/name/Automatic"},
+        {"see": "Retry models"}, {"click": "model-option-automatic"},
         *send_message("Empty catalog"), {"see": "Codex/reply Empty catalog"},
         {"see": "Ready/Models/Completed"},
     ], env)
@@ -136,11 +168,15 @@ def main():
         status = "provider-status/"
         steps = [
             {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(tmp)},
-            {"click": "model/Provider default"}, {"click": "provider/unavailable"}, {"click": "model-option/Provider default"}, {"absent": "model-option/Provider default"}, {"click": "Check provider"},
-            {"see": status + "install the provider executable or configure its path: " + str(missing)},
-            {"click": "model/Provider default"}, {"see": "Retry models"},
-            {"click": "Retry models"}, {"see": "model-option/Provider default"}, {"key": "escape"},
-            {"click": "model/Provider default"}, {"click": "provider/available"}, {"click": "model-option/Provider default"}, {"absent": "model-option/Provider default"}, {"click": "Check provider"},
+            {"click": "model-automatic"}, {"absent": "provider/unavailable"},
+            {"absent": "provider/Codex"}, {"see": "provider/available"},
+            {"see": "model-status/Choose a provider to load models."},
+            {"click": "Edit"}, {"see": "Installation guide"}, {"absent": "Models"},
+            {"click": "Done"}, {"click": "model-automatic"},
+            {"see": "model-status/Choose a provider to load models."}, {"click": "provider/available"},
+            {"see": "model-option-automatic/name/Grok Build"},
+            {"click": "model-option-automatic"}, {"absent": "model-option-automatic"},
+            {"click": "Check provider"},
             {"see": status + "ACP v1 · 1 · login unverified · 2 models"},
         ]
         env = dict(isolated_env(tmp), HUGGLER_PROVIDERS=str(config), HUGGLER_CODEX=str(missing))
@@ -154,6 +190,7 @@ def main():
         subprocess.run(["git", "init", "--quiet", checkout], check=True)
         # Launching from a Git hook must still register the selected checkout.
         subprocess.run(["git", "init", "--quiet", tmp], check=True)
+        config.write_text(json.dumps([{"id": "unavailable", "driver": "cursor", "executable": str(missing)}]))
         run_window(executable, state, [
             *launch_thread(checkout, "Original"), *send_message("Try Codex"),
             {"see": "status/Failed"},
