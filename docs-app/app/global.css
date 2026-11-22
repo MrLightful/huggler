@@ -51,8 +51,48 @@
   --fd-layout-width: 100%;
 }
 
-#nd-page h1 {
-  letter-spacing: -0.035em;
+#nd-page {
+  row-gap: 1.25rem;
+}
+
+.docs-page-heading {
+  display: grid;
+  gap: 0.375rem;
+  padding-block-end: 1.25rem;
+  border-block-end: 1px solid var(--color-fd-border);
+}
+
+.docs-page-heading h1 {
+  font-size: clamp(1.625rem, 1.4rem + 0.75vw, 2rem);
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.docs-page-heading > p {
+  max-inline-size: 68ch;
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+#nd-page .prose :is(h2, h3) {
+  margin-block: 1.75em 0.45em;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+#nd-page .prose h2 {
+  font-size: 1.3125rem;
+}
+
+#nd-page .prose h3 {
+  font-size: 1.0625rem;
+}
+
+#nd-page .prose > :first-child {
+  margin-block-start: 0;
 }
 
 #nd-page .prose a:where(:not([data-card])) {
@@ -60,7 +100,7 @@
 }
 
 #nd-page .prose > p,
-#nd-page .prose > ol {
+#nd-page .prose > :is(ol, ul) {
   max-inline-size: 72ch;
 }
 
@@ -68,14 +108,32 @@
   background: var(--color-fd-card);
 }
 
+:is(#nd-sidebar, #nd-sidebar-mobile) a[data-active='true'] {
+  color: var(--color-fd-primary);
+  font-weight: 650;
+}
+
+@media (min-width: 48rem) {
+  [role='dialog']:has(#fd-search-list) {
+    top: clamp(0.5rem, 10dvh, 6rem);
+    max-inline-size: 38rem;
+  }
+}
+
+input[aria-controls='fd-search-list'] {
+  font-size: 1rem;
+}
+
+#fd-search-list {
+  max-block-size: min(28.75rem, 65dvh);
+}
+
 .binding-navigation {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 0.25rem 0.875rem;
-  margin-block-end: 1.5rem;
-  padding-block-end: 0.625rem;
-  border-block-end: 1px solid var(--color-fd-border);
+  gap: 0.375rem 0.75rem;
+  margin-block-start: 0.625rem;
   color: var(--color-fd-muted-foreground);
   font-size: 0.875rem;
 }
@@ -83,7 +141,10 @@
 .binding-navigation ul {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem 0.375rem;
+  gap: 0.125rem;
+  padding: 0.1875rem;
+  background: var(--color-fd-muted);
+  border-radius: 0.5rem;
 }
 
 .binding-navigation a {
@@ -93,14 +154,15 @@
   font-weight: 550;
 }
 
-.binding-navigation a:hover,
-.binding-navigation a[aria-current='page'] {
+.binding-navigation a:hover {
   background: var(--color-fd-accent);
   color: var(--color-fd-accent-foreground);
 }
 
 .binding-navigation a[aria-current='page'] {
-  font-weight: 700;
+  background: var(--color-fd-primary);
+  color: var(--color-fd-primary-foreground);
+  font-weight: 650;
 }
 
 .binding-overview {
@@ -139,23 +201,23 @@
 }
 
 #nd-page .prose .binding-directory {
-  margin-block: 0.875rem 2.5rem;
+  margin-block: 0.625rem 1.5rem;
   border-block-start: 1px solid var(--color-fd-border);
 }
 
 #nd-page .prose .binding-directory li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.25rem;
-  padding-block: 0.875rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.25rem 1.25rem;
+  padding-block: 0.75rem;
   border-block-end: 1px solid var(--color-fd-border);
 }
 
 #nd-page .prose .binding-directory p {
   color: var(--color-fd-muted-foreground);
-  font-size: 0.9rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
 #nd-page .prose .binding-directory a {
@@ -168,8 +230,8 @@
 }
 
 #nd-page .prose .binding-name {
-  font-size: 1.125rem;
-  font-weight: 700;
+  font-size: 1rem;
+  font-weight: 650;
 }
 
 .binding-navigation a:focus-visible,
@@ -182,4 +244,15 @@
   color: var(--color-fd-primary);
   font-size: 0.875rem;
   text-decoration: underline;
+}
+
+#nd-page .prose .binding-directory li > a {
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 30rem) {
+  #nd-page .prose .binding-directory li {
+    grid-template-columns: 1fr;
+  }
 }

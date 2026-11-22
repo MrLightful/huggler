@@ -219,7 +219,8 @@ impl Settings {
         let mut row = v_flex()
             .id(SharedString::from(root.to_string_lossy().into_owned()))
             .gap_1()
-            .p_3();
+            .px_3()
+            .py_2();
         if let Some((_, input)) = self
             .project_editor
             .as_ref()

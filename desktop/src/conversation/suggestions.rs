@@ -602,10 +602,7 @@ impl Desktop {
                     Kind::Files => "No matching files",
                     Kind::Skills => "No matching skills",
                 });
-            popup = popup.child(control!(
-                status,
-                div().text_sm().px_2().py_1().child(status)
-            ));
+            popup = popup.child(control!(status, hint(status, cx).px_2().py_1()));
         } else {
             for (index, choice) in menu.choices.iter().enumerate() {
                 let input = input.clone();
@@ -615,12 +612,12 @@ impl Desktop {
                     format!("suggestion/{}", choice.label),
                     h_flex()
                         .id(index)
-                        .h_8()
+                        .h_7()
                         .min_w_0()
                         .gap_2()
                         .px_2()
                         .rounded_md()
-                        .text_sm()
+                        .text_size(crate::ui::control_text_size())
                         .cursor_pointer()
                         .when(index == menu.selected, |row| row.bg(cx.theme().list_active))
                         .on_mouse_move(cx.listener(move |view, _, _, cx| {

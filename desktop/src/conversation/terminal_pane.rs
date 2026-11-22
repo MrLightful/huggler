@@ -190,6 +190,7 @@ impl Desktop {
             .flex_shrink_0()
             .px_2()
             .gap_1()
+            .when(open, |header| header.bg(cx.theme().sidebar))
             .child(control!(
                 toggle,
                 Button::new("toggle-terminal")
@@ -350,7 +351,7 @@ impl TerminalTab {
                     .pl_2()
                     .pr_0p5()
                     .whitespace_nowrap()
-                    .label(name)
+                    .child(div().text_size(crate::ui::control_text_size()).child(name))
                     .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
                         let pane = &mut view
                             .workspaces

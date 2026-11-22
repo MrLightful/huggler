@@ -158,6 +158,13 @@ pub enum SettingsEvent {
     ProviderModels(ProviderInstanceId, bool),
 }
 
+pub(crate) enum SettingsTarget<'a> {
+    Overview,
+    Provider(&'a ProviderInstanceId),
+    #[cfg(target_os = "macos")]
+    ProjectActions(PathBuf),
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Page {
     #[default]
@@ -194,6 +201,7 @@ impl Page {
 
 pub struct Settings {
     page: Page,
+    entry_page: Page,
     prefs: Preferences,
     state: PathBuf,
     runtime: Arc<Huggler>,
@@ -247,6 +255,7 @@ impl Settings {
         let runtime_fields = RuntimeFields::new(window, cx);
         Self {
             page: Page::default(),
+            entry_page: Page::default(),
             prefs,
             state,
             runtime,
@@ -268,8 +277,35 @@ impl Settings {
         }
     }
 
-    pub fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_page(Page::Overview, window, cx);
+    pub(crate) fn opened(
+        &mut self,
+        target: SettingsTarget<'_>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            SettingsTarget::Overview => {
+                self.show_page(Page::Overview, window, cx);
+                if self.page != Page::Overview {
+                    return;
+                }
+            }
+            SettingsTarget::Provider(instance) => self.open_provider_settings(instance, window, cx),
+            #[cfg(target_os = "macos")]
+            SettingsTarget::ProjectActions(root) => self.open_project_actions(root, window, cx),
+        }
+        self.entry_page = self.page;
+    }
+
+    pub(crate) fn leave(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.save_provider_edits(cx) {
+            return false;
+        }
+        self.project_editor = None;
+        self.action_editor = None;
+        self.page = Page::Overview;
+        self.entry_page = Page::Overview;
+        true
     }
 
     fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
@@ -513,7 +549,7 @@ impl Settings {
                 .gap_3()
                 .child(
                     h_flex()
-                        .size_8()
+                        .size_7()
                         .flex_shrink_0()
                         .justify_center()
                         .rounded_md()
@@ -542,7 +578,7 @@ impl Settings {
                 Button::new(title)
                     .ghost()
                     .w_full()
-                    .h(px(64.))
+                    .h(px(52.))
                     .pl_4()
                     .pr_12()
                     .justify_start()
@@ -571,45 +607,53 @@ impl Settings {
     }
 
     fn overview(cx: &Context<Self>) -> Div {
+        let group = |name, entries: &[(Page, IconName, &'static str)]| {
+            v_flex().gap_2().child(section_title(name)).child(
+                v_flex()
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().sidebar)
+                    .children(entries.iter().enumerate().map(|(i, (page, icon, detail))| {
+                        Self::section_link(*page, icon.clone(), detail, cx).when(i > 0, |row| {
+                            row.border_t_1().border_color(cx.theme().border)
+                        })
+                    })),
+            )
+        };
         v_flex()
-            .rounded_lg()
-            .overflow_hidden()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
-            .child(Self::section_link(
-                Page::General,
-                IconName::Settings2,
-                "Messaging, notifications, and sleep",
-                cx,
+            .gap_5()
+            .child(group(
+                "Preferences",
+                &[
+                    (
+                        Page::General,
+                        IconName::Settings2,
+                        "Messaging, notifications, and sleep",
+                    ),
+                    (
+                        Page::Appearance,
+                        IconName::Palette,
+                        "Light, dark, or system theme",
+                    ),
+                ],
             ))
-            .child(div().border_t_1().border_color(cx.theme().border))
-            .child(Self::section_link(
-                Page::Appearance,
-                IconName::Palette,
-                "Light, dark, or system theme",
-                cx,
-            ))
-            .child(div().border_t_1().border_color(cx.theme().border))
-            .child(Self::section_link(
-                Page::Providers,
-                IconName::SquareTerminal,
-                "Connections, models, and setup",
-                cx,
-            ))
-            .child(div().border_t_1().border_color(cx.theme().border))
-            .child(Self::section_link(
-                Page::Projects,
-                IconName::Folder,
-                "Manage Git checkouts saved for new conversations",
-                cx,
-            ))
-            .child(div().border_t_1().border_color(cx.theme().border))
-            .child(Self::section_link(
-                Page::Storage,
-                IconName::Folder,
-                "Clean up unused worktrees",
-                cx,
+            .child(group(
+                "Workspace",
+                &[
+                    (
+                        Page::Providers,
+                        IconName::SquareTerminal,
+                        "Connections, models, and setup",
+                    ),
+                    (
+                        Page::Projects,
+                        IconName::Folder,
+                        "Manage Git checkouts saved for new conversations",
+                    ),
+                    (Page::Storage, IconName::Folder, "Clean up unused worktrees"),
+                ],
             ))
     }
 
@@ -738,9 +782,10 @@ impl Settings {
                 "When on, Huggler checks at startup and hourly. Only unused worktrees without files or new commits are removed.",
                 cx,
             ))
-            .child(control!(
+            .child(h_flex().mt_2().child(control!(
                 "Clean up worktrees now",
                 Button::new("cleanup-worktrees")
+                    .small()
                     .label(if self.cleanup_running {
                         "Cleaning…"
                     } else {
@@ -748,15 +793,19 @@ impl Settings {
                     })
                     .disabled(self.cleanup_running)
                     .on_click(cx.listener(|view, _, _, cx| view.cleanup_worktrees(cx)))
-            ))
+            )))
             .when_some(self.cleanup_status.clone(), |controls, status| {
                 controls.child(control!(status.clone(), hint(status, cx)))
             })
     }
 }
 
-impl Render for Settings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+fn settings_column() -> Div {
+    v_flex().w_full().max_w(px(720.)).mx_auto().px_5()
+}
+
+impl Settings {
+    pub(super) fn panel(&self, navigation_toggle: Div, cx: &Context<Self>) -> Div {
         let content = match self.page {
             Page::Overview => Self::overview(cx),
             Page::General => self.general(cx),
@@ -770,73 +819,46 @@ impl Render for Settings {
             Page::Providers => self.provider_scroll_id(),
             _ => SharedString::from(self.page.title()),
         };
-        let body = v_flex()
-            .w_full()
-            .max_w(px(720.))
-            .p_5()
-            .when(self.page == Page::Overview, |body| {
-                body.max_w(px(600.)).mx_auto().pt_7()
-            })
-            .gap_3()
-            .child(content)
-            .when_some(self.error.clone(), |panel, error| {
+        let body = settings_column().py_4().gap_3().child(content).when_some(
+            self.error.clone(),
+            |panel, error| {
                 panel.child(control!(
                     format!("settings-error/{error}"),
                     div().text_sm().text_color(cx.theme().danger).child(error)
                 ))
-            });
+            },
+        );
+        let parent = self.page.parent().filter(|_| self.page != self.entry_page);
+        let back = match parent {
+            Some(Page::Projects) => "Back to Projects",
+            Some(_) => "Back to Settings",
+            None => "Back to workspace",
+        };
         v_flex()
             .size_full()
             .track_focus(&self.focus)
             .child(
                 h_flex()
                     .px_5()
-                    .py_3()
+                    .py_2()
                     .flex_shrink_0()
-                    .justify_between()
                     .gap_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        h_flex()
-                            .pl_8()
-                            .min_w_0()
-                            .gap_2()
-                            .when_some(self.page.parent(), |row, parent| {
-                                let back = match parent {
-                                    Page::Projects => "Back to Projects",
-                                    _ => "Back to Settings",
-                                };
-                                row.child(control!(
-                                    back,
-                                    Button::new("back-to-settings")
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::ChevronLeft)
-                                        .tooltip(back)
-                                        .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.show_page(parent, window, cx);
-                                        }))
-                                ))
-                            })
-                            .child(heading(self.page.title()).truncate()),
-                    )
-                    .child(
-                        control!(
-                            "Done",
-                            Button::new("done").label("Done").on_click(cx.listener(
-                                |v, _, _, cx| {
-                                    if v.save_provider_edits(cx) {
-                                        v.project_editor = None;
-                                        v.action_editor = None;
-                                        v.page = Page::Overview;
-                                        cx.emit(SettingsEvent::Back);
-                                    }
-                                }
-                            ))
-                        )
-                        .flex_shrink_0(),
-                    ),
+                    .child(navigation_toggle.flex_shrink_0())
+                    .child(control!(
+                        back,
+                        Button::new("settings-back")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ChevronLeft)
+                            .tooltip(back)
+                            .on_click(cx.listener(move |view, _, window, cx| match parent {
+                                Some(page) => view.show_page(page, window, cx),
+                                None => cx.emit(SettingsEvent::Back),
+                            }))
+                    ))
+                    .child(heading(self.page.title()).truncate()),
             )
             .when(self.page == Page::Providers, |page| {
                 page.child(self.provider_selector(cx))

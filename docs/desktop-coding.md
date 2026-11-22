@@ -109,7 +109,7 @@ Choose **Settings** in the sidebar or press **⌘,**. On Linux and Windows, use 
 
 The provider heading shows the setup state, detected executable version, and available actions. **Refresh** checks the installed version, sign-in status, and available models. Huggler offers **Update** when its bundled release is newer than the installed copy it manages. **Reset to defaults** restores model visibility and order and clears executable and launch overrides saved in Huggler. Restart Huggler to apply reset executable or launch settings.
 
-New conversations start with Codex selected. Use the composer’s provider and model picker to choose another provider before starting a conversation. Under **Appearance**, select **System**, **Light** or **Dark** to change the color theme immediately. Use the back arrow to return to the Settings list. **Done** returns to the conversation or launch form you were using, including text you had already entered. **⌘N** opens the new conversation form.
+New conversations start with Codex selected. Use the composer’s provider and model picker to choose another provider before starting a conversation. Under **Appearance**, select **System**, **Light** or **Dark** to change the color theme immediately. Use the back arrow to retrace your steps to the conversation or launch form, including any draft. When you open settings from the model picker or terminal, the arrow takes you straight back to the workspace. **⌘N** opens the new conversation form.
 
 Under **Storage**, use **Clean up now** to remove unused worktrees that have no local changes or new commits. Turn on **Automatic cleanup** to check immediately, at startup, and hourly.
 

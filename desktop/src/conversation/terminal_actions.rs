@@ -74,10 +74,7 @@ fn action_menu(
             let (view, root) = (view.clone(), root.clone());
             window.defer(cx, move |window, cx| {
                 let _ = view.update(cx, |view, cx| {
-                    view.open_settings(window, cx);
-                    view.settings.update(cx, |settings, cx| {
-                        settings.open_project_actions(root, window, cx);
-                    });
+                    view.open_settings(SettingsTarget::ProjectActions(root), window, cx);
                 });
             });
         }),

@@ -1,6 +1,6 @@
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Selectable, Theme,
+    ActiveTheme, Selectable, Sizable, Theme,
     button::{Button, ButtonVariants},
     input::{Input, InputState},
     v_flex,
@@ -45,30 +45,34 @@ pub(crate) fn init_theme(cx: &mut App) {
     theme.apply_config(&active);
 }
 
+pub(crate) fn control_text_size() -> Rems {
+    rems(0.8125)
+}
+
 pub fn heading(text: impl Into<SharedString>) -> Div {
     div()
-        .text_xl()
+        .text_lg()
         .font_weight(FontWeight::SEMIBOLD)
         .child(text.into())
 }
 
 pub fn section_title(text: impl Into<SharedString>) -> Div {
     div()
-        .text_base()
+        .text_sm()
         .font_weight(FontWeight::SEMIBOLD)
         .child(text.into())
 }
 
 pub fn label(text: impl Into<SharedString>) -> Div {
     div()
-        .text_sm()
+        .text_size(control_text_size())
         .font_weight(FontWeight::MEDIUM)
         .child(text.into())
 }
 
 pub fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
-        .text_sm()
+        .text_size(control_text_size())
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
 }
@@ -82,6 +86,7 @@ pub fn field(name: &'static str, state: &Entity<InputState>) -> Div {
 
 pub fn choice(id: impl Into<ElementId>, title: impl Into<SharedString>, selected: bool) -> Button {
     Button::new(id)
+        .small()
         .label(title)
         .selected(selected)
         .when(selected, |button| button.primary())
