@@ -159,6 +159,17 @@ impl PullRequestTarget {
 }
 
 impl Checkout {
+    /// Recheck the local checkout after the network lookup before applying policy.
+    pub async fn has_current_merged_pr(&self) -> bool {
+        let Status::Found { branch, pr, .. } = self.status().await else {
+            return false;
+        };
+        pr.state() == PullRequestState::Merged
+            && pr.head_commit() == branch.local_oid
+            && git::has_uncommitted_changes(&self.root).is_ok_and(|dirty| !dirty)
+            && git::github_branch(&self.root).is_ok_and(|current| current.same_target(&branch))
+    }
+
     pub async fn status(&self) -> Status {
         if git::has_conflicts(&self.root) {
             return Status::Conflicts;

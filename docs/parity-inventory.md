@@ -111,6 +111,8 @@ The machine API check uses a deterministic Codex app-server fixture over stdio t
 
 A host should normally use launch, send, stop and the other management operations. Low-level dispatch accepts a broader schema, including messages normally produced by server workers. Use the authenticated intake, scope checks, provenance normalization and existing command policy for any remote dispatch API. A thread agent gets the narrower MCP interface below. [Management service][src-9] · [Message intake][src-10] · [RPC authorization][src-11]
 
+Huggler Desktop owns merged-PR automatic settlement: enabled by default, it polls idle local conversations every minute through the existing GitHub status adapter and dispatches `Action::SetSettled`. The General setting persists an opt-out. The library validates settlement against concurrent work. This policy does not remove worktrees or change remote-machine conversations.
+
 | Responsibility | Wire command discriminants | Behavior to preserve |
 | --- | --- | --- |
 | Thread lifecycle | `thread.create`, `thread.archive`, `thread.unarchive`, `thread.delete` | Create a durable address, move to/from archive, delete and clean up dependent resources. Cover conditional deletion and living forks. |

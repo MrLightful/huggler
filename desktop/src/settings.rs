@@ -95,6 +95,7 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     worktree_projects: BTreeMap<PathBuf, PathBuf>,
     pub automatic_worktree_cleanup: bool,
+    pub auto_settle_merged_prs: bool,
 }
 
 impl Default for Preferences {
@@ -118,6 +119,7 @@ impl Default for Preferences {
             machines: Vec::new(),
             worktree_projects: BTreeMap::new(),
             automatic_worktree_cleanup: false,
+            auto_settle_merged_prs: true,
         }
     }
 }
@@ -902,5 +904,20 @@ impl Settings {
                     .overflow_y_scroll()
                     .child(body),
             )
+    }
+}
+
+#[cfg(test)]
+mod settlement_preferences_tests {
+    use super::Preferences;
+
+    #[test]
+    fn merged_pr_settlement_defaults_on_and_remembers_opt_out() {
+        let mut prefs: Preferences = serde_json::from_str("{}").unwrap();
+        assert!(prefs.auto_settle_merged_prs);
+        prefs.auto_settle_merged_prs = false;
+        let saved = serde_json::to_string(&prefs).unwrap();
+        let restored: Preferences = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.auto_settle_merged_prs);
     }
 }

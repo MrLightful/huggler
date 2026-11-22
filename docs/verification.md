@@ -41,6 +41,12 @@ cargo build --locked --manifest-path desktop/Cargo.toml --features qualification
 python3 scripts/check-desktop-history.py target/desktop/debug/huggler-desktop
 ```
 
+The merged-PR settlement check drives the desktop with a local GitHub fixture. It verifies selected and background conversations, the persisted General setting, closed PRs, and edits or branch switches during a status request. It tracks each app PID and verifies exit.
+
+```sh
+python3 scripts/check-desktop-pull-requests.py target/desktop/debug/huggler-desktop --settlement-only
+```
+
 ### Capture a desktop screenshot baseline
 
 Keep the macOS session unlocked and grant Screen Recording access to the process

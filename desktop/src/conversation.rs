@@ -137,6 +137,7 @@ pub struct Desktop {
     current: Option<ConversationDetail>,
     pull_request: Option<crate::github::Status>,
     pull_request_watch: Option<Task<()>>,
+    merged_pr_watch: Option<Task<()>>,
     pull_request_action: HashSet<ThreadId>,
     checkout_unavailable: bool,
     before: Option<HistoryCursor>,
@@ -280,6 +281,7 @@ impl Desktop {
             current: None,
             pull_request: None,
             pull_request_watch: None,
+            merged_pr_watch: None,
             pull_request_action: HashSet::new(),
             checkout_unavailable: false,
             before: None,
@@ -371,6 +373,7 @@ impl Desktop {
         })
         .detach();
         let restored = view.restore(window, cx);
+        view.watch_merged_prs(cx);
         view.agent_activity
             .update_preferences(view.settings.read(cx).preferences(), &view.threads);
         if let Ok(mut revision) = restored {
