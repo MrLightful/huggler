@@ -55,6 +55,9 @@ def write_notices(root, resources, target, features, *, manifest="desktop/Cargo.
         texts[(root / "desktop/assets/dm-sans/OFL.txt").read_text().strip()].add(
             "DM Sans / https://github.com/googlefonts/dm-fonts/tree/4412393b7d2de9fe7a92064c2dce9b5af5d7fd26/Sans"
         )
+        texts[(root / "desktop/assets/provider-logos/LICENSE").read_text().strip()].add(
+            "Provider marks from theSVG / https://github.com/GLINCKER/thesvg/tree/551229c188b4ab6e2d8b5763b9633ec91206d04c"
+        )
     with (resources / "Third-party notices.txt").open("w", encoding="utf-8") as out:
         out.write(f"Locked {component} dependencies, including build tools\n\n"
                   "The following URLs provide the corresponding unmodified sources, including "

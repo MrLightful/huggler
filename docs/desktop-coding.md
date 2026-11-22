@@ -78,9 +78,19 @@ If `~/.huggler/userdata/huggler.sqlite3` is absent and an existing database is f
 
 ## Desktop settings
 
-Choose **Settings** in the sidebar or press **⌘,**. Select **System**, **Light** or **Dark** to change the color theme immediately. Choose a default coding provider for new conversations. Each existing conversation keeps its assigned provider. **Done** returns to the conversation or launch form you were using, including text you had already entered. **⌘N** opens the new conversation form.
+Choose **Settings** in the sidebar or press **⌘,**. **Providers** shows detected installations and configured servers. Select a card to see that provider’s settings below, or choose **Add provider** to set up another one. Use **Install** where available, or open **Custom executable** to set the path to an existing installation. Restart Huggler after saving a custom path. Huggler uses the CLI’s credentials. Follow the provider’s sign-in guide if needed, then choose **Refresh**.
 
-If the app cannot find Codex, run `command -v codex` in the shell where Codex works. Enter the resulting absolute path in **Codex executable**, choose **Save path**, then quit and reopen Huggler. Clear the field to use `codex` from the app’s search path. When `HUGGLER_CODEX` is set, Settings displays the environment override. Preferences are stored in `preferences.json` in the app’s state directory.
+The provider heading shows the setup state, detected executable version, and available actions. **Refresh** checks the installed version, sign-in status, and available models. Huggler offers **Update** when its bundled release is newer than the installed copy it manages. **Reset to defaults** restores model visibility and order and clears executable and launch overrides saved in Huggler. Restart Huggler to apply reset executable or launch settings.
+
+New conversations start with Codex selected. Use the composer’s provider and model picker to choose another provider before starting a conversation. Under **Appearance**, select **System**, **Light** or **Dark** to change the color theme immediately. Use the back arrow to return to the Settings list. **Done** returns to the conversation or launch form you were using, including text you had already entered. **⌘N** opens the new conversation form.
+
+Under **Storage**, use **Clean up now** to remove unused worktrees that have no local changes or new commits. Turn on **Automatic cleanup** to check immediately, at startup, and hourly.
+
+Select a provider and use **Models** to show or hide models in the conversation picker. Models appear in descending order by name until you reorder them with the arrows. Preferences apply to that provider instance across checkouts. The picker always offers **Provider default** and existing conversations retain their selected models. Model discovery uses the current checkout when available.
+
+Under **Environment**, add variables such as a custom API endpoint for that provider. Use **Save variables**, or leave the provider’s settings to save valid edits automatically. Restart Huggler to apply them. Huggler masks values in the editor and saves them in the local preferences file with user-only permissions. They override inherited variables for that provider’s subprocesses. A config directory set in Advanced settings takes precedence over a matching environment variable. Configure the environment of any separately managed server where it runs.
+
+Open **Advanced settings** to set an executable path, a config directory, or launch arguments for Codex or Claude Agent. Save and restart Huggler to apply runtime changes. Clear the executable field to return to automatic discovery. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` take precedence over the corresponding saved paths. Other configured instances show their runtime details in Advanced settings and use `HUGGLER_PROVIDERS` for changes. Preferences are stored in `preferences.json` in the app’s state directory.
 
 ## Reproduce the desktop check
 
