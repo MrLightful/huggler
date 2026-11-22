@@ -25,6 +25,7 @@ pub enum Step {
     Key(String),
     See(String),
     RightOf([String; 2]),
+    Above([String; 2]),
     InLowerHalf(String),
     InUpperHalf(String),
     MaxHeight(String, u16),
@@ -174,6 +175,10 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             .get(item.as_str())
             .zip(controls.get(reference.as_str()))
             .is_some_and(|(item, reference)| item.left() >= reference.right()),
+        Step::Above([item, reference]) => controls
+            .get(item.as_str())
+            .zip(controls.get(reference.as_str()))
+            .is_some_and(|(item, reference)| item.bottom() <= reference.top()),
         Step::Contains(text) => controls.keys().any(|key| key.contains(text.as_str())),
         Step::SeeAny(keys) => keys.iter().any(|key| controls.contains_key(key.as_str())),
         Step::Absent(key) => !controls.contains_key(key.as_str()),

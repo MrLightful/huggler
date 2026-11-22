@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    fmt,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -35,6 +36,17 @@ pub struct ProviderInstance {
     /// Environment variable containing the external OpenCode server password.
     #[serde(default)]
     pub password_env: Option<String>,
+    #[serde(skip)]
+    environment: ProviderEnvironment,
+}
+
+#[derive(Clone, Default)]
+struct ProviderEnvironment(BTreeMap<String, String>);
+
+impl fmt::Debug for ProviderEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_set().entries(self.0.keys()).finish()
+    }
 }
 
 impl ProviderInstance {
@@ -54,7 +66,26 @@ impl ProviderInstance {
             request_approvals: false,
             workspace_write: false,
             password_env: None,
+            environment: ProviderEnvironment::default(),
         }
+    }
+
+    /// Set the environment passed to subprocesses launched for this instance.
+    pub fn set_environment(&mut self, values: BTreeMap<String, String>) -> Result<()> {
+        if values
+            .iter()
+            .any(|(key, value)| key.is_empty() || key.contains(['=', '\0']) || value.contains('\0'))
+        {
+            return Err(Error::Invalid(
+                "invalid provider environment variable".into(),
+            ));
+        }
+        self.environment = ProviderEnvironment(values);
+        Ok(())
+    }
+
+    pub fn environment(&self) -> &BTreeMap<String, String> {
+        &self.environment.0
     }
 
     fn home_variable(&self) -> Option<&'static str> {
@@ -69,7 +100,7 @@ impl ProviderInstance {
 
     pub(crate) fn command(&self) -> Command {
         let mut command = Command::new(&self.executable);
-        command.args(&self.args);
+        command.args(&self.args).envs(self.environment());
         if let (Some(key), Some(path)) = (self.home_variable(), &self.home) {
             command.env(key, path);
         }
@@ -77,15 +108,17 @@ impl ProviderInstance {
     }
 
     pub(crate) fn continuation_key(&self) -> Result<String> {
+        let environment_path = |name: &str| {
+            self.environment()
+                .get(name)
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os(name).map(PathBuf::from))
+        };
         let home = self
             .home
             .clone()
-            .or_else(|| {
-                self.home_variable()
-                    .and_then(std::env::var_os)
-                    .map(PathBuf::from)
-            })
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+            .or_else(|| self.home_variable().and_then(environment_path))
+            .or_else(|| environment_path("HOME"));
         let identity = serde_json::to_vec(&(
             self.driver,
             &self.executable,
@@ -188,11 +221,17 @@ pub(crate) fn registry(
     first.workspace_write = codex.workspace_write;
     let second = ProviderInstance::new("claudeAgent", Provider::ClaudeAgent, &claude.executable);
     let mut registry = Registry::new();
-    for instance in [first, second].into_iter().chain(extra.iter().cloned()) {
+    for instance in extra.iter().cloned() {
         instance.validate()?;
         let id = instance.id.0.clone();
         if registry.insert(id.clone(), instance).is_some() {
             return Err(Error::Invalid(format!("duplicate provider instance {id}")));
+        }
+    }
+    for instance in [first, second] {
+        if !registry.contains_key(instance.id.as_str()) {
+            instance.validate()?;
+            registry.insert(instance.id.as_str().to_owned(), instance);
         }
     }
     Ok(registry)

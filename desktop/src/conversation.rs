@@ -7,7 +7,8 @@ mod transcript;
 
 use attachments::Attachments;
 use gpui_component::list::ListState;
-use models::{Models, ProviderCatalog};
+use models::Models;
+pub(crate) use models::ProviderCatalog;
 use transcript::TurnClock;
 
 use crate::{
@@ -28,7 +29,7 @@ use gpui_component::{
 };
 use huggler::{
     Action, Command, CommandId, ConversationDetail, ConversationSummary, HistoryCursor, Huggler,
-    ProviderInstanceId, RunId, ThreadId,
+    Provider, ProviderInstanceId, RunId, ThreadId,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -121,24 +122,33 @@ impl Desktop {
                 cx,
             )
         });
+        let catalog_fallback = state.clone();
         cx.subscribe_in(
             &settings,
             window,
-            |view: &mut Self, _, event, window, cx| {
+            move |view: &mut Self, _, event, window, cx| {
                 match event {
                     SettingsEvent::Back => {
                         view.show_settings = false;
                         view.focus_workspace(window, cx);
                     }
-                    SettingsEvent::DefaultProvider(id) => {
-                        view.choose_provider(id, cx);
+                    SettingsEvent::ProviderModels(id, refresh) => {
+                        let (_, checkout) = view.model_source(cx);
+                        let directory = if checkout.is_dir() {
+                            checkout
+                        } else {
+                            catalog_fallback.clone()
+                        };
+                        let catalog = view.catalog_for((id.clone(), directory), *refresh, cx);
+                        view.settings.update(cx, |settings, cx| {
+                            settings.set_model_catalog(id, catalog, cx)
+                        });
                     }
                 }
                 cx.notify();
             },
         )
         .detach();
-        let instance = settings.read(cx).default_provider();
         let mut view = Self {
             settings,
             show_settings: false,
@@ -187,7 +197,7 @@ impl Desktop {
             }),
             prompt: cx.new(|cx| InputState::new(window, cx).auto_grow(2, 5)),
             suggestions: suggestions::Suggestions::default(),
-            instance,
+            instance: Provider::Codex.key().into(),
             launch_model: None,
             model_picker: None,
             model_catalogs: HashMap::new(),
@@ -454,6 +464,8 @@ impl Desktop {
         self.suggestions = Default::default();
         self.model_picker = None;
         self.show_settings = true;
+        self.settings
+            .update(cx, |settings, cx| settings.opened(window, cx));
         self.settings.read(cx).focus.focus(window);
         cx.notify();
     }
@@ -505,7 +517,7 @@ impl Desktop {
             return;
         }
         self.launch_model = None;
-        self.instance = self.settings.read(cx).default_provider();
+        self.instance = Provider::Codex.key().into();
         self.subscription = None;
         self.command_log = None;
         self.current = None;
@@ -698,6 +710,27 @@ impl Desktop {
         }
     }
 
+    fn navigation_toggle(&self, open: bool, cx: &Context<Self>) -> Div {
+        let action = if open {
+            "Hide conversations"
+        } else {
+            "Show conversations"
+        };
+        control!(
+            action,
+            Button::new("toggle-navigation")
+                .ghost()
+                .small()
+                .icon(IconName::PanelLeft)
+                .selected(open)
+                .tooltip(action)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.navigation.toggle(open);
+                    cx.notify();
+                }))
+        )
+    }
+
     fn workspace_header(
         &self,
         navigation_open: bool,
@@ -739,29 +772,9 @@ impl Desktop {
             .border_b_1()
             .border_color(cx.theme().border)
             .gap_2()
-            .child({
-                let open = navigation_open;
-                let action = if open {
-                    "Hide conversations"
-                } else {
-                    "Show conversations"
-                };
-                control!(
-                    action,
-                    Button::new("toggle-navigation")
-                        .ghost()
-                        .small()
-                        .icon(IconName::PanelLeft)
-                        .selected(open)
-                        .tooltip(action)
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.navigation.toggle(open);
-                            cx.notify();
-                        }))
-                )
-            })
-            .when(!self.show_settings, |header| header.child(crumb))
-            .when(self.current.is_some() && !self.show_settings, |header| {
+            .child(self.navigation_toggle(navigation_open, cx))
+            .child(crumb)
+            .when(self.current.is_some(), |header| {
                 let action = if changes_open {
                     "Hide changes"
                 } else {
@@ -1358,7 +1371,11 @@ impl Render for Desktop {
         let viewport = f32::from(window.viewport_size().width);
         let narrow = window.viewport_size().width < NARROW_VIEWPORT_WIDTH;
         let changes_open = self.changes_sidebar.is_open(!narrow);
-        let navigation_default = self.current.is_none() || self.show_settings;
+        let navigation_default = if self.show_settings {
+            !narrow
+        } else {
+            self.current.is_none()
+        };
         let navigation_open = self.navigation.is_open(navigation_default);
         let left = self.navigation.fraction(navigation_default, window);
         let right = if self.current.is_some() && !self.show_settings {
@@ -1457,9 +1474,22 @@ impl Render for Desktop {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(self.workspace_header(navigation_open, changes_open, cx))
+                    .when(!self.show_settings, |pane| {
+                        pane.child(self.workspace_header(navigation_open, changes_open, cx))
+                    })
                     .child(if self.show_settings {
-                        self.settings.clone().into_any_element()
+                        v_flex()
+                            .size_full()
+                            .relative()
+                            .child(self.settings.clone())
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_4()
+                                    .left_4()
+                                    .child(self.navigation_toggle(navigation_open, cx)),
+                            )
+                            .into_any_element()
                     } else {
                         match &self.current {
                             Some(thread) => self

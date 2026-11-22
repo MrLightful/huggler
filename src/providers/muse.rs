@@ -15,7 +15,9 @@ async fn connect(
     cwd: &Path,
 ) -> Result<(Rpc, Value)> {
     let mut cmd = std::process::Command::new(&instance.executable);
-    cmd.arg("serve").args(&instance.args);
+    cmd.arg("serve")
+        .args(&instance.args)
+        .envs(instance.environment());
     let mut rpc = Rpc::open(cmd, cwd, output)?;
     let init = rpc.request(1, "initialize", json!({
         "clientInfo": {"name": output.name, "version": output.version},

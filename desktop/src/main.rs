@@ -10,6 +10,7 @@ macro_rules! control {
     }};
 }
 
+mod assets;
 mod changes;
 mod fonts;
 mod git;
@@ -26,7 +27,7 @@ use anyhow::{Context as _, Result};
 use conversation::Desktop;
 use gpui::{prelude::*, *};
 use gpui_component::Root;
-use huggler::Huggler;
+use huggler::{Huggler, Provider};
 use std::{path::PathBuf, sync::Arc};
 
 const APP_ID: &str = "dev.huggler.stage2";
@@ -63,20 +64,36 @@ fn main() -> Result<()> {
     options.prompt_suggestions = std::env::var("HUGGLER_PROMPT_SUGGESTIONS").as_deref() == Ok("1");
     options.codex.request_approvals = true;
     options.codex.workspace_write = true;
-    if let Some(path) = std::env::var_os("HUGGLER_CODEX")
+    let state = paths.state_dir();
+    options.codex.executable = std::env::var_os("HUGGLER_CODEX")
         .map(PathBuf::from)
         .or_else(|| prefs.codex_executable.clone())
-    {
-        options.codex.executable = path;
-    }
-    if let Some(path) = std::env::var_os("HUGGLER_CLAUDE_ACP") {
-        options.claude_agent.executable = path.into();
-    }
+        .unwrap_or_else(|| {
+            settings::default_executable(&state, Provider::Codex, &options.codex.executable)
+        });
+    options.claude_agent.executable = std::env::var_os("HUGGLER_CLAUDE_ACP")
+        .map(PathBuf::from)
+        .or_else(|| prefs.claude_agent_executable.clone())
+        .unwrap_or_else(|| {
+            settings::default_executable(
+                &state,
+                Provider::ClaudeAgent,
+                &options.claude_agent.executable,
+            )
+        });
     if let Some(path) = std::env::var_os("HUGGLER_PROVIDERS") {
         let file = std::fs::File::open(path).context("open provider instance configuration")?;
         options.instances =
             serde_json::from_reader(file).context("parse provider instance list")?;
+        anyhow::ensure!(
+            options
+                .instances
+                .iter()
+                .all(|instance| !matches!(instance.id.as_str(), "codex" | "claudeAgent")),
+            "HUGGLER_PROVIDERS must use unique IDs distinct from codex and claudeAgent"
+        );
     }
+    prefs.apply_runtime_overrides(&mut options)?;
     let executor = tokio::runtime::Runtime::new()?;
     let runtime = Arc::new(executor.block_on(Huggler::open(options))?);
 
@@ -86,7 +103,7 @@ fn main() -> Result<()> {
         Some(Box::new(huggler::services::terminal::TerminalHost)),
     )?;
 
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = Application::new().with_assets(assets::Assets);
     app.run(move |cx| {
         gpui_component::init(cx);
         fonts::init(cx);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::settings::ModelPreferences;
 use gpui_component::{
     IconName, IndexPath, Sizable,
     list::{List, ListDelegate, ListEvent, ListItem, ListState},
@@ -8,10 +9,10 @@ use huggler::ProviderReport;
 
 const DEFAULT: &str = "Provider default";
 
-pub(super) struct ProviderCatalog {
+pub(crate) struct ProviderCatalog {
     instance: ProviderInstanceId,
     checkout: PathBuf,
-    result: Option<Result<ProviderReport, String>>,
+    pub(crate) result: Option<Result<ProviderReport, String>>,
 }
 
 impl ProviderCatalog {
@@ -64,6 +65,7 @@ pub(super) struct Models {
     current: Option<String>,
     query: String,
     matches: Vec<Option<String>>,
+    preferences: ModelPreferences,
 }
 
 impl Models {
@@ -73,14 +75,17 @@ impl Models {
             .as_ref()
             .and_then(|catalog| catalog.read(cx).result.as_ref())
             .and_then(|r| r.as_ref().ok());
+        let models = report.map(|report| self.preferences.ordered(&report.models));
         self.matches = std::iter::once(None)
-            .chain(report.into_iter().flat_map(|r| r.models.iter().map(Some)))
-            .filter(|id| {
-                id.map_or(DEFAULT, String::as_str)
-                    .to_lowercase()
-                    .contains(&self.query)
-            })
-            .map(|id| id.cloned())
+            .chain(
+                models
+                    .into_iter()
+                    .flatten()
+                    .filter(|id| self.preferences.enabled(id))
+                    .map(Some),
+            )
+            .filter(|id| id.unwrap_or(DEFAULT).to_lowercase().contains(&self.query))
+            .map(|id| id.map(str::to_owned))
             .collect();
     }
 }
@@ -165,7 +170,15 @@ impl Desktop {
         refresh: bool,
         cx: &mut Context<Self>,
     ) -> Entity<ProviderCatalog> {
-        let source = self.model_source(cx);
+        self.catalog_for(self.model_source(cx), refresh, cx)
+    }
+
+    pub(super) fn catalog_for(
+        &mut self,
+        source: (ProviderInstanceId, PathBuf),
+        refresh: bool,
+        cx: &mut Context<Self>,
+    ) -> Entity<ProviderCatalog> {
         if let Some(catalog) = self.model_catalogs.get(&source) {
             if refresh && !catalog.read(cx).loading() {
                 catalog.update(cx, |state, cx| state.load(self.runtime.clone(), cx));
@@ -295,12 +308,14 @@ impl Desktop {
             Some(t) => t.model.clone(),
             None => self.launch_model.clone(),
         };
+        let preferences = self.settings.read(cx).model_preferences(&source.0);
         let list = cx.new(|cx| {
             let mut models = Models {
                 catalog: catalog.clone(),
                 current,
                 query: String::new(),
                 matches: Vec::new(),
+                preferences,
             };
             models.filter(cx);
             if let Some(catalog) = &catalog {
