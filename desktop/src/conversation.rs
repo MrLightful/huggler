@@ -1,4 +1,5 @@
 mod attachments;
+mod file_tree;
 mod launch_workspace;
 mod models;
 mod project_actions;
@@ -7,6 +8,7 @@ mod suggestions;
 mod transcript;
 
 use attachments::Attachments;
+use file_tree::{FileAction, FileTree};
 use gpui_component::list::ListState;
 use launch_workspace::{LaunchWorkspace, WorkspaceMode};
 use models::{Models, ProviderCatalog};
@@ -50,17 +52,50 @@ fn history_at_bottom(scroll: &ScrollHandle) -> bool {
 
 struct Workspace {
     root: PathBuf,
+    files: Entity<FileTree>,
     changes: Entity<Changes>,
     draft: Entity<InputState>,
     attachments: Attachments,
     questions: HashMap<huggler::RequestId, Entity<Questions>>,
 }
 
+impl Workspace {
+    fn refresh_after_checkout_update(&self, tab: WorkspaceTab, cx: &mut App) {
+        WorkspaceTab::Changes.refresh(self, cx);
+        if tab == WorkspaceTab::AllFiles {
+            tab.refresh(self, cx);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkspaceTab {
+    AllFiles,
+    Changes,
+}
+
+impl WorkspaceTab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AllFiles => "All files",
+            Self::Changes => "Changes",
+        }
+    }
+
+    fn refresh(self, workspace: &Workspace, cx: &mut App) {
+        match self {
+            Self::AllFiles => workspace.files.update(cx, |tree, cx| tree.refresh(cx)),
+            Self::Changes => workspace.changes.update(cx, |panel, cx| panel.refresh(cx)),
+        }
+    }
+}
+
 pub struct Desktop {
     settings: Entity<Settings>,
     show_settings: bool,
     navigation: sidebar::Sidebar,
-    changes_sidebar: sidebar::Sidebar,
+    right_sidebar: sidebar::Sidebar,
+    workspace_tab: WorkspaceTab,
     focus: FocusHandle,
     workspaces: HashMap<ThreadId, Workspace>,
     runtime: Arc<Huggler>,
@@ -151,7 +186,8 @@ impl Desktop {
             settings,
             show_settings: false,
             navigation: sidebar::Sidebar::new(288.),
-            changes_sidebar: sidebar::Sidebar::new(336.),
+            right_sidebar: sidebar::Sidebar::new(336.),
+            workspace_tab: WorkspaceTab::Changes,
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
@@ -298,9 +334,7 @@ impl Desktop {
     ) -> huggler::Result<()> {
         self.launching = None;
         self.ensure_workspace(&id, window, cx)?;
-        self.workspaces[&id]
-            .changes
-            .update(cx, |panel, cx| panel.refresh(cx));
+        self.workspaces[&id].refresh_after_checkout_update(self.workspace_tab, cx);
         if self.current.as_ref().is_some_and(|thread| thread.id == id) {
             self.focus_workspace(window, cx);
             self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
@@ -355,8 +389,7 @@ impl Desktop {
                     let sequence = thread.history.sequence;
                     if finished || latest_finished {
                         view.workspaces[&selected]
-                            .changes
-                            .update(cx, |panel, cx| panel.refresh(cx));
+                            .refresh_after_checkout_update(view.workspace_tab, cx);
                         view.watch_pull_request(cx);
                     }
                     Some(sequence)
@@ -380,6 +413,33 @@ impl Desktop {
             let root = self.runtime.thread_checkout(id)?;
             let approvals_file = self.selection_file.with_file_name("file-approvals.json");
             let changes = cx.new(|cx| Changes::new(root.clone(), approvals_file, id.0.clone(), cx));
+            let files = cx.new(|_| FileTree::new(root.clone()));
+            let thread = id.clone();
+            cx.subscribe_in(&files, window, move |view, _, action, window, cx| {
+                if !view
+                    .current
+                    .as_ref()
+                    .is_some_and(|current| current.id == thread)
+                {
+                    return;
+                }
+                match action {
+                    FileAction::AttachFile(path) => {
+                        view.attach_workspace_file(&thread, path.clone(), window, cx);
+                    }
+                    FileAction::AttachReference(path) => {
+                        view.insert_file_reference(path, window, cx);
+                    }
+                    FileAction::OpenIn(destination, path) => {
+                        let destination = *destination;
+                        let path = path.clone();
+                        view.run_project_action(cx, move |root| {
+                            destination.open_file(&root, &path)
+                        });
+                    }
+                }
+            })
+            .detach();
             let draft = cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(2, 5)
@@ -390,6 +450,7 @@ impl Desktop {
                 id.clone(),
                 Workspace {
                     root,
+                    files,
                     changes,
                     draft,
                     attachments: Attachments::default(),
@@ -519,9 +580,9 @@ impl Desktop {
         let input = match &self.current {
             Some(_) => {
                 if window.viewport_size().width < NARROW_VIEWPORT_WIDTH
-                    && self.changes_sidebar.is_open(false)
+                    && self.right_sidebar.is_open(false)
                 {
-                    self.changes_sidebar.toggle(true);
+                    self.right_sidebar.toggle(true);
                 }
                 &self.prompt
             }
@@ -751,12 +812,7 @@ impl Desktop {
         }
     }
 
-    fn workspace_header(
-        &self,
-        navigation_open: bool,
-        changes_open: bool,
-        cx: &Context<Self>,
-    ) -> Div {
+    fn workspace_header(&self, navigation_open: bool, right_open: bool, cx: &Context<Self>) -> Div {
         let checkout = self.checkout.read(cx).value();
         let (root, title) = match &self.current {
             Some(thread) => (
@@ -815,30 +871,58 @@ impl Desktop {
             })
             .when(!self.show_settings, |header| header.child(crumb))
             .when(self.current.is_some() && !self.show_settings, |header| {
-                let action = if changes_open {
-                    "Hide changes"
-                } else {
-                    "Show changes"
+                let action = match (self.workspace_tab, right_open) {
+                    (WorkspaceTab::AllFiles, true) => "Hide all files",
+                    (WorkspaceTab::AllFiles, false) => "Show all files",
+                    (WorkspaceTab::Changes, true) => "Hide changes",
+                    (WorkspaceTab::Changes, false) => "Show changes",
                 };
                 header.child(self.project_actions(cx)).child(control!(
                     action,
-                    Button::new("toggle-changes")
+                    Button::new("toggle-right-sidebar")
                         .ghost()
                         .small()
                         .icon(IconName::PanelRight)
-                        .selected(changes_open)
+                        .selected(right_open)
                         .tooltip(action)
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.changes_sidebar.toggle(changes_open);
-                            if !changes_open && let Some(thread) = &view.current {
-                                view.workspaces[&thread.id]
-                                    .changes
-                                    .update(cx, |panel, cx| panel.refresh(cx));
+                            view.right_sidebar.toggle(right_open);
+                            if !right_open && let Some(thread) = &view.current {
+                                view.workspace_tab.refresh(&view.workspaces[&thread.id], cx);
                             }
                             cx.notify();
                         }))
                 ))
             })
+    }
+
+    fn workspace_tabs(&self, cx: &Context<Self>) -> Div {
+        h_flex().flex_shrink_0().h_10().px_2().gap_1().children(
+            [WorkspaceTab::AllFiles, WorkspaceTab::Changes].map(|tab| {
+                let label = tab.label();
+                control!(
+                    format!("{label} tab"),
+                    Button::new(label)
+                        .label(label)
+                        .ghost()
+                        .small()
+                        .px_2()
+                        .selected(self.workspace_tab == tab)
+                        .when(self.workspace_tab == tab, |button| {
+                            button
+                                .bg(cx.theme().sidebar_accent)
+                                .text_color(cx.theme().sidebar_accent_foreground)
+                        })
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.workspace_tab = tab;
+                            if let Some(thread) = &view.current {
+                                tab.refresh(&view.workspaces[&thread.id], cx);
+                            }
+                            cx.notify();
+                        }))
+                )
+            }),
+        )
     }
 
     fn send_controls(
@@ -1438,20 +1522,20 @@ impl Render for Desktop {
         use sidebar::SidebarEdge;
         let viewport = f32::from(window.viewport_size().width);
         let narrow = window.viewport_size().width < NARROW_VIEWPORT_WIDTH;
-        let changes_open = self.changes_sidebar.is_open(!narrow);
+        let right_open = self.right_sidebar.is_open(!narrow);
         let navigation_default = self.current.is_none() || self.show_settings;
         let navigation_open = self.navigation.is_open(navigation_default);
         let left = self.navigation.fraction(navigation_default, window);
         let right = if self.current.is_some() && !self.show_settings {
-            self.changes_sidebar.fraction(!narrow, window)
+            self.right_sidebar.fraction(!narrow, window)
         } else {
             0.
         };
         let left_max =
-            SidebarEdge::Left.max_width(viewport, narrow, self.changes_sidebar.width, right);
+            SidebarEdge::Left.max_width(viewport, narrow, self.right_sidebar.width, right);
         let right_max = SidebarEdge::Right.max_width(viewport, narrow, self.navigation.width, left);
         let left_width = self.navigation.width.min(left_max);
-        let right_width = self.changes_sidebar.width.min(right_max);
+        let right_width = self.right_sidebar.width.min(right_max);
         let conversation_width =
             px(viewport - left_width * left - if narrow { 0. } else { right_width * right });
         div()
@@ -1544,7 +1628,7 @@ impl Render for Desktop {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(self.workspace_header(navigation_open, changes_open, cx))
+                    .child(self.workspace_header(navigation_open, right_open, cx))
                     .child(if self.show_settings {
                         self.settings.clone().into_any_element()
                     } else {
@@ -1573,27 +1657,23 @@ impl Render for Desktop {
                     ),
             )
             .when(left == 1., |layout| {
-                layout.child(SidebarEdge::Left.handle(left_width, narrow, cx))
+                layout.child(SidebarEdge::Left.handle(
+                    "Resize conversations",
+                    left_width,
+                    narrow,
+                    cx,
+                ))
             })
             .when_some(
                 self.current
                     .as_ref()
                     .filter(|_| right > 0. && !self.show_settings),
                 |layout, thread| {
-                    let tabs = h_flex()
-                        .flex_shrink_0()
-                        .h_10()
-                        .px_2()
-                        .gap_1()
-                        .child(control!(
-                            "Changes tab",
-                            label("Changes")
-                                .px_2p5()
-                                .py_1()
-                                .rounded_lg()
-                                .bg(cx.theme().sidebar_accent)
-                                .text_color(cx.theme().sidebar_accent_foreground)
-                        ));
+                    let workspace = &self.workspaces[&thread.id];
+                    let panel = match self.workspace_tab {
+                        WorkspaceTab::AllFiles => workspace.files.clone().into_any_element(),
+                        WorkspaceTab::Changes => workspace.changes.clone().into_any_element(),
+                    };
                     layout.child(
                         div()
                             .w(px(right_width * right))
@@ -1611,20 +1691,21 @@ impl Render for Desktop {
                                     .border_l_1()
                                     .border_color(cx.theme().sidebar_border)
                                     .bg(cx.theme().sidebar)
-                                    .child(tabs)
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_h_0()
-                                            .child(self.workspaces[&thread.id].changes.clone()),
-                                    ),
+                                    .child(self.workspace_tabs(cx))
+                                    .child(div().flex_1().min_h_0().child(panel)),
                             ),
                     )
                 },
             )
             .when(
                 self.current.is_some() && !self.show_settings && right == 1.,
-                |layout| layout.child(SidebarEdge::Right.handle(right_width, narrow, cx)),
+                |layout| {
+                    let resize = match self.workspace_tab {
+                        WorkspaceTab::AllFiles => "Resize all files",
+                        WorkspaceTab::Changes => "Resize changes",
+                    };
+                    layout.child(SidebarEdge::Right.handle(resize, right_width, narrow, cx))
+                },
             )
             .on_drag_move(
                 cx.listener(move |view, event: &DragMoveEvent<SidebarEdge>, _, cx| {
@@ -1632,7 +1713,7 @@ impl Render for Desktop {
                     match event.drag(cx) {
                         SidebarEdge::Left => view.navigation.width = x.clamp(160., left_max),
                         SidebarEdge::Right => {
-                            view.changes_sidebar.width = (viewport - x).clamp(160., right_max)
+                            view.right_sidebar.width = (viewport - x).clamp(160., right_max)
                         }
                     }
                     cx.notify();

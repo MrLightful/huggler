@@ -2,7 +2,7 @@ mod approvals;
 
 use crate::{
     git::{self, ChangeScope, File, FileChange, LineCounts, PreparedRevert},
-    open_in::OpenIn,
+    open_in::{OpenIn, file_menu},
     ui::{hint, label},
 };
 use anyhow::Context as _;
@@ -588,42 +588,22 @@ impl Changes {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let view = cx.weak_entity();
-        let path = path.to_owned();
-        control!(
-            format!("Open in/{}", path.display()),
+        let target = path.to_owned();
+        file_menu(
             Button::new(("open-changed-file", row_id))
                 .small()
                 .compact()
                 .ghost()
                 .size(px(24.))
                 .p_0()
-                .child(Icon::new(IconName::ChevronDown).small())
-                .tooltip("Open in")
-                .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
-                    let mut menu = menu.label("Open in");
-                    for destination in OpenIn::OPTIONS {
-                        let view = view.clone();
-                        let path = path.clone();
-                        let name = destination.label();
-                        let _control_path = path.clone();
-                        menu = menu.item(
-                            PopupMenuItem::element(move |_, _| {
-                                control!(
-                                    format!("Open {name}/{}", _control_path.display()),
-                                    div().child(name)
-                                )
-                            })
-                            .on_click(move |_, _, cx| {
-                                let _ = view.update(cx, |panel, cx| {
-                                    panel.open_file_in(destination, path.clone(), cx);
-                                });
-                            }),
-                        );
-                    }
-                    menu
-                })
+                .child(Icon::new(IconName::ChevronDown).small()),
+            path,
+            move |destination, cx| {
+                let _ = view.update(cx, |panel, cx| {
+                    panel.open_file_in(destination, target.clone(), cx);
+                });
+            },
         )
-        .flex_none()
     }
 
     fn file_row(&self, row: &ReviewRow, window: &mut Window, cx: &mut Context<Self>) -> Div {

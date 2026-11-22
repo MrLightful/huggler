@@ -275,6 +275,30 @@ pub(super) struct Suggestions {
 }
 
 impl Desktop {
+    pub(super) fn insert_file_reference(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(file) = FileMatch::new(path.to_path_buf()) else {
+            self.error = Some("Could not attach this path to the message.".into());
+            cx.notify();
+            return;
+        };
+        self.prompt.update(cx, |input, cx| {
+            let value = input.value();
+            let end = value.encode_utf16().count();
+            let separator = if value.ends_with(char::is_whitespace) || value.is_empty() {
+                ""
+            } else {
+                " "
+            };
+            let reference = format!("{separator}{} ", file.reference());
+            input.replace_text_in_range(Some(end..end), &reference, window, cx);
+        });
+    }
+
     pub(super) fn observe_composer(
         input: &Entity<InputState>,
         window: &mut Window,

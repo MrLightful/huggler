@@ -66,7 +66,8 @@ for line in sys.stdin:
             continue
         turn = "revise" if file.exists() else "implement"
         emit(id=frame["id"], result={"turn": {"id": turn}})
-        if prompt == "Create the answer file.":
+        if prompt == ("Create the answer file. [fixture-tree](fixture-tree) "
+                      "[linked-entry](fixture-tree/linked-entry) "):
             text = ("Checking the requested filename. I will confirm the path with you before "
                     "creating the answer file in this checkout.")
             for character in text:

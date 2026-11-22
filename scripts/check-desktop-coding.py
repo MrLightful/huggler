@@ -38,6 +38,11 @@ def check(binary):
         git("commit", "-qm", "Topic branch")
         topic_commit = git("rev-parse", "HEAD")
         git("update-ref", "refs/remotes/origin/topic", topic_commit)
+        (checkout / ".git" / "info" / "exclude").write_text("/fixture-tree/\n")
+        (checkout / "fixture-tree" / "empty").mkdir(parents=True)
+        (checkout / "fixture-tree" / "nested").mkdir()
+        (checkout / "fixture-tree" / "nested" / "entry.txt").write_text("Fixture attachment\n")
+        (checkout / "fixture-tree" / "linked-entry").symlink_to("nested/entry.txt")
         env = isolated_env(root)
         # A host launched from another repository must still run the provider
         # against each conversation's selected worktree.
@@ -55,6 +60,30 @@ def check(binary):
             {"drag_x": ["Resize conversations", 40]}, {"center_x": ["Resize conversations", 328]},
             {"drag_x": ["Resize changes", 40]}, {"center_x": ["Resize changes", 824]},
             {"see": "Changes tab"}, {"absent": "Refresh changes"},
+            {"right_of": ["Changes tab", "All files tab"]},
+            {"click": "All files tab"}, {"see": "Workspace file/fixture-tree"}, {"absent": "Workspace file/.git"},
+            {"hover": "Workspace file/fixture-tree"},
+            {"max_height": ["Attach to chat/fixture-tree", 18]}, {"max_height": ["Open in/fixture-tree", 18]},
+            {"click": "Open in/fixture-tree"}, {"see": "Open Finder/fixture-tree"},
+            {"see": "Open Terminal/fixture-tree"}, {"see": "Open VS Code/fixture-tree"},
+            {"key": "escape"}, {"absent": "Open Finder/fixture-tree"}, {"absent": "Workspace file/fixture-tree/nested"},
+            {"click": "Workspace file/fixture-tree"}, {"see": "Workspace file/fixture-tree/nested"},
+            {"click": "Workspace file/fixture-tree/empty"}, {"see": "Empty folder"},
+            {"click": "Workspace file/fixture-tree/nested"}, {"see": "Workspace file/fixture-tree/nested/entry.txt"},
+            {"click": "Workspace file/fixture-tree/nested/entry.txt"}, {"absent": "Remove entry.txt"},
+            {"click": "Open in/fixture-tree/nested/entry.txt"}, {"see": "Open Finder/fixture-tree/nested/entry.txt"},
+            {"hover": "Open Finder/fixture-tree/nested/entry.txt"}, {"see": "Open Finder/fixture-tree/nested/entry.txt"},
+            {"key": "escape"}, {"absent": "Open Finder/fixture-tree/nested/entry.txt"},
+            {"hover": "Workspace file/fixture-tree/nested/entry.txt"},
+            {"click": "Attach to chat/fixture-tree/nested/entry.txt"}, {"see": "Remove entry.txt"},
+            {"click": "Remove entry.txt"}, {"absent": "Remove entry.txt"},
+            {"click": "Workspace file/fixture-tree"}, {"absent": "Workspace file/fixture-tree/nested/entry.txt"},
+            {"drag_x": ["Resize all files", 136]}, {"center_x": ["Resize all files", 960]},
+            {"hover": "Workspace file/fixture-tree"},
+            {"click": "Open in/fixture-tree"}, {"see": "Open Finder/fixture-tree"},
+            {"key": "escape"}, {"absent": "Open Finder/fixture-tree"},
+            {"click": "Changes tab"}, {"see": "All changes"}, {"absent": "Workspace file/fixture-tree"},
+            {"drag_x": ["Resize changes", -136]}, {"center_x": ["Resize changes", 824]},
             {"click": "Hide changes"}, {"absent": "Changes tab"},
             {"drag_x": ["Resize conversations", 200]}, {"center_x": ["Resize conversations", 528]},
             {"drag_x": ["Resize conversations", -200]}, {"center_x": ["Resize conversations", 328]},
@@ -63,7 +92,11 @@ def check(binary):
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
             {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open in"]},
             {"right_of": ["Hide changes", "Create PR"]},
-            *send_message("Create the answer file."),
+            {"click": "Message"}, {"type": "Create the answer file."},
+            {"click": "All files tab"}, {"hover": "Workspace file/fixture-tree"}, {"click": "Attach to chat/fixture-tree"},
+            {"absent": "Workspace file/fixture-tree/nested"}, {"click": "Workspace file/fixture-tree"},
+            {"hover": "Workspace file/fixture-tree/linked-entry"}, {"click": "Attach to chat/fixture-tree/linked-entry"},
+            {"click": "Changes tab"}, {"click": "Send"},
             {"see": "writing/Checking the requested filename. I will confirm the path with you before "
                     "creating the answer file in this checkout."},
             {"click": "Command 1 output"},
@@ -104,7 +137,9 @@ def check(binary):
             {"click": "Message"}, {"type": "Wait for my next instruction."},
             {"click": "Create"}, *launch_thread(other, "Review"),
             {"see": "No changes"}, {"absent": f"Changed/{name}"},
-            {"click": "thread/Implementation"}, {"see": f"Changed/{name}"}, {"click": "Send"},
+            {"click": "All files tab"}, {"see": "No files in this workspace"},
+            {"click": "thread/Implementation"}, {"see": f"Workspace file/{name}"},
+            {"click": "Changes tab"}, {"see": f"Changed/{name}"}, {"click": "Send"},
             {"see": "status/Running"}, {"click": "Message"}, {"type": "Review the staged result."},
             {"see": "Stop thread"}, {"absent": "Queue message"}, {"key": "enter"}, {"see": "1 queued message"},
             {"in_lower_half": "section/Working/1"}, {"see": "Working/Implementation/Running"},

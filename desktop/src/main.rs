@@ -11,6 +11,7 @@ macro_rules! control {
 }
 
 mod changes;
+mod file_icons;
 mod fonts;
 mod git;
 mod github;
@@ -113,7 +114,7 @@ fn main() -> Result<()> {
         Some(Box::new(huggler::services::terminal::TerminalHost)),
     )?;
 
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = Application::new().with_assets(file_icons::DesktopAssets);
     app.run(move |cx| {
         gpui_component::init(cx);
         fonts::init(cx);
