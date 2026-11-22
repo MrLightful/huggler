@@ -477,3 +477,143 @@ async fn bounded_history_and_retained_replay_match_the_reopened_snapshot() -> Re
     );
     rt.close().await
 }
+
+#[tokio::test]
+async fn conversation_list_reports_human_requests_and_replays_settlement_across_reopen()
+-> Result<()> {
+    timeout(Duration::from_secs(15), async {
+        let temp = tempdir()?;
+        let repo = temp.path().join("repo");
+        checkout(&repo);
+        let mut options = HugglerOptions::new(temp.path().join("state"));
+        options.codex.executable =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-provider.py");
+        options.codex.request_approvals = true;
+        let runtime = Huggler::open(options.clone()).await?;
+        let project = runtime.open_project(&repo)?;
+        let thread = ThreadId("review".into());
+        let sibling = ThreadId("other".into());
+        for id in [&thread, &sibling] {
+            runtime.launch(
+                CommandId(format!("launch-{id}")),
+                id.clone(),
+                project.id.clone(),
+                id.to_string(),
+                None,
+            )?;
+        }
+        let initial_list = runtime.conversation_list()?;
+        assert_eq!(initial_list.threads[0].id, sibling);
+        let (_, mut events) = runtime.subscribe(&thread, None)?;
+        let receipt = runtime.send(CommandId("ask".into()), thread.clone(), "callbacks".into())?;
+        let run = receipt.run_id.unwrap();
+        let (mut permission, mut question) = (None, None);
+        let (permission, question) = loop {
+            match events.next().await?.change {
+                Change::PermissionRequested { request } => {
+                    if let Some(question) = question {
+                        break (request, question);
+                    }
+                    permission = Some(request);
+                }
+                Change::QuestionRequested { request } => {
+                    if let Some(permission) = permission {
+                        break (permission, request);
+                    }
+                    question = Some(request);
+                }
+                _ => {}
+            }
+        };
+        let pending = runtime
+            .wait_for_conversation_list(initial_list.revision)
+            .await?;
+        assert_eq!(pending.threads[0].id, thread);
+        assert!(pending.threads[0].needs_answer);
+        assert!(pending.threads[0].needs_approval);
+        assert_eq!(pending.threads[0].completed_run, None);
+        assert_eq!(pending.threads[1], initial_list.threads[0]);
+        assert_eq!(
+            runtime
+                .detail(&thread, None, "", 1)?
+                .foreground_run
+                .unwrap()
+                .id,
+            run
+        );
+
+        let settle = Command {
+            id: CommandId("settle".into()),
+            thread_id: thread.clone(),
+            action: Action::SetSettled { settled: true },
+        };
+        assert!(matches!(runtime.dispatch(settle.clone()), Err(Error::Busy)));
+        assert_eq!(runtime.conversation_list()?, pending);
+        runtime.respond_to_permission(&thread, &run, &permission.id, "accept".into())?;
+        let approved = runtime.wait_for_conversation_list(pending.revision).await?;
+        assert!(!approved.threads[0].needs_approval);
+        assert!(approved.threads[0].needs_answer);
+        assert_eq!(approved.threads[0].completed_run, None);
+        let answers = question
+            .questions
+            .iter()
+            .map(|question| {
+                (
+                    question.id.clone(),
+                    UserAnswer::Text("Use the fixture".into()),
+                )
+            })
+            .collect();
+        runtime
+            .respond_to_question(&thread, &run, &question.id, answers)
+            .await?;
+        assert_eq!(
+            runtime.wait(&thread, &run).await?.status,
+            RunStatus::Completed
+        );
+        let completed = runtime
+            .wait_for_conversation_list(approved.revision)
+            .await?;
+        assert!(!completed.threads[0].needs_answer);
+        assert_eq!(completed.threads[0].completed_run.as_ref(), Some(&run));
+
+        let settled = runtime.dispatch(settle.clone())?;
+        let settled_list = runtime
+            .wait_for_conversation_list(completed.revision)
+            .await?;
+        assert!(settled_list.threads[0].settled);
+        let cursor = runtime.read(&thread)?.cursor;
+        runtime.close().await?;
+
+        let runtime = Huggler::open(options).await?;
+        let (snapshot, mut events) = runtime.subscribe(&thread, Some(cursor))?;
+        assert!(snapshot.settled);
+        assert_eq!(runtime.dispatch(settle)?, settled);
+        assert_eq!(runtime.conversation_list()?, settled_list);
+        let follow_up = runtime.send(
+            CommandId("continue".into()),
+            thread.clone(),
+            "Continue".into(),
+        )?;
+        let reopened = events.next().await?;
+        assert_eq!(Some(&reopened.sequence), follow_up.event_sequences.first());
+        assert!(matches!(
+            reopened.change,
+            Change::SettlementChanged { settled: false }
+        ));
+        let follow_up = follow_up.run_id.unwrap();
+        assert_eq!(
+            runtime.wait(&thread, &follow_up).await?.status,
+            RunStatus::Completed
+        );
+        let list = runtime
+            .wait_for_conversation_list(settled_list.revision)
+            .await?;
+        assert!(!list.threads[0].settled);
+        assert_eq!(list.threads[0].completed_run.as_ref(), Some(&follow_up));
+        assert_eq!(list.threads[1], initial_list.threads[0]);
+        runtime.close().await
+    })
+    .await
+    .expect("conversation lifecycle should complete")
+}

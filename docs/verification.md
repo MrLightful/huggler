@@ -41,6 +41,45 @@ cargo build --locked --manifest-path desktop/Cargo.toml --features qualification
 python3 scripts/check-desktop-history.py target/desktop/debug/huggler-desktop
 ```
 
+### Capture a desktop screenshot baseline
+
+Keep the macOS session unlocked and grant Screen Recording access to the process
+hosting the check. Run the suite with the qualification binary built above.
+
+```sh
+python3 scripts/check-desktop-screenshots.py target/desktop/debug/huggler-desktop .context/desktop-baseline
+```
+
+The suite drives the real window with an isolated checkout, preferences, and a
+recorded provider fixture. It captures the starter and conversation setup, every
+Settings page, project, branch and model pickers, the conversation and attention
+states, file tree and changes panel, document and diff views, terminal, MCP status,
+and image and PDF attachments. It also saves standalone component crops. Use
+`--appearance light` for a separate light-mode baseline.
+
+After a change, rebuild the qualification binary and compare a new capture with
+the baseline.
+
+```sh
+python3 scripts/check-desktop-screenshots.py target/desktop/debug/huggler-desktop \
+  .context/desktop-current --baseline .context/desktop-baseline
+```
+
+Use an empty output directory each time. The comparison reports added, removed
+and changed images and exits with status 1 if any differ. Compare captures using
+the same macOS version, display scale, time zone and appearance. The qualification
+build fixes transcript timestamps and durations during capture and hides the
+blinking input caret. The comparison uses exact decoded pixel values. Use
+`--check-only` in place of the output directory to exercise the scene checkpoints
+and validate component bounds without Screen Recording access.
+
+To add a scene, put a named `shot` in the script after the actions that open it
+and supply a visible control as the readiness check. Pass `component=` with an
+observed control name to save just its bounds. Register a new control with
+`control!` or use `observe_bounds` for custom-painted components. See [the screenshot suite](../scripts/check-desktop-screenshots.py).
+
+### Run provider and installation checks
+
 The peer and recorded permission checks build and install their own temporary qualification bundles. Set up the release prerequisites below before running them.
 
 ```sh
