@@ -53,9 +53,23 @@ def run_window(executable, state, steps, env):
     script = state / "workflow.json"
     script.write_text(json.dumps([*steps, {"key": "cmd-q"}]))
     env = dict(env, HUGGLER_UI_SCRIPT=str(script), HUGGLER_STATE_DIR=str(state))
-    result = subprocess.run(
+    with subprocess.Popen(
         [executable], cwd="/", env=env,
-        check=True, timeout=150, stdout=subprocess.PIPE, text=True
-    )
-    if "GPUI workflow passed" not in result.stdout.splitlines():
+        stdout=subprocess.PIPE, text=True
+    ) as app:
+        print(f"Checking Huggler (PID {app.pid})", flush=True)
+        try:
+            stdout, _ = app.communicate(timeout=150)
+        finally:
+            if app.poll() is None:
+                app.terminate()
+                try:
+                    app.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    app.kill()
+                    app.wait()
+            print(f"Huggler PID {app.pid} exited ({app.returncode})", flush=True)
+        if app.returncode:
+            raise subprocess.CalledProcessError(app.returncode, app.args, output=stdout)
+    if "GPUI workflow passed" not in stdout.splitlines():
         raise RuntimeError("The window closed before the workflow finished")

@@ -61,8 +61,8 @@ def check(binary):
             {"click": "Show changes"}, {"see": "Changes tab"}, {"center_x": ["Resize changes", 824]},
             {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
-            {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open in"]},
-            {"right_of": ["Hide changes", "Create PR"]},
+            {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"},
+            {"absent": "Checking PR…"}, {"absent": "Create PR"}, {"right_of": ["Hide changes", "Open in"]},
             *send_message("Create the answer file."),
             {"see": "writing/Checking the requested filename. I will confirm the path with you before "
                     "creating the answer file in this checkout."},
@@ -94,8 +94,7 @@ def check(binary):
         subprocess.run(["git", "init", "-q", other], check=True)
         run_window(binary, state, [
             {"resize": [640, 440]}, {"click": "Show conversations"}, {"see": "Codex/Corrected the answer."},
-            {"right_of": ["Create PR", "Open in"]},
-            {"right_of": ["Show changes", "Create PR"]},
+            {"absent": "Checking PR…"}, {"absent": "Create PR"}, {"right_of": ["Show changes", "Open in"]},
             {"absent": f"Changed/{name}"}, {"click": "Show changes"}, {"see": f"Changed/{name}"},
             {"click": f"Open in/{name}"}, {"see": f"Open Finder/{name}"},
             {"see": f"Open Terminal/{name}"}, {"see": f"Open VS Code/{name}"},

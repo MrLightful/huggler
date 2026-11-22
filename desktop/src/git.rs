@@ -6,7 +6,8 @@ use std::{
     fs,
     io::{self, Read, Seek, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
+    time::Duration,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -250,7 +251,10 @@ fn parse_file_paths(output: &[u8]) -> Result<Vec<PathBuf>> {
 }
 
 fn execute(cmd: &mut Command) -> Result<Vec<u8>> {
-    let output = cmd.output().context("start Git")?;
+    git_output(cmd.output().context("start Git")?)
+}
+
+fn git_output(output: Output) -> Result<Vec<u8>> {
     if !output.status.success() {
         let details = if output.stderr.is_empty() {
             &output.stdout
@@ -870,8 +874,10 @@ pub struct GitHubBranch {
     pub owner: String,
     pub repo: String,
     pub head: String,
-    local_ref: String,
+    local_branch: String,
     pub local_oid: String,
+    remote: String,
+    set_upstream: bool,
     synced: bool,
 }
 
@@ -883,47 +889,240 @@ pub fn github_branch(root: &Path) -> Result<GitHubBranch> {
     let branch = execute(git(root).args(["symbolic-ref", "--quiet", "HEAD"]))
         .map_err(|_| anyhow::anyhow!("Switch to a branch before creating a pull request."))?;
     let branch = std::str::from_utf8(&branch)?.trim_end();
+    let local_branch = branch
+        .strip_prefix("refs/heads/")
+        .context("Expected a local branch.")?;
     let tracking = execute(git(root).args([
         "for-each-ref",
         "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)%00%(objectname)",
         branch,
     ]))?;
-    let tracking = std::str::from_utf8(&tracking)?.lines().find_map(|line| {
-        let mut fields = line.split('\0');
-        (fields.next() == Some(branch)).then_some(fields)
-    });
-    let message = "Push the branch and set its upstream before creating a pull request.";
-    let mut fields = tracking.context(message)?;
-    let remote = fields
+    let mut fields = std::str::from_utf8(&tracking)?
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split('\0');
+            (fields.next() == Some(branch)).then_some(fields)
+        })
+        .context("Commit changes on this branch before creating a pull request.")?;
+    let remote_key = format!("branch.{local_branch}.remote");
+    let merge_key = format!("branch.{local_branch}.merge");
+    let tracking_remote = fields.next().filter(|r| !r.is_empty());
+    let upstream_head = fields.next().and_then(|r| r.strip_prefix("refs/heads/"));
+    let tracking_status = fields.next();
+    let in_sync = tracking_remote.is_some() && tracking_status == Some("");
+    // Even if the remote only fetches selected branches, preserve its configured push target.
+    let upstream_remote = match tracking_remote {
+        Some(remote) => Some(remote.to_owned()),
+        None => git_config(root, &remote_key)?,
+    }
+    .filter(|r| !matches!(r.as_str(), "" | "."));
+    let upstream_head = match (upstream_remote.as_ref(), upstream_head) {
+        (Some(_), Some(head)) => Some(head.to_owned()),
+        (Some(_), None) => git_config(root, &merge_key)?
+            .and_then(|reference| reference.strip_prefix("refs/heads/").map(str::to_owned)),
+        (None, _) => None,
+    };
+    let local_oid = fields
         .next()
-        .filter(|r| !r.is_empty() && *r != ".")
-        .context(message)?;
-    let head = fields
-        .next()
-        .and_then(|r| r.strip_prefix("refs/heads/"))
-        .context(message)?;
-    let synced = fields.next() == Some("");
-    let local_oid = fields.next().context(message)?.to_owned();
-    let url = execute(git(root).args(["remote", "get-url", "--", remote]))?;
+        .context("Expected a branch commit.")?
+        .to_owned();
+
+    let remote = match upstream_remote {
+        Some(remote) => remote,
+        None => {
+            let remotes = execute(git(root).arg("remote"))?;
+            let remotes: Vec<_> = std::str::from_utf8(&remotes)?.lines().collect();
+            match remotes.as_slice() {
+                _ if remotes.contains(&"origin") => "origin".into(),
+                [remote] => (*remote).into(),
+                [] => bail!("Add a GitHub.com remote before creating a pull request."),
+                _ => bail!("Set the branch upstream to choose a GitHub.com remote."),
+            }
+        }
+    };
+    let url = execute(git(root).args(["remote", "get-url", "--", &remote]))?;
     let (owner, repo) = github_repository(std::str::from_utf8(&url)?.trim_end())
-        .context("Create PR requires a GitHub.com upstream.")?;
+        .context("Create PR requires a GitHub.com remote.")?;
     Ok(GitHubBranch {
         owner,
         repo,
-        head: head.to_owned(),
-        local_ref: branch.to_owned(),
+        head: upstream_head.as_deref().unwrap_or(local_branch).to_owned(),
+        local_branch: local_branch.to_owned(),
         local_oid,
-        synced,
+        remote,
+        set_upstream: upstream_head.is_none(),
+        synced: upstream_head.is_some() && in_sync,
     })
 }
 
+fn git_config(root: &Path, key: &str) -> Result<Option<String>> {
+    let output = git(root)
+        .args(["config", "--get", key])
+        .output()
+        .context("start Git")?;
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    let value = String::from_utf8(git_output(output)?)?;
+    Ok(Some(value.trim_end_matches('\n').to_owned()))
+}
+
 impl GitHubBranch {
-    pub fn compare_url(&self) -> Result<String> {
+    pub fn cached_default_branch(&self, root: &Path) -> Option<String> {
+        let prefix = format!("refs/remotes/{}/", self.remote);
+        let output =
+            execute(git(root).args(["symbolic-ref", "--quiet", &format!("{prefix}HEAD")])).ok()?;
+        std::str::from_utf8(&output)
+            .ok()?
+            .trim_end()
+            .strip_prefix(&prefix)
+            .map(str::to_owned)
+    }
+
+    pub fn has_pr_commits(&self, root: &Path, default: &str, base: &str) -> bool {
+        if self.local_branch == default || self.head == default || self.head == base {
+            return false;
+        }
+        let base_ref = format!("refs/remotes/{}/{base}", self.remote);
+        let base_commit =
+            execute(git(root).args(["rev-parse", "--verify", &base_ref])).or_else(|_| {
+                execute(git(root).args(["rev-parse", "--verify", &format!("refs/heads/{base}")]))
+            });
+        let Ok(base_commit) = base_commit else {
+            return false;
+        };
+        execute(git(root).args([
+            "rev-list",
+            "--max-count=1",
+            &format!(
+                "{}..{}",
+                String::from_utf8_lossy(&base_commit).trim_end(),
+                self.local_oid
+            ),
+            "--",
+        ]))
+        .is_ok_and(|commits| !commits.is_empty())
+    }
+
+    pub fn configured_pr_base(&self, root: &Path) -> Result<Option<String>> {
+        let key = format!("branch.{}.gh-merge-base", self.local_branch);
+        let Some(base) = git_config(root, &key)? else {
+            return Ok(None);
+        };
+        execute(git(root).args(["check-ref-format", &format!("refs/heads/{base}")]))
+            .context("Invalid pull request base branch in Git configuration")?;
+        Ok(Some(base))
+    }
+
+    pub fn pr_head(mut self, default: &str, base: &str) -> Self {
+        if (self.head == default || self.head == base) && self.head != self.local_branch {
+            self.head.clone_from(&self.local_branch);
+            self.set_upstream = true;
+            self.synced = false;
+        }
+        self
+    }
+
+    pub fn compare_url(&self, default: &str, base: &str) -> Result<String> {
         ensure!(
             self.synced,
-            "Sync the branch with its upstream before creating a pull request."
+            "GitHub status is required to publish this branch and create a pull request."
         );
-        Ok(github_compare(&self.owner, &self.repo, &self.head))
+        Ok(github_compare(
+            &self.owner,
+            &self.repo,
+            (base != default).then_some(base),
+            &self.head,
+        ))
+    }
+
+    pub fn pr_text(&self, root: &Path) -> Result<(String, String)> {
+        let output =
+            execute(git(root).args(["show", "-s", "--format=%s%x00%b", &self.local_oid, "--"]))?;
+        let output = String::from_utf8_lossy(&output);
+        let (title, body) = output
+            .split_once('\0')
+            .context("Expected a commit message.")?;
+        let title = if title.trim().is_empty() {
+            &self.head
+        } else {
+            title.trim()
+        };
+        Ok((title.to_owned(), body.trim().to_owned()))
+    }
+
+    pub async fn push(&self, root: &Path) -> Result<()> {
+        let preferred_remote =
+            match git_config(root, &format!("branch.{}.pushRemote", self.local_branch))? {
+                Some(remote) => Some(remote),
+                None => git_config(root, "remote.pushDefault")?,
+            };
+        ensure!(
+            preferred_remote.is_none_or(|remote| remote == self.remote),
+            "Create PR uses remote {}. The checkout has a different Git push remote configured.",
+            self.remote
+        );
+        let urls =
+            execute(git(root).args(["remote", "get-url", "--push", "--all", "--", &self.remote]))?;
+        let mut urls = std::str::from_utf8(&urls)?.lines();
+        let repository = urls.next().and_then(github_repository);
+        ensure!(
+            urls.next().is_none()
+                && repository.is_some_and(|(owner, repo)| {
+                    owner.eq_ignore_ascii_case(&self.owner) && repo.eq_ignore_ascii_case(&self.repo)
+                }),
+            "The push URL must point to the same GitHub repository as the selected remote."
+        );
+
+        let refspec = format!("{}:refs/heads/{}", self.local_oid, self.head);
+        let mut command = tokio::process::Command::from(git(root));
+        command
+            .env("GCM_INTERACTIVE", "never")
+            .args([
+                "push",
+                "--no-force",
+                "--no-mirror",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
+            ])
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(
+            Duration::from_secs(120),
+            command.args(["--", &self.remote, &refspec]).output(),
+        )
+        .await
+        .context("Git push timed out. Check the branch on GitHub before retrying.")??;
+        git_output(output).context("Push the selected branch")?;
+        Ok(())
+    }
+
+    pub fn set_upstream(&self, root: &Path) -> Result<()> {
+        if self.set_upstream {
+            let remote_key = format!("branch.{}.remote", self.local_branch);
+            let merge_key = format!("branch.{}.merge", self.local_branch);
+            execute(git(root).args([
+                "config",
+                "--local",
+                "--replace-all",
+                &remote_key,
+                &self.remote,
+            ]))
+            .context("Set upstream for the published branch")?;
+            let merge_ref = format!("refs/heads/{}", self.head);
+            execute(git(root).args(["config", "--local", "--replace-all", &merge_key, &merge_ref]))
+                .context("Set upstream for the published branch")?;
+        }
+        Ok(())
+    }
+
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.local_branch == other.local_branch
+            && self.local_oid == other.local_oid
+            && self.remote == other.remote
+            && self.head == other.head
+            && self.set_upstream == other.set_upstream
+            && self.owner.eq_ignore_ascii_case(&other.owner)
+            && self.repo.eq_ignore_ascii_case(&other.repo)
     }
 }
 
@@ -951,11 +1150,15 @@ fn github_repository(remote: &str) -> Option<(String, String)> {
     Some((owner.to_owned(), repo.to_owned()))
 }
 
-fn github_compare(owner: &str, repo: &str, branch: &str) -> String {
+fn github_compare(owner: &str, repo: &str, base: Option<&str>, head: &str) -> String {
     let mut url = url::Url::parse("https://github.com").unwrap();
+    let range = match base {
+        Some(base) => format!("{base}...{head}"),
+        None => head.to_owned(),
+    };
     url.path_segments_mut()
         .unwrap()
-        .extend([owner, repo, "compare", branch]);
+        .extend([owner, repo, "compare", &range]);
     url.set_query(Some("expand=1"));
     url.into()
 }
@@ -1205,8 +1408,12 @@ mod tests {
         ] {
             let (owner, repo) = github_repository(remote).unwrap();
             assert_eq!(
-                github_compare(&owner, &repo, "fix/parser#12"),
+                github_compare(&owner, &repo, None, "fix/parser#12"),
                 "https://github.com/org/project/compare/fix%2Fparser%2312?expand=1"
+            );
+            assert_eq!(
+                github_compare(&owner, &repo, Some("release/v2"), "fix/parser#12"),
+                "https://github.com/org/project/compare/release%2Fv2...fix%2Fparser%2312?expand=1"
             );
         }
         for remote in [

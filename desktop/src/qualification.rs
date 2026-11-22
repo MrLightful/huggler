@@ -20,6 +20,7 @@ pub enum Step {
     NextFileSelection(Vec<std::path::PathBuf>),
     NextSavePath(std::path::PathBuf),
     NextPromptAnswer(usize),
+    OpenedUrl(String),
     FileSize(std::path::PathBuf, u64),
     Resize([u16; 2]),
     Type(String),
@@ -75,6 +76,18 @@ pub fn take_prompt_answer(cx: &mut App) -> Option<usize> {
     cx.default_global::<PromptAnswer>().0.take()
 }
 
+#[derive(Default)]
+struct OpenedUrl(Option<String>);
+impl Global for OpenedUrl {}
+
+pub fn record_open_url(url: &str, cx: &mut App) -> bool {
+    if std::env::var_os("HUGGLER_UI_SCRIPT").is_none() {
+        return false;
+    }
+    cx.default_global::<OpenedUrl>().0 = Some(url.to_owned());
+    true
+}
+
 pub fn begin_frame(cx: &mut App) {
     cx.default_global::<Controls>().0.clear();
 }
@@ -109,6 +122,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             cx.default_global::<PromptAnswer>().0 = Some(*answer);
             true
         }
+        Step::OpenedUrl(url) => cx.default_global::<OpenedUrl>().0.as_ref() == Some(url),
         Step::FileSize(path, size) => fs::metadata(path).is_ok_and(|file| file.len() == *size),
         Step::Resize([width, height]) => {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
