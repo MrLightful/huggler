@@ -53,83 +53,82 @@ impl Render for TurnClock {
     }
 }
 
+pub(crate) fn permission_card(
+    thread: &ConversationDetail,
+    request: &PermissionRequest,
+    cx: &App,
+) -> Div {
+    let mut title = request.tool_call["title"]
+        .as_str()
+        .unwrap_or("Tool permission")
+        .to_owned();
+    if let Some(origin) = &request.native_child {
+        let path = thread
+            .native_children
+            .iter()
+            .find(|child| child.run_id == request.run_id && child.thread_id == origin.thread_id)
+            .map_or(origin.thread_id.0.as_str(), |child| child.path.as_str());
+        title.push_str(&format!(" ({path})"));
+    }
+    let input = request
+        .tool_call
+        .get("rawInput")
+        .unwrap_or(&request.tool_call);
+    let details = input["command"]
+        .as_str()
+        .or_else(|| input["reason"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{input:#}"));
+    v_flex()
+        .gap_2()
+        .p_3()
+        .border_1()
+        .rounded_lg()
+        .border_color(cx.theme().border)
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .small()
+                        .text_color(transcript_muted(cx)),
+                )
+                .child(control!(format!("permission-title/{title}"), label(title))),
+        )
+        .child(text_preview(
+            SharedString::from(format!("details-{}", request.id)),
+            div().child(details),
+            px(96.),
+            cx,
+        ))
+}
+
 impl Desktop {
     pub(super) fn permission(
         thread: &ConversationDetail,
         request: &PermissionRequest,
         cx: &Context<Self>,
     ) -> Div {
-        let mut title = request.tool_call["title"]
-            .as_str()
-            .unwrap_or("Tool permission")
-            .to_owned();
-        if let Some(origin) = &request.native_child {
-            let path = thread
-                .native_children
-                .iter()
-                .find(|child| child.run_id == request.run_id && child.thread_id == origin.thread_id)
-                .map_or(origin.thread_id.0.as_str(), |child| child.path.as_str());
-            title.push_str(&format!(" ({path})"));
-        }
-        let input = request
-            .tool_call
-            .get("rawInput")
-            .unwrap_or(&request.tool_call);
-        let details = input["command"]
-            .as_str()
-            .or_else(|| input["reason"].as_str())
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("{input:#}"));
-        v_flex()
-            .gap_2()
-            .p_3()
-            .border_1()
-            .rounded_lg()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Icon::new(IconName::TriangleAlert)
-                            .small()
-                            .text_color(transcript_muted(cx)),
-                    )
-                    .child(control!(format!("permission-title/{title}"), label(title))),
-            )
-            .child(text_preview(
-                SharedString::from(format!("details-{}", request.id)),
-                div().child(details),
-                px(96.),
-                cx,
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .children(request.options.iter().map(|choice| {
-                        let thread = thread.id.clone();
-                        let run = request.run_id.clone();
-                        let request = request.id.clone();
-                        let option = choice.option_id.clone();
-                        control!(
-                            format!("permission/{}", choice.kind),
-                            Button::new(SharedString::from(format!("{request}/{option}")))
-                                .label(choice.name.clone())
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    let result = view
-                                        .runtime
-                                        .respond_to_permission(
-                                            &thread,
-                                            &run,
-                                            &request,
-                                            option.clone(),
-                                        )
-                                        .and_then(|_| view.refresh());
-                                    view.report(result, cx);
-                                })),
-                        )
-                    })),
-            )
+        permission_card(thread, request, cx).child(h_flex().gap_2().flex_wrap().children(
+            request.options.iter().map(|choice| {
+                let thread = thread.id.clone();
+                let run = request.run_id.clone();
+                let request = request.id.clone();
+                let option = choice.option_id.clone();
+                control!(
+                    format!("permission/{}", choice.kind),
+                    Button::new(SharedString::from(format!("{request}/{option}")))
+                        .label(choice.name.clone())
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            let result = view
+                                .runtime
+                                .respond_to_permission(&thread, &run, &request, option.clone())
+                                .and_then(|_| view.refresh());
+                            view.report(result, cx);
+                        })),
+                )
+            }),
+        ))
     }
 
     fn toggle_command(

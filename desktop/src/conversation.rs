@@ -29,6 +29,8 @@ pub(crate) use models::ProviderCatalog;
 #[cfg(target_os = "macos")]
 pub(crate) use terminal_actions::bind_keys as bind_terminal_action_keys;
 use transcript::TurnClock;
+#[cfg(unix)]
+pub(crate) use transcript::permission_card;
 
 use self::launch_workspace::{LaunchProgress, WorktreeStage};
 use crate::{
@@ -113,6 +115,13 @@ impl WorkspaceTab {
 pub struct Desktop {
     settings: Entity<Settings>,
     show_settings: bool,
+    #[cfg(unix)]
+    remote_project: Option<Entity<crate::machines::RemoteProject>>,
+    #[cfg(unix)]
+    remote_projects: HashMap<
+        (huggler::EnvironmentId, huggler::ProjectId),
+        Entity<crate::machines::RemoteProject>,
+    >,
     navigation: sidebar::Sidebar,
     right_sidebar: sidebar::Sidebar,
     workspace_tab: WorkspaceTab,
@@ -188,6 +197,7 @@ impl Desktop {
                 state.clone(),
                 runtime.clone(),
                 load_error,
+                executor.clone(),
                 window,
                 cx,
             )
@@ -217,6 +227,19 @@ impl Desktop {
                         view.show_settings = false;
                         view.focus_workspace(window, cx);
                     }
+                    #[cfg(unix)]
+                    SettingsEvent::OpenMachine(machine) => {
+                        view.open_machine(machine.clone(), window, cx)
+                    }
+                    #[cfg(unix)]
+                    SettingsEvent::ForgetMachine(machine) => {
+                        let key = (machine.environment.clone(), machine.project.clone());
+                        if let Some(removed) = view.remote_projects.remove(&key)
+                            && view.remote_project.as_ref() == Some(&removed)
+                        {
+                            view.remote_project = None;
+                        }
+                    }
                     SettingsEvent::ProviderModels(id, refresh) => {
                         let (_, checkout) = view.model_source(cx);
                         let directory = if checkout.is_dir() {
@@ -237,6 +260,10 @@ impl Desktop {
         let mut view = Self {
             settings,
             show_settings: false,
+            #[cfg(unix)]
+            remote_project: None,
+            #[cfg(unix)]
+            remote_projects: HashMap::new(),
             navigation: sidebar::Sidebar::new(288.),
             right_sidebar: sidebar::Sidebar::new(336.),
             workspace_tab: WorkspaceTab::Changes,
@@ -402,6 +429,39 @@ impl Desktop {
         Ok(list.revision)
     }
 
+    #[cfg(unix)]
+    fn open_machine(
+        &mut self,
+        machine: crate::machines::SavedMachine,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_settings = false;
+        self.error = None;
+        let key = (machine.environment.clone(), machine.project.clone());
+        let view = self.remote_projects.entry(key).or_insert_with(|| {
+            cx.new(|cx| {
+                crate::machines::RemoteProject::new(
+                    machine.clone(),
+                    self.executor.clone(),
+                    window,
+                    cx,
+                )
+            })
+        });
+        view.update(cx, |view, cx| view.set_machine(machine, window, cx));
+        self.remote_project = Some(view.clone());
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    fn remote_open(&self) -> bool {
+        #[cfg(unix)]
+        return self.remote_project.is_some();
+        #[cfg(not(unix))]
+        false
+    }
+
     fn select(
         &mut self,
         id: ThreadId,
@@ -412,6 +472,10 @@ impl Desktop {
         self.project_picker = None;
         self.checkout_browse = None;
         self.ensure_workspace(&id, window, cx)?;
+        #[cfg(unix)]
+        {
+            self.remote_project = None;
+        }
         self.mcp_status = None;
         self.workspaces[&id].refresh_after_checkout_update(self.workspace_tab, cx);
         self.workspaces
@@ -663,6 +727,10 @@ impl Desktop {
             self.settings.read(cx).focus.focus(window);
             return;
         }
+        if self.remote_open() {
+            self.focus.focus(window);
+            return;
+        }
         match &self.current {
             None if self.launch_setup && self.launching.is_none() => {
                 self.name.focus_handle(cx).focus(window)
@@ -684,6 +752,11 @@ impl Desktop {
 
     pub(super) fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.show_settings || self.launching.is_some() {
+            return;
+        }
+        #[cfg(unix)]
+        if let Some(project) = &self.remote_project {
+            project.read(cx).focus_message(window, cx);
             return;
         }
         let input = match &self.current {
@@ -716,6 +789,10 @@ impl Desktop {
         self.launch_workspace.close_picker();
         self.show_settings = false;
         self.launch_setup = setup;
+        #[cfg(unix)]
+        {
+            self.remote_project = None;
+        }
         if self.current.is_none() {
             self.focus_workspace(window, cx);
             cx.notify();
@@ -1746,7 +1823,8 @@ impl Render for Desktop {
         let navigation_default = !self.show_settings || !narrow;
         let navigation_open = self.navigation.is_open(navigation_default);
         let left = self.navigation.fraction(navigation_default, window);
-        let right = if self.current.is_some() && !self.show_settings {
+        let remote = self.remote_open();
+        let right = if self.current.is_some() && !self.show_settings && !remote {
             self.right_sidebar.fraction(!narrow, window)
         } else {
             0.
@@ -1767,13 +1845,17 @@ impl Render for Desktop {
             .track_focus(&self.focus)
             .when(
                 !self.show_settings
+                    && !remote
                     && self.current.as_ref().is_some_and(|thread| {
                         self.workspaces[&thread.id].documents.active().is_some()
                     }),
                 |layout| layout.key_context(DOCUMENT_CONTEXT),
             )
-            .on_action(cx.listener(Self::close_active_document))
-            .on_action(cx.listener(Self::save_active_document))
+            .when(!remote, |layout| {
+                layout
+                    .on_action(cx.listener(Self::close_active_document))
+                    .on_action(cx.listener(Self::save_active_document))
+            })
             .on_action(cx.listener(|v, _: &crate::OpenSettings, w, cx| v.open_settings(w, cx)))
             .on_action(
                 cx.listener(|v, _: &crate::NewConversation, w, cx| {
@@ -1853,6 +1935,47 @@ impl Render for Desktop {
                                         .flex_shrink_0()
                                         .bg(cx.theme().sidebar_border),
                                 )
+                                .map(|sidebar| {
+                                    #[cfg(unix)]
+                                    let sidebar = sidebar.children(
+                                        self.settings
+                                            .read(cx)
+                                            .preferences()
+                                            .machines
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(index, machine)| {
+                                                let machine = machine.clone();
+                                                let name = machine
+                                                    .checkout
+                                                    .file_name()
+                                                    .unwrap_or(machine.checkout.as_os_str())
+                                                    .to_string_lossy();
+                                                let title =
+                                                    format!("{} · {name}", machine.target.host);
+                                                control!(
+                                                    format!("machine/{title}"),
+                                                    Button::new(("machine", index))
+                                                        .label(title)
+                                                        .small()
+                                                        .compact()
+                                                        .ghost()
+                                                        .justify_start()
+                                                        .w_full()
+                                                        .on_click(cx.listener(
+                                                            move |view, _, w, cx| {
+                                                                view.open_machine(
+                                                                    machine.clone(),
+                                                                    w,
+                                                                    cx,
+                                                                )
+                                                            }
+                                                        ))
+                                                )
+                                            }),
+                                    );
+                                    sidebar
+                                })
                                 .child(self.conversation_sidebar(left_width, cx)),
                         ),
                 )
@@ -1861,9 +1984,17 @@ impl Render for Desktop {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .when(!self.show_settings, |pane| {
+                    .when(!self.show_settings && !remote, |pane| {
                         pane.child(self.workspace_header(navigation_open, right_open, cx))
                             .child(self.document_tab_strip(window, cx))
+                    })
+                    .when(remote && !self.show_settings && !navigation_open, |pane| {
+                        pane.child(
+                            div()
+                                .px_4()
+                                .py_1()
+                                .child(self.navigation_toggle(navigation_open, cx)),
+                        )
                     })
                     .child(if self.show_settings {
                         v_flex()
@@ -1880,6 +2011,13 @@ impl Render for Desktop {
                             .into_any_element()
                     } else {
                         match &self.current {
+                            #[cfg(unix)]
+                            _ if remote => self
+                                .remote_project
+                                .as_ref()
+                                .unwrap()
+                                .clone()
+                                .into_any_element(),
                             Some(thread) => {
                                 let workspace = &self.workspaces[&thread.id];
                                 match workspace.documents.active() {

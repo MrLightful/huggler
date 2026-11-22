@@ -7,6 +7,8 @@ pub mod contracts;
 pub mod guest;
 mod imports;
 mod layout;
+#[cfg(all(unix, feature = "machine"))]
+pub mod machine;
 mod mcp;
 mod output;
 pub use output::{AgentOutput, AgentText, ToolPresentation};

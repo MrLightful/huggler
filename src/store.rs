@@ -1458,6 +1458,13 @@ impl Database {
     }
 
     pub fn conversation_list(&self) -> Result<ConversationList> {
+        self.conversation_list_for_project(None)
+    }
+
+    pub fn conversation_list_for_project(
+        &self,
+        project: Option<&ProjectId>,
+    ) -> Result<ConversationList> {
         let mut statement = self.db.prepare_cached(
             "WITH queued AS (
                 SELECT thread_id, max(queue_held) AS held FROM run
@@ -1481,10 +1488,11 @@ impl Database {
              LEFT JOIN run latest ON fg.id IS NULL AND q.thread_id IS NULL AND latest.id=(
                  SELECT id FROM run WHERE thread_id=t.id ORDER BY coalesce(delivery_slot,ordinal) DESC LIMIT 1
              )
+             WHERE ?1 IS NULL OR t.project=?1
              ORDER BY o.activity DESC, o.position DESC",
         )?;
         let threads = statement
-            .query_map([], |row| {
+            .query_map([project.map(|id| &id.0)], |row| {
                 let active_children = row.get(6)?;
                 Ok(ConversationSummary {
                     id: ThreadId(row.get(0)?),
@@ -1511,6 +1519,21 @@ impl Database {
             revision: self.conversation_revision()?,
             threads,
         })
+    }
+
+    #[cfg(all(unix, feature = "machine"))]
+    pub fn require_thread_project(&self, thread: &ThreadId, project: &ProjectId) -> Result<()> {
+        let found: bool = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM thread WHERE id=? AND project=?)",
+            params![thread.0, project.0],
+            |row| row.get(0),
+        )?;
+        if !found {
+            return Err(Error::NotFound(format!(
+                "conversation {thread} in this project"
+            )));
+        }
+        Ok(())
     }
 
     pub fn read(&self, id: &ThreadId) -> Result<Thread> {

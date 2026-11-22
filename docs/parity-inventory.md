@@ -97,6 +97,12 @@ Closing a terminal tab sends a hangup so its shell can stop its background jobs.
 
 Desktop preferences store named shell commands on each saved project. The terminal toolbar offers the default action and a menu to pick or configure actions. Selecting an action prefills an editable command. Enter starts it in a dedicated PTY in the conversation’s checkout, including linked worktrees. T3 Code starts configured actions on selection and can reuse a terminal. [T3 Code action picker](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/ProjectScriptsControl.tsx) · [T3 Code terminal action launch](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/useChatTerminalActions.ts) · [Native workflow check](../scripts/check-desktop-terminal.py)
 
+## Desktop remote machines
+
+Huggler Desktop saves an SSH destination and remote Git checkout against the environment and project IDs supplied by the remote runtime. Desktop supervises the OpenSSH connection. The native service owns the checkout, SQLite state, request receipts and Codex process. The client refreshes a bounded conversation snapshot on reconnect, then waits on its last observed cursor. T3 Code additionally discovers SSH hosts, provisions its backend automatically and exposes broader remote workspace operations. [Huggler setup](remote-machines.md) · [T3 Code SSH bootstrap](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/ssh/src/tunnel.ts#L489) · [T3 Code reconnect regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/client-runtime/src/connection/registry.test.ts#L1221)
+
+The machine API check uses a deterministic Codex app-server fixture over stdio to verify native turn delivery and desktop snapshot recovery. [Machine API check](../tests/machine.rs)
+
 ## Commands
 
 A host should normally use launch, send, stop and the other management operations. Low-level dispatch accepts a broader schema, including messages normally produced by server workers. Use the authenticated intake, scope checks, provenance normalization and existing command policy for any remote dispatch API. A thread agent gets the narrower MCP interface below. [Management service][src-9] · [Message intake][src-10] · [RPC authorization][src-11]

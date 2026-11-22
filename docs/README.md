@@ -8,6 +8,7 @@ The [documentation site](../docs-app/content/docs/index.mdx) covers how to use t
 | --- | --- |
 | Review or port a T3 Code change | [Review workflow and upstream component map](upstream-watch-guide.md), [review cursor and deferred work](upstream-review.json) |
 | Check coverage for an upstream workflow | [T3 Code capability inventory](parity-inventory.md) |
+| Set up a remote machine | [Remote machines over SSH](remote-machines.md) |
 | Reproduce the desktop coding workflow | [Planning through pull request](desktop-coding.md) |
 | Run regression checks or qualify a release | [Verification and release checks](verification.md) |
 | Build and verify TypeScript packages | [Local packaging and consumer checks](typescript-sdk.md#build-and-test-from-a-checkout) |
