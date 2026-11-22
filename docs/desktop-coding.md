@@ -61,7 +61,7 @@ Use **↑** and **↓** to move through the suggestions, **Enter** or **Tab** to
 
 ## Find a conversation by status
 
-Use the left sidebar button in the workspace header to hide or show conversations independently of Changes. The sidebar updates even while you work in another conversation. Needs attention and Ready sit at the top. Working and Settled sit together at the bottom. Click a section heading to collapse or expand it. Each section shows its count and lists the most recently active conversations first.
+The conversation sidebar is visible when Huggler opens. Use the left sidebar button in the workspace header to hide or show conversations independently of Changes. The sidebar updates even while you work in another conversation. Needs attention and Ready sit at the top. Working and Settled sit together at the bottom. Click a section heading to collapse or expand it. Each section shows its count and lists the most recently active conversations first.
 
 - **Needs attention** shows conversations that need an answer or approval, have a paused queue, or ended in an error. The reason appears below the conversation name.
 - **Ready** shows new conversations and conversations whose work completed or was stopped.
