@@ -2931,6 +2931,7 @@ dependencies = [
  "markdown",
  "objc2-app-kit",
  "objc2-foundation",
+ "rustix 1.1.6",
  "semver",
  "serde",
  "serde_json",

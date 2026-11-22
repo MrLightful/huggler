@@ -6,7 +6,8 @@ use crate::{
     ui::{hint, label},
 };
 use anyhow::Context as _;
-use approvals::{Approval, Approvals, ReviewRow};
+pub(crate) use approvals::ReviewRow;
+use approvals::{Approval, Approvals};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
@@ -36,6 +37,14 @@ pub struct Changes {
     mutation: Option<Mutation>,
     refresh_task: Option<Task<()>>,
     mutation_task: Option<Task<()>>,
+}
+
+impl EventEmitter<ReviewRow> for Changes {}
+impl EventEmitter<RevertFinished> for Changes {}
+
+pub(crate) struct RevertFinished {
+    pub paths: Vec<PathBuf>,
+    pub failure: Option<(PathBuf, String)>,
 }
 
 struct FilterMenu {
@@ -336,6 +345,27 @@ impl Changes {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_revert_dialog(rows, bulk, None, window, cx);
+    }
+
+    pub(crate) fn confirm_document_revert(
+        &self,
+        row: ReviewRow,
+        prepared: Arc<[PreparedRevert]>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_revert_dialog(vec![row], false, Some(prepared), window, cx);
+    }
+
+    fn show_revert_dialog(
+        &self,
+        rows: Vec<ReviewRow>,
+        bulk: bool,
+        targets: Option<Arc<[PreparedRevert]>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(first) = rows.first().filter(|_| self.mutation.is_none()) else {
             return;
         };
@@ -367,26 +397,30 @@ impl Changes {
             "Confirm file revert"
         };
         let root = self.root.clone();
-        let prepared = cx.new(|_| None);
-        let pending = prepared.downgrade();
-        let job = cx.background_spawn(async move {
-            rows.into_iter()
-                .map(|row| {
-                    let path = row.file.path.display().to_string();
-                    PreparedRevert::prepare(&root, row.head, row.file)
-                        .map_err(|error| format!("Could not prepare to revert {path}. {error:#}"))
-                })
-                .collect::<Result<Arc<[_]>, _>>()
-        });
-        cx.spawn_in(window, async move |_, cx| {
-            let result = job.await;
-            let _ = pending.update_in(cx, |prepared, window, cx| {
-                *prepared = Some(result);
-                cx.notify();
-                window.refresh();
+        let prepare_on_open = targets.is_none();
+        let prepared = cx.new(|_| targets.map(Ok));
+        if prepare_on_open {
+            let pending = prepared.downgrade();
+            let job = cx.background_spawn(async move {
+                rows.into_iter()
+                    .map(|row| {
+                        let path = row.file.path.display().to_string();
+                        PreparedRevert::prepare(&root, row.head, row.file).map_err(|error| {
+                            format!("Could not prepare to revert {path}. {error:#}")
+                        })
+                    })
+                    .collect::<Result<Arc<[_]>, _>>()
             });
-        })
-        .detach();
+            cx.spawn_in(window, async move |_, cx| {
+                let result = job.await;
+                let _ = pending.update_in(cx, |prepared, window, cx| {
+                    *prepared = Some(result);
+                    cx.notify();
+                    window.refresh();
+                });
+            })
+            .detach();
+        }
         let view = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _, cx| {
             let view = view.clone();
@@ -457,24 +491,38 @@ impl Changes {
         self.begin_mutation(Mutation::Revert { bulk }, cx);
         let root = self.root.clone();
         let job = cx.background_spawn(async move {
-            for (index, target) in targets.iter().enumerate() {
+            let mut paths = Vec::with_capacity(targets.len());
+            for target in targets.iter() {
                 if let Err(error) = git::revert_file(&root, target) {
                     let failure =
                         format!("Could not revert {}. {error:#}", target.path().display());
-                    return Some(if bulk {
-                        format!("Reverted {index} of {} files. {failure}", targets.len())
+                    let message = if bulk {
+                        format!(
+                            "Reverted {} of {} files. {failure}",
+                            paths.len(),
+                            targets.len()
+                        )
                     } else {
                         failure
-                    });
+                    };
+                    return RevertFinished {
+                        paths,
+                        failure: Some((target.path().to_path_buf(), message)),
+                    };
                 }
+                paths.push(target.path().to_path_buf());
             }
-            None
+            RevertFinished {
+                paths,
+                failure: None,
+            }
         });
         self.mutation_task = Some(cx.spawn(async move |view, cx| {
-            let error = job.await;
+            let result = job.await;
             let _ = view.update(cx, |panel, cx| {
                 panel.snapshot = None;
-                panel.finish_mutation(error, cx);
+                panel.finish_mutation(result.failure.as_ref().map(|(_, error)| error.clone()), cx);
+                cx.emit(result);
             });
         }));
     }
@@ -626,6 +674,8 @@ impl Changes {
         let group = "changed-file";
         let _row_path = path.clone();
         let full_path = path.clone();
+        let diff = row.clone();
+        let ring = cx.theme().ring;
         let filter = self.filter;
         let reviewed = filter == Filter::Approved;
         let action_opacity = if self.mutation.is_none() { 1. } else { 0.5 };
@@ -660,9 +710,14 @@ impl Changes {
                                 .min_w_0()
                                 .flex_1()
                                 .h_full()
+                                .rounded_sm()
+                                .tab_index(0)
+                                .focus(move |style| style.border_1().border_color(ring))
+                                .cursor_pointer()
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(full_path.clone()).build(window, cx)
                                 })
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(diff.clone())))
                                 .child(file_path_label(directory, filename, muted)),
                         )
                         .child(
@@ -895,7 +950,7 @@ fn file_action(
         .child(Icon::new(icon).small())
 }
 
-fn change_colors(cx: &App) -> (Hsla, Hsla, Hsla) {
+pub(crate) fn change_colors(cx: &App) -> (Hsla, Hsla, Hsla) {
     if cx.theme().is_dark() {
         (
             rgb(0x4cdb85).into(),
@@ -911,7 +966,7 @@ fn change_colors(cx: &App) -> (Hsla, Hsla, Hsla) {
     }
 }
 
-fn line_counts(counts: LineCounts, cx: &App) -> Div {
+pub(crate) fn line_counts(counts: LineCounts, cx: &App) -> Div {
     let (added, removed, _) = change_colors(cx);
     h_flex()
         .justify_end()

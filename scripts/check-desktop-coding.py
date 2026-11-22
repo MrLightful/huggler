@@ -42,6 +42,10 @@ def check(binary):
         (checkout / "fixture-tree" / "empty").mkdir(parents=True)
         (checkout / "fixture-tree" / "nested").mkdir()
         (checkout / "fixture-tree" / "nested" / "entry.txt").write_text("Fixture attachment\n")
+        markdown = "# Review notes\n\nKeep **source** intact.\n"
+        edited_markdown = "# Updated review notes\n\nKeep **source** intact."
+        markdown_path = "fixture-tree/nested/review.md"
+        (checkout / markdown_path).write_text(markdown)
         (checkout / "fixture-tree" / "linked-entry").symlink_to("nested/entry.txt")
         env = isolated_env(root)
         # A host launched from another repository must still run the provider
@@ -70,12 +74,37 @@ def check(binary):
             {"click": "Workspace file/fixture-tree"}, {"see": "Workspace file/fixture-tree/nested"},
             {"click": "Workspace file/fixture-tree/empty"}, {"see": "Empty folder"},
             {"click": "Workspace file/fixture-tree/nested"}, {"see": "Workspace file/fixture-tree/nested/entry.txt"},
-            {"click": "Workspace file/fixture-tree/nested/entry.txt"}, {"absent": "Remove entry.txt"},
+            {"click": f"Workspace file/{markdown_path}"}, {"see": "Rendered Markdown"},
+            {"click": "Copy document"}, {"clipboard_text": markdown},
+            {"click": "Document mode/Raw"}, {"see": "Raw editor"},
+            {"absent": "Rendered Markdown"}, {"click": "Raw editor"}, {"key": "cmd-a"},
+            {"type": edited_markdown},
+            {"file_size": [str(checkout / markdown_path), len(markdown)]},
+            {"click": "Document mode/Preview"}, {"see": "Rendered Markdown"},
+            {"click": "Document mode/Raw"}, {"see": "Raw editor"},
+            {"click": "Copy document"}, {"clipboard_text": edited_markdown},
+            {"key": "cmd-s"}, {"file_size": [str(checkout / markdown_path), len(edited_markdown)]},
+            {"click": "Document mode/Preview"}, {"see": "Rendered Markdown"}, {"key": "cmd-w"},
+            {"click": "Workspace file/fixture-tree/nested/entry.txt"},
+            {"see": "Document text/Fixture attachment\n"}, {"absent": "Message"},
+            {"click": "Document mode/Raw"}, {"see": "Raw editor"},
+            {"click": "Raw editor"}, {"key": "cmd-a"}, {"type": "Unsaved plain text"},
+            {"key": "cmd-w"}, {"see": "Discard document edits"}, {"click": "Keep editing"},
+            {"click": "Copy document"}, {"clipboard_text": "Unsaved plain text"},
+            {"key": "cmd-w"}, {"click": "Discard document edits"}, {"see": "Message"},
+            {"click": "Workspace file/fixture-tree/nested/entry.txt"},
+            {"see": "Document text/Fixture attachment\n"},
+            {"right_of": ["File tab/fixture-tree/nested/entry.txt", "Chat tab"]},
+            {"click": "Chat tab"}, {"see": "Message"}, {"absent": "Close Chat tab"},
+            {"click": "Workspace file/fixture-tree/nested/entry.txt"},
+            {"see": "Document text/Fixture attachment\n"}, {"absent": "Remove entry.txt"},
             {"click": "Open in/fixture-tree/nested/entry.txt"}, {"see": "Open Finder/fixture-tree/nested/entry.txt"},
             {"hover": "Open Finder/fixture-tree/nested/entry.txt"}, {"see": "Open Finder/fixture-tree/nested/entry.txt"},
             {"key": "escape"}, {"absent": "Open Finder/fixture-tree/nested/entry.txt"},
             {"hover": "Workspace file/fixture-tree/nested/entry.txt"},
             {"click": "Attach to chat/fixture-tree/nested/entry.txt"}, {"see": "Remove entry.txt"},
+            {"click": "Close File tab/fixture-tree/nested/entry.txt"},
+            {"absent": "File tab/fixture-tree/nested/entry.txt"}, {"see": "Message"},
             {"click": "Remove entry.txt"}, {"absent": "Remove entry.txt"},
             {"click": "Workspace file/fixture-tree"}, {"absent": "Workspace file/fixture-tree/nested/entry.txt"},
             {"drag_x": ["Resize all files", 136]}, {"center_x": ["Resize all files", 960]},
@@ -117,6 +146,8 @@ def check(binary):
             *send_message("Use a single line."), {"see": "Codex/Corrected the answer."},
             {"click": "Hide conversations"}, {"absent": "thread/Implementation"},
         ], env)
+        assert (checkout / markdown_path).read_text() == edited_markdown
+        assert (checkout / "fixture-tree/nested/entry.txt").read_text() == "Fixture attachment\n"
         assert (checkout / name).read_text() == "42\n"
         (checkout / committed_name).write_text("committed on topic\n")
         git("add", "--", name, committed_name)
@@ -133,12 +164,18 @@ def check(binary):
             {"click": f"Open in/{name}"}, {"see": f"Open Finder/{name}"},
             {"see": f"Open Terminal/{name}"}, {"see": f"Open VS Code/{name}"},
             {"key": "escape"}, {"absent": f"Open Finder/{name}"},
-            {"click": "Hide changes"}, {"resize": [1120, 740]}, {"click": "Show changes"},
+            {"click": f"Changed/{name}"}, {"see": f"Document/{name}"},
+            {"absent": "Changes tab"}, {"see": "Chat tab"},
+            {"click": f"Close Diff tab/All changes/{name}"}, {"see": "Message"},
+            {"resize": [1120, 740]}, {"click": "Show changes"},
+            {"click": f"Changed/{name}"}, {"see": f"Document/{name}"}, {"click": "Chat tab"},
             {"click": "Message"}, {"type": "Wait for my next instruction."},
             {"click": "Create"}, *launch_thread(other, "Review"),
             {"see": "No changes"}, {"absent": f"Changed/{name}"},
+            {"absent": f"Diff tab/All changes/{name}"},
             {"click": "All files tab"}, {"see": "No files in this workspace"},
             {"click": "thread/Implementation"}, {"see": f"Workspace file/{name}"},
+            {"see": f"Diff tab/All changes/{name}"}, {"see": "Message"},
             {"click": "Changes tab"}, {"see": f"Changed/{name}"}, {"click": "Send"},
             {"see": "status/Running"}, {"click": "Message"}, {"type": "Review the staged result."},
             {"see": "Stop thread"}, {"absent": "Queue message"}, {"key": "enter"}, {"see": "1 queued message"},
@@ -153,6 +190,11 @@ def check(binary):
         assert (checkout / name).read_text() == "later edit\n"
         other_name = "draft.txt"
         (checkout / other_name).write_text("keep this\n")
+        expected_patch = subprocess.check_output([
+            "git", "-C", checkout, "diff-index", "--patch", "--full-index", "--no-renames",
+            "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=dirty",
+            default_commit, "--", committed_name,
+        ], text=True)
         run_window(binary, state, [
             {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
             {"click": "Create"}, {"next_file_selection": [str(checkout)]}, {"click": "Choose project"},
@@ -171,12 +213,26 @@ def check(binary):
             {"absent": f"Revert/{committed_name}"},
             {"click": f"Open in/{committed_name}"}, {"see": f"Open VS Code/{committed_name}"},
             {"absent": f"Open VS Code/{name}"}, {"key": "escape"},
+            {"click": f"Changed/{committed_name}"}, {"see": "Diff line/+committed on topic"},
+            {"absent": "Revert document"}, {"click": "Copy document"}, {"clipboard_text": expected_patch},
+            {"key": "cmd-w"}, {"see": "Message"},
             {"click": f"Open in/{name}"}, {"see": f"Open VS Code/{name}"},
             {"absent": f"Open VS Code/{committed_name}"}, {"key": "escape"},
-            {"absent": f"Diff/{name}"},
+            {"click": f"Changed/{name}"}, {"see": f"Diff tab/All changes/{name}"},
+            {"see": f"Document/{name}"}, {"contains": "+later edit"},
+            {"click": f"Changed/{other_name}"}, {"see": f"Document/{other_name}"},
+            {"contains": "+keep this"}, {"key": "cmd-w"},
+            {"absent": f"Diff tab/All changes/{other_name}"}, {"see": f"Document/{name}"},
+            {"key": "cmd-l"}, {"see": "Message"}, {"see": f"Diff tab/All changes/{name}"},
             {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
             {"see": "Uncommitted files"}, {"see": f"Changed/{name}"},
             {"absent": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+            {"click": f"Changed/{name}"}, {"see": f"Diff tab/Uncommitted files/{name}"},
+            {"see": "Diff line/-42"}, {"see": "Diff line/+later edit"},
+            {"click": "Document mode/Patch"}, {"contains": "-42\n+later edit"},
+            {"click": "Document mode/Unified"}, {"see": "Diff line/+later edit"}, {"key": "cmd-w"},
+            {"absent": f"Diff tab/Uncommitted files/{name}"}, {"see": f"Document/{name}"},
+            {"key": "cmd-w"}, {"absent": f"Diff tab/All changes/{name}"}, {"see": "Message"},
             {"click": "Uncommitted files"}, {"click": "Change filter/All changes"},
             {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{name}"},
             {"hover": f"Changed/{name}"}, {"click": f"Revert/{name}"},
@@ -188,8 +244,16 @@ def check(binary):
             {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
             {"absent": f"Changed/{name}"}, {"see": f"Changed/{other_name}"},
             {"file_size": [str(checkout / other_name), len("keep this\n")]},
-            {"hover": f"Changed/{other_name}"}, {"click": f"Revert/{other_name}"},
-            {"click": "Confirm file revert"}, {"see": "Working tree clean"},
+            {"click": f"Changed/{other_name}"}, {"see": "Diff line/+keep this"},
+            {"click": "Document mode/Raw"}, {"see": "Raw editor"},
+            {"click": "Copy document"}, {"clipboard_text": "keep this\n"},
+            {"click": "Raw editor"}, {"key": "cmd-a"}, {"type": "edited from the diff"},
+            {"click": "Save document"}, {"file_size": [str(checkout / other_name), len("edited from the diff")]},
+            {"click": "Document mode/Unified"}, {"see": "Diff line/+edited from the diff"},
+            {"click": "Revert document"}, {"see": "Confirm file revert"}, {"click": "Cancel file revert"},
+            {"see": "Diff line/+edited from the diff"}, {"click": "Revert document"}, {"click": "Confirm file revert"},
+            {"see": "Working tree clean"}, {"see": "This file has no changes in this comparison."},
+            {"absent": "Revert document"},
         ], env)
         assert git("status", "--short") == ""
         assert (checkout / name).read_text() == "42\n"
@@ -208,6 +272,8 @@ def check(binary):
             {"see": f"Changed/{name}"}, {"absent": f"Changed/{other_name}"},
             {"click": "All changes"}, {"click": "Change filter/Approved"},
             {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+            {"click": f"Changed/{other_name}"}, {"see": f"Diff tab/Uncommitted files/{other_name}"},
+            {"contains": "+first edit"}, {"key": "cmd-w"}, {"see": "Message"},
             {"click": f"Open in/{other_name}"}, {"see": f"Open Finder/{other_name}"},
             {"key": "escape"}, {"absent": f"Open Finder/{other_name}"},
         ], env)
@@ -311,6 +377,42 @@ def check(binary):
     print("Native conversation, queue and sidebar file list passed with a scripted Codex peer")
 
 
+def check_editor_reload(binary):
+    with tempfile.TemporaryDirectory(prefix="huggler desktop editor ") as tmp:
+        root = Path(tmp)
+        checkout = root / "checkout"
+        subprocess.run(["git", "init", "-qb", "main", checkout], check=True)
+        path = checkout / "notes.txt"
+        path.write_text("Original notes\n")
+        env = isolated_env(root)
+        env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
+        open_notes = {"click": "Workspace file/notes.txt"}
+        raw = {"click": "Document mode/Raw"}
+        run_window(binary, root / "state", [
+            *launch_thread(checkout, "First editor", current=True),
+            {"resize": [1120, 740]}, {"click": "All files tab"},
+            open_notes, raw, {"see": "Raw editor"},
+            {"key": "cmd-,"}, {"click": "Done"}, {"see": "Raw editor"},
+            {"key": "cmd-a"}, {"type": "First edit"}, {"key": "cmd-s"},
+            {"file_size": [str(path), len("First edit")]},
+            {"click": "Document mode/Preview"}, {"see": "Document text/First edit"},
+            *launch_thread(checkout, "Second editor", current=True),
+            open_notes, raw, {"see": "Raw editor"}, {"click": "Raw editor"},
+            {"key": "cmd-a"}, {"type": "Edited from another conversation"}, {"key": "cmd-s"},
+            {"file_size": [str(path), len("Edited from another conversation")]},
+            {"click": "thread/First editor"}, open_notes,
+            {"see": "Document text/Edited from another conversation"},
+            raw, {"see": "Raw editor"}, {"click": "Copy document"},
+            {"clipboard_text": "Edited from another conversation"},
+            {"click": "Raw editor"}, {"key": "cmd-a"}, {"type": "Unsaved draft"},
+            {"click": "Document mode/Preview"}, open_notes, raw,
+            {"click": "Copy document"}, {"clipboard_text": "Unsaved draft"},
+            {"key": "cmd-w"}, {"click": "Discard document edits"}, {"see": "Message"},
+        ], env)
+        assert path.read_text() == "Edited from another conversation"
+    print("Native Raw editor reload, draft preservation and focus restoration passed")
+
+
 def check_transcript(binary):
     with tempfile.TemporaryDirectory(prefix="huggler desktop transcript ") as tmp:
         root = Path(tmp)
@@ -353,4 +455,5 @@ def check_transcript(binary):
 if __name__ == "__main__":
     binary = Path(sys.argv[1]).resolve()
     check(binary)
+    check_editor_reload(binary)
     check_transcript(binary)
