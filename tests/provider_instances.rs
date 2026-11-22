@@ -167,8 +167,134 @@ async fn codex_discovery_lists_enabled_skills_for_the_requested_checkout() {
     fs::remove_file(root.join("frames.ndjson")).unwrap();
     let report = rt.probe_provider("codex", &root).await.unwrap();
     assert_eq!(report.models, ["fixture-deep", "fixture-fast"]);
+    let deep = &report.model_details["fixture-deep"];
+    assert_eq!(deep.name, "Fixture Deep");
+    assert_eq!(deep.efforts, ["medium", "high"]);
+    assert_eq!(deep.fast_tier.as_deref(), Some("priority"));
+    assert!(report.model_details["fixture-fast"].is_default);
     let calls = fs::read_to_string(root.join("frames.ndjson")).unwrap();
     assert!(!calls.contains("skills/list"));
+
+    fs::write(
+        root.join("codex-fixture-config.json"),
+        r#"{"model":"fixture-deep","model_reasoning_effort":"high","service_tier":"priority"}"#,
+    )
+    .unwrap();
+    let report = rt.probe_provider("codex", &root).await.unwrap();
+    let deep = &report.model_details["fixture-deep"];
+    assert!(deep.is_default);
+    assert_eq!(deep.default_effort.as_deref(), Some("high"));
+    assert_eq!(deep.default_service_tier.as_deref(), Some("priority"));
+    assert!(!report.model_details["fixture-fast"].is_default);
+    fs::write(
+        root.join("codex-fixture-config.json"),
+        r#"{"model":"custom-model"}"#,
+    )
+    .unwrap();
+    let report = rt.probe_provider("codex", &root).await.unwrap();
+    assert!(report.model_details["custom-model"].is_default);
+    assert_eq!(report.model_details["custom-model"].name, "custom-model");
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn queued_codex_turns_keep_the_model_options_selected_when_enqueued() {
+    let (temp, root) = checkout();
+    let mut options = HugglerOptions::new(temp.path().join("state"));
+    options.codex.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-provider.py");
+    let rt = Huggler::open(options).await.unwrap();
+    let thread = ThreadId("model-options".into());
+    let send = |action| {
+        rt.dispatch(Command {
+            id: CommandId(uuid::Uuid::new_v4().to_string()),
+            thread_id: thread.clone(),
+            action,
+        })
+        .unwrap()
+    };
+    let model = Some("fixture-deep".into());
+    let fast = ModelOptions {
+        effort: Some("high".into()),
+        service_tier: Some("priority".into()),
+    };
+    send(Action::LaunchModelSelection {
+        project: rt.open_project(&root).unwrap().id,
+        instance: "codex".into(),
+        name: "Model options".into(),
+        model: model.clone(),
+        options: fast,
+    });
+    let active = send(Action::Send { text: "ask".into() }).run_id.unwrap();
+    let queued = send(Action::Enqueue {
+        text: "queued".into(),
+    })
+    .run_id
+    .unwrap();
+    let standard = ModelOptions {
+        effort: Some("medium".into()),
+        service_tier: Some("default".into()),
+    };
+    send(Action::SetModelSelection {
+        model,
+        options: standard.clone(),
+    });
+    let queued_standard = send(Action::Enqueue {
+        text: "standard".into(),
+    })
+    .run_id
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let request = loop {
+        let detail = rt.detail(&thread, None, "", 20).unwrap();
+        assert_eq!(detail.model_options, standard);
+        if let Some(question) = detail.questions.first() {
+            break question.id.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "fixture did not request input"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    rt.respond_to_question(
+        &thread,
+        &active,
+        &request,
+        UserAnswers::from([
+            ("one".into(), UserAnswer::Text("First".into())),
+            ("two".into(), UserAnswer::Text("Second".into())),
+        ]),
+    )
+    .await
+    .unwrap();
+    for run in [queued, queued_standard] {
+        let run = timeout(Duration::from_secs(10), rt.wait(&thread, &run))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+    }
+    let frames = fs::read_to_string(root.join("frames.ndjson")).unwrap();
+    let mut turns = frames
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|frame| frame["method"] == "turn/start");
+    for (effort, tier) in [
+        ("high", "priority"),
+        ("high", "priority"),
+        ("medium", "default"),
+    ] {
+        let frame = turns.next().unwrap();
+        let params = &frame["params"];
+        assert_eq!(params["effort"], effort);
+        assert_eq!(
+            params["collaborationMode"]["settings"]["reasoning_effort"],
+            effort
+        );
+        assert_eq!(params["serviceTierForTurn"], tier);
+    }
+    assert!(turns.next().is_none());
     rt.close().await.unwrap();
 }
 
@@ -582,6 +708,7 @@ async fn private_pi_instances_validate_both_native_identifiers_and_home() {
     assert_eq!(report.version.as_deref(), Some("1.0.0"));
     let model = "openrouter/deepseek/deepseek-v4-flash".to_owned();
     assert!(report.models.contains(&model));
+    assert!(report.model_details[&model].is_default);
     let a = launch(&rt, &root, "first", Some(model.clone()));
     let b = launch(&rt, &root, "second", Some(model));
     for thread in [&a, &b] {

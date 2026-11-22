@@ -129,7 +129,7 @@ impl Settings {
         let content = match catalog.map(|catalog| &catalog.result) {
             None => hint("Use Refresh to load models.", cx),
             Some(None) => hint("Loading models…", cx),
-            Some(Some(Err(error))) => hint(error.clone(), cx),
+            Some(Some(Err(error))) => hint(error.to_string(), cx),
             Some(Some(Ok(report))) if report.models.is_empty() => {
                 control!("No models", hint("This provider listed no models.", cx))
             }

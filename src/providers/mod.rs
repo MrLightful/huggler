@@ -50,6 +50,7 @@ pub(crate) struct Turn {
     pub name: String,
     pub text: String,
     pub model: Option<String>,
+    pub model_options: crate::ModelOptions,
     pub resume: Option<NativeThreadId>,
 }
 

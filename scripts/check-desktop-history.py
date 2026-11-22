@@ -96,10 +96,10 @@ def main():
         run_window(executable, starter_state, [
             {"resize": [640, 440]}, {"key": "cmd-shift-n"},
             {"click": "Git checkout"}, {"type": str(checkout)}, {"click": "Back to message"},
-            {"click": "Start without a project"}, {"click": "model/Provider default"},
+            {"click": "Start without a project"}, {"click": "model-automatic"},
             {"see": "provider/Codex"}, {"see": "⌘L to focus"}, {"key": "cmd-l"},
             {"absent": "provider/Codex"}, {"absent": "⌘L to focus"},
-            {"click": "model/Provider default"}, {"see": "provider/Codex"},
+            {"click": "model-automatic"}, {"see": "provider/Codex"},
             {"click": "Hide conversations"}, {"absent": "provider/Codex"}, {"see": "⌘L to focus"},
             {"key": "cmd-l"}, {"absent": "⌘L to focus"}, {"type": first}, {"click": "Show conversations"},
             {"click": "Send first message"}, {"see": "thread/" + first},

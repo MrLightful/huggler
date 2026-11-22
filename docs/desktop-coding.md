@@ -97,7 +97,9 @@ New conversations start with Codex selected. Use the composer’s provider and m
 
 Under **Storage**, use **Clean up now** to remove unused worktrees that have no local changes or new commits. Turn on **Automatic cleanup** to check immediately, at startup, and hourly.
 
-Select a provider and use **Models** to show or hide models in the conversation picker. Models appear in descending order by name until you reorder them with the arrows. Preferences apply to that provider instance across checkouts. The picker always offers **Provider default** and existing conversations retain their selected models. Model discovery uses the current checkout when available.
+Select a provider and use **Models** to show or hide models in the conversation picker. Models appear in descending order by name until you reorder them with the arrows. Preferences apply to that provider instance across checkouts. The first option follows the provider’s default. It shows the model name when available and **Automatic** when the model is unknown. Model discovery uses the current checkout when available.
+
+Use **Effort** or **Fast mode** for Codex models that support those options. **Use default** restores the checkout’s configured reasoning effort or the model’s default effort. Existing conversations remember their selections, and queued messages keep the settings selected when they were queued. Use the gear beside the model search field to manage provider setup.
 
 Under **Environment**, add variables such as a custom API endpoint for that provider. Use **Save variables**, or leave the provider’s settings to save valid edits automatically. Restart Huggler to apply them. Huggler masks values in the editor and saves them in the local preferences file with user-only permissions. They override inherited variables for that provider’s subprocesses. A config directory set in Advanced settings takes precedence over a matching environment variable. Configure the environment of any separately managed server where it runs.
 
