@@ -77,7 +77,6 @@ fn main() -> Result<()> {
     let mut options = paths.runtime_options();
     options.agent_tools = true;
     options.prompt_suggestions = std::env::var("HUGGLER_PROMPT_SUGGESTIONS").as_deref() == Ok("1");
-    options.codex.request_approvals = true;
     options.codex.workspace_write = true;
     let state = paths.state_dir();
     options.codex.executable = std::env::var_os("HUGGLER_CODEX")

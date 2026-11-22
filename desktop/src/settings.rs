@@ -68,6 +68,8 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "FollowUp::is_default")]
     pub(crate) follow_up: FollowUp,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
+    ask_for_agent_approval: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) agent_notifications: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) keep_awake: bool,
@@ -101,6 +103,7 @@ impl Default for Preferences {
             appearance: Appearance::System,
             send_shortcut: SendShortcut::default(),
             follow_up: FollowUp::default(),
+            ask_for_agent_approval: false,
             agent_notifications: false,
             keep_awake: false,
             codex_executable: None,

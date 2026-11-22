@@ -21,7 +21,10 @@ def check():
         prompt = "create peers " + json.dumps({
             "clientRequestId": "review", "threads": [{"title": "Reviewer", "prompt": "Review 2+2."}],
         })
-        run_window(executable, root / "state", [
+        state = root / "state"
+        state.mkdir()
+        (state / "preferences.json").write_text(json.dumps({"askForAgentApproval": True}))
+        run_window(executable, state, [
             *launch_thread(checkout, "Author", "Claude Agent"), *send_message(prompt),
             {"click": "thread/Reviewer"}, {"see": "Author/Review 2+2."},
             {"click": "permission/allow_once"}, {"click": "permission/allow_once"},

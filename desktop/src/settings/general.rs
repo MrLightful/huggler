@@ -113,6 +113,24 @@ impl Settings {
                 cx,
             ))
             .child(setting(
+                "Agent permissions",
+                "Full access skips tool approval prompts for Codex and ACP agents. Restart Huggler to apply.",
+                h_flex().gap_1().children(
+                    [(false, "Full access"), (true, "Ask for approval")].map(|(ask, name)| {
+                        control!(
+                            name,
+                            choice(name, name, self.prefs.ask_for_agent_approval == ask)
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    let mut prefs = view.prefs.clone();
+                                    prefs.ask_for_agent_approval = ask;
+                                    view.persist(prefs, cx);
+                                }))
+                        )
+                    }),
+                ),
+                cx,
+            ))
+            .child(setting(
                 "Agent notifications",
                 "Show an alert when a conversation completes.",
                 control!(

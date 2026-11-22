@@ -34,7 +34,6 @@ impl RuntimePreferences {
 impl Preferences {
     pub(crate) fn apply_runtime_overrides(&self, options: &mut HugglerOptions) -> Result<()> {
         let mut codex = ProviderInstance::new("codex", Provider::Codex, &options.codex.executable);
-        codex.request_approvals = options.codex.request_approvals;
         codex.workspace_write = options.codex.workspace_write;
         let claude = ProviderInstance::new(
             "claudeAgent",
@@ -48,11 +47,18 @@ impl Preferences {
                 instance.home.clone_from(&value.home);
                 instance.args.clone_from(&value.args);
             }
-            if runtime.is_some() || self.provider_environment.contains_key(id) {
-                options.instances.push(instance);
-            }
+            options.instances.push(instance);
         }
         for instance in &mut options.instances {
+            if !matches!(
+                instance.driver,
+                Provider::OpenCode | Provider::Pi | Provider::Muse
+            ) {
+                instance.full_access = !self.ask_for_agent_approval;
+            }
+            if instance.driver == Provider::Codex {
+                instance.request_approvals = self.ask_for_agent_approval;
+            }
             if instance.server_url.is_none()
                 && let Some(values) = self.provider_environment.get(instance.id.as_str())
             {

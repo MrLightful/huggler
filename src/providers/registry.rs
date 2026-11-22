@@ -33,6 +33,9 @@ pub struct ProviderInstance {
     /// Allow workspace writes on this Codex instance.
     #[serde(default)]
     pub workspace_write: bool,
+    /// Give Codex full access or approve ACP tool requests without prompting.
+    #[serde(default)]
+    pub full_access: bool,
     /// Environment variable containing the external OpenCode server password.
     #[serde(default)]
     pub password_env: Option<String>,
@@ -65,6 +68,7 @@ impl ProviderInstance {
             server_url: None,
             request_approvals: false,
             workspace_write: false,
+            full_access: false,
             password_env: None,
             environment: ProviderEnvironment::default(),
         }
