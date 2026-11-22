@@ -70,7 +70,7 @@ impl Settings {
         catalog: Entity<ProviderCatalog>,
         cx: &mut Context<Self>,
     ) {
-        if self.providers.selected != *id {
+        if !self.provider_details_open() || self.providers.selected != *id {
             return;
         }
         self.catalog_subscription = Some(cx.observe(&catalog, |_, _, cx| cx.notify()));

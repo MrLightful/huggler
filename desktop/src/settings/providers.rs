@@ -2,7 +2,7 @@ use super::{Page, Settings, setup};
 use crate::ui::{heading, label, section_title};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     tooltip::Tooltip,
@@ -10,7 +10,7 @@ use gpui_component::{
 };
 use huggler::{Provider, ProviderInstance, ProviderInstanceId};
 use semver::Version;
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
 #[derive(Clone, Copy)]
 enum Status {
@@ -27,10 +27,14 @@ impl Status {
         matches!(self, Self::Checking | Self::Installing | Self::Updating)
     }
 
+    fn detected(self) -> bool {
+        !matches!(self, Self::Missing | Self::Installing)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Checking => "Checking setup…",
-            Self::Missing => "Installation needed",
+            Self::Missing => "Not installed",
             Self::Installing => "Installing…",
             Self::Updating => "Updating…",
             Self::Installed(setup::Account::SignedIn) => "Connected",
@@ -58,8 +62,16 @@ struct SetupState {
     error: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProviderPanel {
+    Empty,
+    Choose,
+    Details,
+}
+
 pub(super) struct ProviderSettings {
     pub(super) selected: ProviderInstanceId,
+    panel: ProviderPanel,
     custom_executable: bool,
     reset_pending: bool,
     reset_needs_restart: bool,
@@ -70,6 +82,7 @@ impl ProviderSettings {
     pub(super) fn new(selected: ProviderInstanceId) -> Self {
         Self {
             selected,
+            panel: ProviderPanel::Empty,
             custom_executable: false,
             reset_pending: false,
             reset_needs_restart: false,
@@ -94,7 +107,48 @@ impl Settings {
             .into()
     }
 
-    pub(super) fn refresh_providers(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_providers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_providers(cx);
+        let current = &self.providers.selected;
+        let selected = if self.provider_detected(current) {
+            Some(current.clone())
+        } else {
+            self.ordered_providers()
+                .into_iter()
+                .find(|instance| self.provider_detected(&instance.id))
+                .map(|instance| instance.id.clone())
+        };
+        if let Some(id) = selected {
+            self.providers.selected = id;
+            self.providers.panel = ProviderPanel::Details;
+            self.load_provider(window, cx);
+        } else {
+            self.providers.panel = ProviderPanel::Empty;
+        }
+    }
+
+    pub(super) fn provider_details_open(&self) -> bool {
+        self.page == Page::Providers && self.providers.panel == ProviderPanel::Details
+    }
+
+    pub(super) fn provider_scroll_id(&self) -> SharedString {
+        match self.providers.panel {
+            ProviderPanel::Empty => "settings-provider-empty".into(),
+            ProviderPanel::Choose => "settings-provider-picker".into(),
+            ProviderPanel::Details => {
+                format!("settings-provider/{}", self.providers.selected).into()
+            }
+        }
+    }
+
+    fn provider_detected(&self, id: &ProviderInstanceId) -> bool {
+        self.providers
+            .setup
+            .get(id)
+            .is_some_and(|state| state.status.detected())
+    }
+
+    fn refresh_providers(&mut self, cx: &mut Context<Self>) {
         let instances: Vec<_> = self.runtime.provider_instances().cloned().collect();
         for instance in instances {
             self.refresh_provider(instance, cx);
@@ -110,6 +164,7 @@ impl Settings {
         {
             return;
         }
+        let status = initial_status(&self.state, &instance);
         let version = self
             .providers
             .setup
@@ -118,15 +173,19 @@ impl Settings {
         self.providers.setup.insert(
             instance.id.clone(),
             SetupState {
-                status: Status::Checking,
-                version,
+                status,
+                version: version.filter(|_| matches!(status, Status::Checking)),
                 error: None,
             },
         );
         cx.notify();
+        if !matches!(status, Status::Checking) {
+            return;
+        }
         let executor = cx.background_executor().clone();
+        let directory = self.state.clone();
         let job = cx.background_spawn(async move {
-            let state = read_setup(&instance, &executor).await;
+            let state = read_setup(&directory, &instance, &executor).await;
             (instance.id, state)
         });
         cx.spawn(async move |view, cx| {
@@ -176,14 +235,14 @@ impl Settings {
         let executor = cx.background_executor().clone();
         let job = cx.background_spawn(async move {
             let result = release.install(&directory, update);
-            let mut state = read_setup(&instance, &executor).await;
+            let mut state = read_setup(&directory, &instance, &executor).await;
             state.error = result.err().map(|error| error.to_string());
             (instance.id, state)
         });
         cx.spawn(async move |view, cx| {
             let (id, state) = job.await;
             let _ = view.update(cx, |view, cx| {
-                let load_models = view.page == Page::Provider
+                let load_models = view.provider_details_open()
                     && view.providers.selected == id
                     && matches!(state.status, Status::Installed(_));
                 view.providers.setup.insert(id, state);
@@ -203,100 +262,224 @@ impl Settings {
             .map_or(Status::Checking, |state| state.status)
     }
 
-    pub(super) fn render_providers(&self, cx: &Context<Self>) -> Div {
+    fn load_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.load_executable(window, cx);
+        self.load_runtime_fields(window, cx);
+        self.advanced = false;
+        self.providers.custom_executable = false;
+        self.providers.reset_pending = false;
+        self.providers.reset_needs_restart = false;
+        self.environment_rows = None;
+        self.model_catalog = None;
+        self.catalog_subscription = None;
+        let instance = self.selected_provider();
+        if instance.driver != Provider::OpenCode
+            && setup::executable_available(&self.state, instance)
+        {
+            self.request_models(false, cx);
+        }
+    }
+
+    fn select_provider(
+        &mut self,
+        id: &ProviderInstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if (self.provider_details_open() && self.providers.selected == *id)
+            || !self.save_provider_edits(cx)
+        {
+            return;
+        }
+        self.providers.selected.clone_from(id);
+        self.providers.panel = ProviderPanel::Details;
+        self.error = None;
+        self.load_provider(window, cx);
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    fn ordered_providers(&self) -> Vec<&ProviderInstance> {
         let mut instances: Vec<_> = self.runtime.provider_instances().collect();
         instances.sort_by_key(|instance| match instance.id.as_str() {
             "codex" => 0,
             "claudeAgent" => 1,
             _ => 2,
         });
-        div()
-            .grid()
-            .grid_cols(2)
-            .gap_2()
-            .children(instances.into_iter().map(|instance| {
-                let id = instance.id.clone();
-                let status = self.status(&id);
-                let name = self.provider_name(&id);
-                control!(
-                    format!("provider/{id}"),
-                    div()
-                        .relative()
-                        .min_w_0()
-                        .child(
-                            Button::new(SharedString::from(format!("provider-{id}")))
-                                .outline()
-                                .h(px(72.))
-                                .w_full()
-                                .pl_3()
-                                .pr_8()
-                                .justify_start()
-                                .overflow_hidden()
-                                .child(control!(
-                                    format!("provider-summary/{id}"),
-                                    h_flex()
-                                        .gap_3()
-                                        .child(provider_logo(instance.driver, px(18.), cx))
-                                        .child(
-                                            v_flex()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .gap_1()
-                                                .child(label(name).truncate())
-                                                .child(
-                                                    h_flex()
-                                                        .gap_1p5()
-                                                        .min_w_0()
-                                                        .child(status.dot(cx))
-                                                        .child(
-                                                            div()
-                                                                .text_xs()
-                                                                .truncate()
-                                                                .text_color(
-                                                                    cx.theme()
-                                                                        .foreground
-                                                                        .opacity(0.75)
-                                                                )
-                                                                .child(status.label())
-                                                        ),
-                                                ),
-                                        ),
-                                ))
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.providers.selected = id.clone();
-                                    view.load_executable(window, cx);
-                                    view.load_runtime_fields(window, cx);
-                                    view.advanced = false;
-                                    view.providers.custom_executable = false;
-                                    view.providers.reset_pending = false;
-                                    view.providers.reset_needs_restart = false;
-                                    view.environment_rows = None;
-                                    view.model_catalog = None;
-                                    view.catalog_subscription = None;
-                                    view.show_page(Page::Provider, window, cx);
-                                    let instance = view.selected_provider();
-                                    if instance.driver != Provider::OpenCode
-                                        && setup::executable_exists(&instance.executable)
-                                    {
-                                        view.request_models(false, cx);
-                                    }
-                                }))
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .right_3()
-                                .top_0()
-                                .bottom_0()
-                                .flex()
-                                .items_center()
-                                .child(Icon::new(IconName::ChevronRight).xsmall())
-                        )
-                )
-            }))
+        instances
     }
 
-    pub(super) fn render_provider(&self, cx: &Context<Self>) -> Div {
+    pub(super) fn provider_selector(&self, cx: &Context<Self>) -> Div {
+        let add_selected = self.providers.panel == ProviderPanel::Choose
+            || (self.provider_details_open() && !self.provider_detected(&self.providers.selected));
+        let add = control!(
+            "Add provider",
+            Button::new("add-provider")
+                .outline()
+                .h(px(72.))
+                .w_full()
+                .px_3()
+                .justify_start()
+                .cursor_pointer()
+                .selected(add_selected)
+                .when(add_selected, |button| button.border_color(cx.theme().ring))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(Icon::new(IconName::Plus).size(px(20.)))
+                        .child(label("Add provider"))
+                )
+                .on_click(cx.listener(|view, _, window, cx| {
+                    if view.providers.panel != ProviderPanel::Choose && view.save_provider_edits(cx)
+                    {
+                        view.providers.panel = ProviderPanel::Choose;
+                        view.error = None;
+                        view.focus.focus(window);
+                        cx.notify();
+                    }
+                }))
+        )
+        .flex_1()
+        .min_w(px(152.))
+        .max_w(px(336.));
+        div().w_full().max_w(px(720.)).px_5().flex_shrink_0().child(
+            h_flex()
+                .id("provider-selector")
+                .w_full()
+                .gap_2()
+                .py_3()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .overflow_x_scroll()
+                .children(
+                    self.ordered_providers()
+                        .into_iter()
+                        .filter(|instance| self.provider_detected(&instance.id))
+                        .map(|instance| self.provider_card(instance, cx)),
+                )
+                .child(add),
+        )
+    }
+
+    fn provider_card(&self, instance: &ProviderInstance, cx: &Context<Self>) -> Div {
+        let id = instance.id.clone();
+        let status = self.status(&id);
+        let failed = self
+            .providers
+            .setup
+            .get(&id)
+            .is_some_and(|state| state.error.is_some());
+        let selected = self.provider_details_open() && self.providers.selected == id;
+        let name = self.provider_name(&id);
+        let status_label = if failed {
+            "Setup failed"
+        } else if matches!(status, Status::Missing) {
+            "Installation needed"
+        } else {
+            status.label()
+        };
+        let summary = h_flex()
+            .gap_3()
+            .child(provider_logo(instance.driver, px(20.), cx))
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .gap_1()
+                    .child(label(name.clone()).truncate())
+                    .child(control!(
+                        format!("provider-card-status/{id}/{status_label}"),
+                        h_flex()
+                            .gap_1p5()
+                            .child(status.dot(cx).when(failed, |dot| dot.bg(cx.theme().danger)))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .truncate()
+                                    .child(status_label),
+                            )
+                    )),
+            );
+        control!(
+            format!("provider/{id}"),
+            div()
+                .relative()
+                .child(
+                    Button::new(SharedString::from(format!("provider-{id}")))
+                        .outline()
+                        .h(px(72.))
+                        .w_full()
+                        .px_3()
+                        .justify_start()
+                        .overflow_hidden()
+                        .cursor_pointer()
+                        .selected(selected)
+                        .when(selected, |button| button
+                            .pr_9()
+                            .border_color(cx.theme().ring))
+                        .tooltip(name)
+                        .child(summary)
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.select_provider(&id, window, cx);
+                        })),
+                )
+                .when(selected, |card| {
+                    card.child(
+                        div()
+                            .absolute()
+                            .right_3()
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .child(Icon::new(IconName::Check).small()),
+                    )
+                })
+        )
+        .flex_1()
+        .min_w(px(152.))
+        .max_w(px(336.))
+    }
+
+    pub(super) fn render_provider_panel(&self, cx: &Context<Self>) -> Div {
+        match self.providers.panel {
+            ProviderPanel::Empty => control!(
+                "No providers detected",
+                hint("No providers detected. Add a provider to get started.", cx)
+            ),
+            ProviderPanel::Choose => self.provider_picker(cx),
+            ProviderPanel::Details => self.render_provider(cx),
+        }
+    }
+
+    fn provider_picker(&self, cx: &Context<Self>) -> Div {
+        let choices: Vec<_> = self
+            .ordered_providers()
+            .into_iter()
+            .filter(|instance| !self.provider_detected(&instance.id))
+            .collect();
+        v_flex()
+            .gap_3()
+            .child(control!(
+                "Choose a provider",
+                section_title("Choose a provider")
+            ))
+            .when(choices.is_empty(), |panel| {
+                panel.child(control!(
+                    "All providers detected",
+                    hint("All available providers are already shown.", cx)
+                ))
+            })
+            .child(
+                div().grid().grid_cols(2).gap_2().children(
+                    choices
+                        .into_iter()
+                        .map(|instance| self.provider_card(instance, cx)),
+                ),
+            )
+    }
+
+    fn render_provider(&self, cx: &Context<Self>) -> Div {
         let instance = self.selected_provider();
         let id = &instance.id;
         let status = self.status(id);
@@ -390,8 +573,7 @@ impl Settings {
                                     && (status.busy()
                                         || matches!(
                                             status,
-                                            Status::Missing
-                                                | Status::Installed(setup::Account::SignedOut)
+                                            Status::Installed(setup::Account::SignedOut)
                                         )),
                                 |heading| {
                                     heading.child(control!(
@@ -468,11 +650,10 @@ impl Settings {
                     .ghost()
                     .small()
                     .icon(Icon::default().path("icons/provider-refresh.svg"))
-                    .tooltip("Refresh provider status and models")
+                    .tooltip("Refresh")
                     .disabled(status.busy())
                     .on_click(cx.listener(|view, _, _, cx| {
-                        let instance = view.selected_provider().clone();
-                        view.refresh_provider(instance, cx);
+                        view.refresh_providers(cx);
                         view.request_models(true, cx);
                     }))
             ))
@@ -652,18 +833,31 @@ fn provider_logo(provider: Provider, size: Pixels, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-async fn read_setup(instance: &ProviderInstance, executor: &BackgroundExecutor) -> SetupState {
-    let (status, version) = if instance.server_url.is_some() {
-        (Status::ServerConfigured, None)
-    } else if !setup::executable_exists(&instance.executable) {
-        (Status::Missing, None)
+fn initial_status(directory: &Path, instance: &ProviderInstance) -> Status {
+    if instance.server_url.is_some() {
+        Status::ServerConfigured
+    } else if setup::executable_available(directory, instance) {
+        Status::Checking
     } else {
+        Status::Missing
+    }
+}
+
+async fn read_setup(
+    directory: &Path,
+    instance: &ProviderInstance,
+    executor: &BackgroundExecutor,
+) -> SetupState {
+    let initial = initial_status(directory, instance);
+    let (status, version) = if matches!(initial, Status::Checking) {
         let (account, version) = futures_lite::future::zip(
             setup::account(instance, executor),
             setup::version(instance, executor),
         )
         .await;
         (Status::Installed(account), version)
+    } else {
+        (initial, None)
     };
     SetupState {
         status,

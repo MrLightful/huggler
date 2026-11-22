@@ -110,7 +110,6 @@ enum Page {
     Overview,
     Appearance,
     Providers,
-    Provider,
     Storage,
 }
 
@@ -120,7 +119,6 @@ impl Page {
             Self::Overview => "Settings",
             Self::Appearance => "Appearance",
             Self::Providers => "Providers",
-            Self::Provider => "Provider",
             Self::Storage => "Storage",
         }
     }
@@ -129,7 +127,6 @@ impl Page {
         match self {
             Self::Overview => None,
             Self::Appearance | Self::Providers | Self::Storage => Some(Self::Overview),
-            Self::Provider => Some(Self::Providers),
         }
     }
 }
@@ -203,21 +200,46 @@ impl Settings {
     }
 
     fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page == page || !self.leave_page(cx) {
+        if self.page == page || !self.save_provider_edits(cx) {
             return;
         }
-        if page == Page::Providers && self.page != Page::Provider {
-            self.refresh_providers(cx);
-        }
         self.page = page;
+        if page == Page::Providers {
+            self.open_providers(window, cx);
+        }
         self.focus.focus(window);
         cx.notify();
     }
 
-    fn leave_page(&mut self, cx: &mut Context<Self>) -> bool {
-        self.page != Page::Provider
-            || ((!self.path_edited(cx) || self.save_path(cx))
-                && (!self.runtime_edited(cx) || self.save_runtime(cx)))
+    fn save_provider_edits(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.provider_details_open() {
+            return true;
+        }
+        let mut prefs = self.prefs.clone();
+        let edits = (|| {
+            let path = self.apply_path_edit(&mut prefs, cx)?;
+            let runtime = self.apply_runtime_edit(&mut prefs, cx)?;
+            let environment = self.apply_environment_edits(&mut prefs, cx)?;
+            Ok(path || runtime || environment)
+        })();
+        self.persist_provider_edits(prefs, edits, cx)
+    }
+
+    fn persist_provider_edits(
+        &mut self,
+        prefs: Preferences,
+        edits: Result<bool>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match edits {
+            Ok(true) => self.persist(prefs, cx),
+            Ok(false) => true,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                false
+            }
+        }
     }
 
     fn persist(&mut self, prefs: Preferences, cx: &mut Context<Self>) -> bool {
@@ -293,21 +315,25 @@ impl Settings {
     }
 
     fn save_path(&mut self, cx: &mut Context<Self>) -> bool {
-        let path = self.entered_path(cx);
-        if let Some(path) = &path
-            && let Err(e) = validate_program(path)
-        {
-            self.error = Some(e.to_string());
-            cx.notify();
-            return false;
-        }
         let mut prefs = self.prefs.clone();
+        let edit = self.apply_path_edit(&mut prefs, cx);
+        self.persist_provider_edits(prefs, edit, cx)
+    }
+
+    fn apply_path_edit(&self, prefs: &mut Preferences, cx: &App) -> Result<bool> {
+        if !self.path_edited(cx) {
+            return Ok(false);
+        }
+        let path = self.entered_path(cx);
+        if let Some(path) = &path {
+            validate_program(path)?;
+        }
         match self.providers.selected.as_str() {
             "codex" => prefs.codex_executable = path,
             "claudeAgent" => prefs.claude_agent_executable = path,
-            _ => return false,
+            _ => unreachable!("only built-in providers have editable paths"),
         }
-        self.persist(prefs, cx)
+        Ok(true)
     }
 
     fn cleanup_worktrees(&mut self, cx: &mut Context<Self>) {
@@ -391,46 +417,76 @@ impl Settings {
         cx: &Context<Self>,
     ) -> Div {
         let title = page.title();
-        control!(
-            title,
-            Button::new(title)
-                .ghost()
-                .relative()
-                .w_full()
-                .h(px(56.))
-                .px_4()
-                .justify_start()
+        let summary = control!(
+            format!("settings-summary/{title}"),
+            h_flex()
+                .gap_3()
                 .child(
-                    h_flex().gap_3().child(Icon::new(icon).small()).child(
-                        v_flex().items_start().gap_0p5().child(label(title)).child(
+                    h_flex()
+                        .size_8()
+                        .flex_shrink_0()
+                        .justify_center()
+                        .rounded_md()
+                        .bg(cx.theme().secondary)
+                        .child(Icon::new(icon).small()),
+                )
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .items_start()
+                        .gap_0p5()
+                        .child(label(title))
+                        .child(
                             div()
                                 .text_xs()
-                                .text_color(cx.theme().foreground.opacity(0.7))
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate()
                                 .child(description),
                         ),
-                    ),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .right_4()
-                        .top_0()
-                        .bottom_0()
-                        .flex()
-                        .items_center()
-                        .child(Icon::new(IconName::ChevronRight).small()),
-                )
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    view.show_page(page, window, cx);
-                }))
-        )
+        );
+        div()
+            .relative()
+            .child(control!(
+                title,
+                Button::new(title)
+                    .ghost()
+                    .w_full()
+                    .h(px(64.))
+                    .pl_4()
+                    .pr_12()
+                    .justify_start()
+                    .rounded_none()
+                    .cursor_pointer()
+                    .overflow_hidden()
+                    .child(summary)
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.show_page(page, window, cx);
+                    }))
+            ))
+            .child(
+                div()
+                    .absolute()
+                    .right_4()
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(control!(
+                        format!("settings-chevron/{title}"),
+                        Icon::new(IconName::ChevronRight).small()
+                    )),
+            )
     }
 
     fn overview(cx: &Context<Self>) -> Div {
         v_flex()
-            .rounded(cx.theme().radius)
+            .rounded_lg()
+            .overflow_hidden()
             .border_1()
             .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
             .child(Self::section_link(
                 Page::Appearance,
                 IconName::Palette,
@@ -441,14 +497,14 @@ impl Settings {
             .child(Self::section_link(
                 Page::Providers,
                 IconName::SquareTerminal,
-                "Install and connect coding providers",
+                "Connections, models, and setup",
                 cx,
             ))
             .child(div().border_t_1().border_color(cx.theme().border))
             .child(Self::section_link(
                 Page::Storage,
                 IconName::Folder,
-                "Manage unused worktrees",
+                "Clean up unused worktrees",
                 cx,
             ))
     }
@@ -595,14 +651,20 @@ impl Render for Settings {
         let content = match self.page {
             Page::Overview => Self::overview(cx),
             Page::Appearance => self.appearance(cx),
-            Page::Providers => self.render_providers(cx),
-            Page::Provider => self.render_provider(cx),
+            Page::Providers => self.render_provider_panel(cx),
             Page::Storage => self.storage(cx),
+        };
+        let scroll_id = match self.page {
+            Page::Providers => self.provider_scroll_id(),
+            _ => SharedString::from(self.page.title()),
         };
         let body = v_flex()
             .w_full()
             .max_w(px(720.))
             .p_5()
+            .when(self.page == Page::Overview, |body| {
+                body.max_w(px(600.)).mx_auto().pt_7()
+            })
             .gap_3()
             .child(content)
             .when_some(self.error.clone(), |panel, error| {
@@ -629,36 +691,26 @@ impl Render for Settings {
                             .min_w_0()
                             .gap_2()
                             .when_some(self.page.parent(), |row, parent| {
-                                let back = if parent == Page::Providers {
-                                    "Back to Providers"
-                                } else {
-                                    "Back to Settings"
-                                };
                                 row.child(control!(
-                                    back,
+                                    "Back to Settings",
                                     Button::new("back-to-settings")
                                         .ghost()
                                         .small()
                                         .icon(IconName::ChevronLeft)
-                                        .when(parent == Page::Providers, |button| {
-                                            button.label("Providers")
-                                        })
-                                        .tooltip(back)
+                                        .tooltip("Back to Settings")
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.show_page(parent, window, cx);
                                         }))
                                 ))
                             })
-                            .when(self.page != Page::Provider, |row| {
-                                row.child(heading(self.page.title()).truncate())
-                            }),
+                            .child(heading(self.page.title()).truncate()),
                     )
                     .child(
                         control!(
                             "Done",
                             Button::new("done").label("Done").on_click(cx.listener(
                                 |v, _, _, cx| {
-                                    if v.leave_page(cx) {
+                                    if v.save_provider_edits(cx) {
                                         v.page = Page::Overview;
                                         cx.emit(SettingsEvent::Back);
                                     }
@@ -668,9 +720,12 @@ impl Render for Settings {
                         .flex_shrink_0(),
                     ),
             )
+            .when(self.page == Page::Providers, |page| {
+                page.child(self.provider_selector(cx))
+            })
             .child(
                 div()
-                    .id(("settings-body", self.page as usize))
+                    .id(scroll_id)
                     .min_h_0()
                     .flex_1()
                     .overflow_y_scroll()

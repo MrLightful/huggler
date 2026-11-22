@@ -63,17 +63,17 @@ fn desktop_path(name: &Path) -> Option<PathBuf> {
 }
 
 pub fn default_executable(state: &Path, provider: Provider, name: &Path) -> PathBuf {
-    let managed = Release::for_provider(provider).map(|release| release.executable(state));
-    if let Some(path) = &managed
-        && is_executable(path)
+    let managed = Release::for_provider(provider);
+    if let Some(release) = managed
+        && release.complete(&release.directory(state))
     {
-        return path.clone();
+        return release.executable(state);
     }
     if executable_exists(name) {
         return name.to_owned();
     }
     desktop_path(name)
-        .or(managed)
+        .or_else(|| managed.map(|release| release.executable(state)))
         .unwrap_or_else(|| name.to_owned())
 }
 
@@ -137,16 +137,22 @@ impl Release {
         })
     }
 
+    fn directory(self, state: &Path) -> PathBuf {
+        state.join("providers").join(self.directory)
+    }
+
     fn executable(self, state: &Path) -> PathBuf {
-        state
-            .join("providers")
-            .join(self.directory)
-            .join(self.program)
+        self.directory(state).join(self.program)
     }
 
     pub(super) fn for_instance(state: &Path, instance: &ProviderInstance) -> Option<Self> {
         Self::for_provider(instance.driver)
             .filter(|release| release.executable(state) == instance.executable)
+    }
+
+    fn complete(self, directory: &Path) -> bool {
+        is_executable(&directory.join(self.program))
+            && is_executable(&directory.join(self.companion))
     }
 
     pub(super) fn update_version(self, current: &Version) -> Option<&'static str> {
@@ -223,24 +229,37 @@ impl Release {
             "Could not unpack the download. Check available disk space."
         );
         ensure!(
-            is_executable(&unpacked.join(self.program))
-                && is_executable(&unpacked.join(self.companion)),
+            self.complete(&unpacked),
             "The download is missing required files."
         );
         let destination = providers.join(self.directory);
+        self.publish(&unpacked, &destination, update)
+    }
+
+    fn publish(self, unpacked: &Path, destination: &Path, update: bool) -> Result<()> {
         if update {
-            return swap_release(&unpacked, &destination)
+            return swap_release(unpacked, destination)
                 .context("Could not replace the provider files.");
         }
-        if let Err(error) = fs::rename(&unpacked, &destination) {
-            // Another Huggler window may have published the same complete release.
-            if !is_executable(&destination.join(self.program))
-                || !is_executable(&destination.join(self.companion))
-            {
-                return Err(error).context("Could not save the provider files.");
-            }
+        let Err(error) = fs::rename(unpacked, destination) else {
+            return Ok(());
+        };
+        if self.complete(destination) {
+            // Another window may already have published a complete release.
+            return Ok(());
         }
-        Ok(())
+        if fs::symlink_metadata(destination).is_ok_and(|metadata| metadata.is_dir()) {
+            return swap_release(unpacked, destination)
+                .context("Could not repair the provider files.");
+        }
+        Err(error).context("Could not save the provider files.")
+    }
+}
+
+pub(super) fn executable_available(state: &Path, instance: &ProviderInstance) -> bool {
+    match Release::for_instance(state, instance) {
+        Some(release) => release.complete(&release.directory(state)),
+        None => executable_exists(&instance.executable),
     }
 }
 
@@ -399,8 +418,15 @@ pub(super) fn codex_login_command(instance: &ProviderInstance) -> String {
     }
 
     let mut command = Vec::new();
-    if let Some(home) = &instance.home {
+    if let Some(home) = instance
+        .home
+        .clone()
+        .or_else(|| instance.environment().get("CODEX_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("CODEX_HOME").map(PathBuf::from))
+    {
         command.push(format!("CODEX_HOME={}", quote(&home.to_string_lossy())));
+    } else if let Some(home) = instance.environment().get("HOME") {
+        command.push(format!("HOME={}", quote(home)));
     }
     command.push(quote(&instance.executable.to_string_lossy()));
     command.extend(instance.args.iter().map(|arg| quote(arg)));
@@ -411,6 +437,60 @@ pub(super) fn codex_login_command(instance: &ProviderInstance) -> String {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    use std::{collections::BTreeMap, os::unix::fs::PermissionsExt as _};
+
+    #[test]
+    fn installation_repairs_an_incomplete_managed_package() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let release = Release::for_provider(Provider::Codex).unwrap();
+        let installed = release.directory(temp.path());
+        let staged = temp.path().join("staged");
+        for (directory, executable, content) in [
+            (&installed, release.program, "incomplete executable"),
+            (&staged, release.program, "new executable"),
+            (&staged, release.companion, "new companion"),
+        ] {
+            let path = directory.join(executable);
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(&path, content)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        }
+        let instance =
+            ProviderInstance::new("codex", Provider::Codex, release.executable(temp.path()));
+        assert!(!executable_available(temp.path(), &instance));
+
+        release.publish(&staged, &installed, false)?;
+
+        assert!(executable_available(temp.path(), &instance));
+        assert_eq!(
+            fs::read_to_string(installed.join(release.program))?,
+            "new executable"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join(release.program))?,
+            "incomplete executable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn codex_login_uses_the_same_config_directory_without_copying_credentials() -> Result<()> {
+        let mut instance = ProviderInstance::new("codex", Provider::Codex, "/apps/Codex CLI");
+        instance.set_environment(BTreeMap::from([
+            ("CODEX_HOME".into(), "/config/alex's codex".into()),
+            ("OPENAI_API_KEY".into(), "fixture credential".into()),
+        ]))?;
+        assert_eq!(
+            codex_login_command(&instance),
+            "CODEX_HOME='/config/alex'\"'\"'s codex' '/apps/Codex CLI' login"
+        );
+        instance.home = Some("/explicit config".into());
+        assert_eq!(
+            codex_login_command(&instance),
+            "CODEX_HOME='/explicit config' '/apps/Codex CLI' login"
+        );
+        Ok(())
+    }
 
     #[test]
     fn provider_update_swaps_complete_directories() -> Result<()> {

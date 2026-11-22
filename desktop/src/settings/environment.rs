@@ -1,5 +1,6 @@
-use super::Settings;
+use super::{Preferences, Settings};
 use crate::ui::{hint, label, section_title};
+use anyhow::{Result, ensure};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, IconName, Sizable,
@@ -59,8 +60,22 @@ impl Settings {
     }
 
     fn save_environment(&mut self, cx: &mut Context<Self>) {
+        let mut prefs = self.prefs.clone();
+        let edit = self.apply_environment_edits(&mut prefs, cx);
+        if self.persist_provider_edits(prefs, edit, cx) {
+            self.environment_rows = None;
+            self.error = None;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn apply_environment_edits(
+        &self,
+        prefs: &mut Preferences,
+        cx: &App,
+    ) -> Result<bool> {
         let Some(rows) = self.environment_rows.as_ref() else {
-            return;
+            return Ok(false);
         };
         let mut variables = BTreeMap::new();
         for row in rows {
@@ -75,31 +90,31 @@ impl Settings {
                 .next()
                 .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
                 && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
-            if !valid_name || value.contains('\0') {
-                self.error = Some("Use letters, numbers, and underscores in variable names. Start with a letter or underscore, and remove null characters from values.".into());
-                cx.notify();
-                return;
-            }
-            if variables
-                .insert(name.to_owned(), value.to_string())
-                .is_some()
-            {
-                self.error = Some(format!("Enter only one value for {name}."));
-                cx.notify();
-                return;
-            }
+            ensure!(
+                valid_name,
+                "Start variable names with a letter or underscore and use only letters, numbers, and underscores."
+            );
+            ensure!(
+                !value.contains('\0'),
+                "Remove null characters from the value for {name}."
+            );
+            ensure!(
+                variables
+                    .insert(name.to_owned(), value.to_string())
+                    .is_none(),
+                "Enter only one value for {name}."
+            );
         }
 
-        let mut prefs = self.prefs.clone();
         let id = self.providers.selected.as_str();
         if variables.is_empty() {
-            prefs.provider_environment.remove(id);
-        } else {
-            prefs.provider_environment.insert(id.to_owned(), variables);
+            return Ok(prefs.provider_environment.remove(id).is_some());
         }
-        if self.persist(prefs, cx) {
-            self.environment_rows = None;
+        if prefs.provider_environment.get(id) == Some(&variables) {
+            return Ok(false);
         }
+        prefs.provider_environment.insert(id.to_owned(), variables);
+        Ok(true)
     }
 
     pub(super) fn render_environment(&self, cx: &Context<Self>) -> Div {

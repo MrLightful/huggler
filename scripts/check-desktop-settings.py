@@ -13,7 +13,10 @@ from desktop_check import ROOT, isolated_env, launch_thread, run_window
 
 def check_storage(executable, state, env):
     run_window(executable, state, [
-        {"key": "cmd-,"}, {"click": "Storage"},
+        {"resize": [640, 440]}, {"key": "cmd-,"}, {"center_x": ["Appearance", 320]},
+        *({"right_of": [f"settings-chevron/{name}", f"settings-summary/{name}"]}
+          for name in ("Appearance", "Providers", "Storage")),
+        {"click": "Storage"},
         {"see": "automatic-cleanup/Off"}, {"click": "Clean up worktrees now"},
         {"see": "No unused worktrees found."}, {"click": "automatic-cleanup/On"},
         {"click": "Back to Settings"}, {"see": "Providers"}, {"click": "Done"},
@@ -44,27 +47,32 @@ fi
         {"resize": [640, 440]},
         {"key": "cmd-,"}, {"see": "Appearance"}, {"see": "Providers"},
         {"absent": "provider/codex"}, {"absent": "Dark"},
-        {"click": "Providers"}, {"right_of": ["provider/claudeAgent", "provider/codex"]},
-        {"max_height": ["provider-summary/codex", 72]},
-        {"right_of": ["provider-summary/claudeAgent", "provider-summary/codex"]},
-        {"absent": "CLI executable"}, {"click": "provider/codex"},
+        {"click": "Providers"}, {"right_of": ["Add provider", "provider/codex"]},
+        {"absent": "provider/claudeAgent"},
+        {"min_height": ["provider/codex", 64]}, {"max_height": ["provider/codex", 80]},
+        {"above": ["provider/codex", "Provider title"]},
+        {"absent": "CLI executable"},
         {"see": "Sign-in needed"}, {"see": "v0.169.0"}, {"absent": "Update to v0.170.0"},
         {"above": ["Done", "v0.169.0"]}, {"above": ["Done", "Refresh setup"]},
         {"above": ["Done", "Provider title"]}, {"above": ["Provider title", "provider-status-message"]},
         {"see": "Copy sign-in command"}, {"see": "Advanced settings"}, {"absent": "CLI executable"},
-        {"absent": "API key"}, {"absent": "Sign in with ChatGPT"}, {"absent": "provider/claudeAgent"},
+        {"absent": "API key"}, {"absent": "Sign in with ChatGPT"},
         {"click": "Refresh setup"}, {"see": "Connected"},
         {"right_of": ["v0.169.0", "Provider title"]}, {"right_of": ["Connected", "v0.169.0"]},
         {"above": ["Provider title", "Models"]},
         {"absent": "provider-status-message"},
         {"absent": "Copy sign-in command"}, {"absent": "Codex sign-in guide"},
-        {"click": "Back to Providers"}, {"click": "provider/claudeAgent"},
-        {"see": "Installation needed"}, {"absent": "Copy sign-in command"},
-        {"above": ["Provider title", "provider-status-message"]},
+        {"click": "Add provider"}, {"see": "Choose a provider"}, {"absent": "Provider title"},
+        {"see": "provider-card-status/claudeAgent/Installation needed"},
+        {"see": "provider/codex"}, {"click": "provider/claudeAgent"},
+        {"absent": "provider/claudeAgent"}, {"absent": "Choose a provider"},
+        {"absent": "provider-status-message"}, {"absent": "Copy sign-in command"},
+        {"above": ["Provider title", "Installation guide"]},
         {"see": "Installation guide"}, {"absent": "Models"}, {"absent": "Environment"}, {"absent": "Advanced settings"},
         {"absent": "Refresh setup"}, {"absent": "CLI executable"},
         {"click": "Custom executable"}, {"see": "CLI executable"}, {"absent": "Save path"},
-        {"click": "Back to Providers"}, {"click": "Back to Settings"},
+        {"click": "provider/codex"}, {"see": "Connected"}, {"absent": "CLI executable"},
+        {"click": "Back to Settings"},
         {"see": "Appearance"}, {"absent": "provider/codex"}, {"click": "Done"},
     ], dict(env, HUGGLER_CODEX=str(codex)))
     assert (Path(env["HOME"]) / "status-checked").exists()
@@ -74,6 +82,13 @@ fi
     managed.chmod(0o755)
     prefs = state / "preferences.json"
     prefs.write_text(json.dumps({"codexExecutable": str(managed)}))
+    run_window(executable, state, [
+        {"key": "cmd-,"}, {"click": "Providers"}, {"absent": "provider/codex"},
+        {"click": "Add provider"}, {"click": "provider/codex"}, {"see": "Install Codex"},
+        {"click": "Done"},
+    ], env)
+    managed.with_name("codex-code-mode-host").write_bytes(codex.read_bytes())
+    managed.with_name("codex-code-mode-host").chmod(0o755)
     run_window(executable, state, [
         {"resize": [640, 440]}, {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/codex"},
         {"above": ["Done", "v0.169.0"]}, {"right_of": ["v0.169.0", "Provider title"]},
@@ -95,7 +110,7 @@ fi
     }))
     error = "provider-setup-error/Could not open the provider folder."
     run_window(executable, broken, [
-        {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/codex"},
+        {"key": "cmd-,"}, {"click": "Providers"}, {"click": "Add provider"}, {"click": "provider/codex"},
         {"click": "Install Codex"}, {"see": "Setup failed"},
         {"right_of": ["Setup failed", "Provider title"]},
         {"above": ["Provider title", error]}, {"above": [error, "Install Codex"]},
@@ -171,6 +186,7 @@ exec "$MODEL_FIXTURE" "$@"
         {"click": "model-option/Provider default"},
     ], env)
     run_window(executable, state, [
+        {"resize": [1120, 840]},
         *open_provider,
         {"absent": "model-up/fixture-deep"}, {"click": "model-enabled/fixture-deep"},
         {"above": ["model-enabled/fixture-deep", "model-enabled/fixture-fast"]},
@@ -178,9 +194,10 @@ exec "$MODEL_FIXTURE" "$@"
         {"click": "Launch arguments"}, {"type": "--profile 'fixture profile'"},
         {"click": "Save runtime settings"}, {"click": "Advanced settings"},
         {"see": "Environment"}, {"click": "Add variable"},
-        {"click": "variable-name/0"}, {"type": "FIXTURE_PROVIDER_VARIABLE"},
         {"click": "variable-value/0"}, {"type": "value with spaces=1"},
-        {"click": "Save variables"}, {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"},
+        {"click": "Done"},
+        {"see": "settings-error/Start variable names with a letter or underscore and use only letters, numbers, and underscores."},
+        {"click": "variable-name/0"}, {"type": "FIXTURE_PROVIDER_VARIABLE"},
         {"click": "Done"},
         {"click": "model/Provider default"},
         {"above": ["model-option/fixture-deep", "model-option/fixture-fast"]},
@@ -234,14 +251,17 @@ def check(executable):
             {"key": "cmd-,"}, {"click": "Appearance"}, {"absent": "provider/codex"},
             {"click": "Dark"}, {"click": "Back to Settings"}, {"absent": "Dark"},
             {"click": "Providers"}, {"absent": "CLI executable"},
-            {"click": "provider/claudeAgent"}, {"absent": "default/claudeAgent"}, {"click": "Back to Providers"},
+            {"see": "No providers detected"}, {"absent": "provider/codex"}, {"absent": "provider/claudeAgent"},
+            {"click": "Add provider"}, {"see": "Choose a provider"}, {"see": "provider/claudeAgent"},
             {"click": "provider/codex"}, {"see": "Install Codex"},
             {"absent": "Models"}, {"absent": "Advanced settings"}, {"absent": "CLI executable"},
             {"click": "Custom executable"}, {"click": "CLI executable"}, {"key": "cmd-a"}, {"type": "relative/path"}, {"click": "Save path"},
             {"see": "settings-error/Enter the full path to the executable."},
-            {"click": "Back to Providers"}, {"see": "CLI executable"}, {"absent": "Appearance"},
+            {"click": "Add provider"}, {"see": "CLI executable"}, {"see": "Install Codex"},
             {"click": "CLI executable"}, {"key": "cmd-a"}, {"type": str(fixture)},
-            {"click": "Save path"}, {"click": "Done"},
+            {"click": "Add provider"}, {"click": "provider/claudeAgent"},
+            {"see": "Installation guide"}, {"absent": "CLI executable"},
+            {"click": "Done"},
             {"click": "model/Provider default"}, {"click": "provider/Claude Agent"}, {"click": "model-option/Provider default"},
             {"click": "Open conversation"}, {"see": "status/Ready"},
         ], env)
@@ -293,7 +313,7 @@ exec /usr/bin/git "$@"
             assert db.execute("SELECT name FROM thread WHERE id=?", (selected,)).fetchone() == ("Original",)
         # A process-level override wins over the saved executable.
         run_window(executable, state, [
-            {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/codex"},
+            {"key": "cmd-,"}, {"click": "Providers"}, {"click": "Add provider"}, {"click": "provider/codex"},
             {"click": "Custom executable"}, {"see": "CLI executable"}, {"absent": "Save path"},
             {"click": "Done"}, {"click": "Message"}, {"type": "Check override"}, {"click": "Send"},
             {"see": "status/Failed"},
@@ -302,7 +322,7 @@ exec /usr/bin/git "$@"
             {"key": "cmd-,"}, {"click": "Appearance"}, {"click": "System"},
             {"click": "Back to Settings"}, {"click": "Providers"}, {"click": "provider/codex"},
             {"click": "Advanced settings"}, {"click": "CLI executable"},
-            {"key": "cmd-a"}, {"key": "backspace"}, {"click": "Back to Providers"},
+            {"key": "cmd-a"}, {"key": "backspace"}, {"click": "Add provider"}, {"click": "provider/claudeAgent"},
             {"see": "provider/codex"}, {"click": "Done"}, {"see": "Message"},
         ], env)
         assert json.loads(prefs.read_text()) == {
@@ -315,14 +335,18 @@ exec /usr/bin/git "$@"
         open_claude = [{"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/claudeAgent"}]
         prefs.write_text(json.dumps(dict(json.loads(prefs.read_text()), claudeAgentExecutable=env["HUGGLER_CLAUDE_ACP"])))
         run_window(executable, state, [
-            *open_claude, {"see": "Installation needed"},
+            {"key": "cmd-,"}, {"click": "Providers"}, {"absent": "provider/claudeAgent"},
+            {"click": "Add provider"}, {"click": "provider/claudeAgent"}, {"see": "Installation guide"},
             {"click": "Custom executable"}, {"click": "CLI executable"}, {"key": "cmd-a"}, {"type": str(claude)}, {"click": "Save path"}, {"click": "Done"},
         ], claude_env)
         assert json.loads(prefs.read_text())["claudeAgentExecutable"] == str(claude)
         run_window(executable, state, [
             *open_claude, {"see": "Connected"}, {"see": "Models"}, {"see": "Advanced settings"},
-            {"absent": "Custom executable"}, {"click": "Done"},
-        ], claude_env)
+            {"absent": "Custom executable"}, {"right_of": ["provider/claudeAgent", "provider/codex"]},
+            {"right_of": ["Add provider", "provider/claudeAgent"]},
+            {"click": "Add provider"}, {"see": "All providers detected"},
+            {"click": "provider/claudeAgent"}, {"see": "Connected"}, {"click": "Done"},
+        ], dict(claude_env, HUGGLER_CODEX=str(fixture)))
         check_models_and_runtime(executable, root, checkout, fixture, env)
     print("Native settings, shortcuts, drafts and provider persistence passed")
 

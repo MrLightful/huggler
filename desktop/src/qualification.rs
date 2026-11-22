@@ -29,6 +29,7 @@ pub enum Step {
     Above([String; 2]),
     InLowerHalf(String),
     InUpperHalf(String),
+    MinHeight(String, u16),
     MaxHeight(String, u16),
     Contains(String),
     Absent(String),
@@ -181,6 +182,9 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
         Step::InUpperHalf(key) => controls.get(key.as_str()).is_some_and(|bounds| {
             bounds.top() >= px(0.) && bounds.bottom() <= window.viewport_size().height / 2.
         }),
+        Step::MinHeight(key, height) => controls
+            .get(key.as_str())
+            .is_some_and(|bounds| bounds.size.height >= px(f32::from(*height))),
         Step::MaxHeight(key, height) => controls.get(key.as_str()).is_some_and(|bounds| {
             bounds.size.height > px(0.) && bounds.size.height <= px(f32::from(*height))
         }),

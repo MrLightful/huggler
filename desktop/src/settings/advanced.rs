@@ -123,25 +123,28 @@ impl Settings {
         parse_runtime(&home, &args).map_or(true, |value| value != self.saved_runtime())
     }
 
-    pub(super) fn save_runtime(&mut self, cx: &mut Context<Self>) -> bool {
-        let (home, args) = self.runtime_fields.values(cx);
-        let saved = match parse_runtime(&home, &args) {
-            Ok(saved) => saved,
-            Err(error) => {
-                self.error = Some(error.to_string());
-                self.advanced = true;
-                cx.notify();
-                return false;
-            }
-        };
+    fn save_runtime(&mut self, cx: &mut Context<Self>) {
         let mut prefs = self.prefs.clone();
+        let edit = self.apply_runtime_edit(&mut prefs, cx);
+        self.persist_provider_edits(prefs, edit, cx);
+    }
+
+    pub(super) fn apply_runtime_edit(&mut self, prefs: &mut Preferences, cx: &App) -> Result<bool> {
+        if self.executable_preference().is_none() {
+            return Ok(false);
+        }
+        let (home, args) = self.runtime_fields.values(cx);
+        let saved = parse_runtime(&home, &args).inspect_err(|_| self.advanced = true)?;
+        if saved == self.saved_runtime() {
+            return Ok(false);
+        }
         let id = self.providers.selected.as_str();
         if saved == RuntimePreferences::default() {
             prefs.runtime_overrides.remove(id);
         } else {
             prefs.runtime_overrides.insert(id.to_owned(), saved);
         }
-        self.persist(prefs, cx)
+        Ok(true)
     }
 
     pub(super) fn render_advanced(&self, installed: bool, cx: &Context<Self>) -> Div {
