@@ -2,7 +2,8 @@
 use crate::git;
 use anyhow::{Context, Result, bail, ensure};
 use huggler::{
-    Huggler, ThreadId,
+    Huggler, Provider, ProviderInstanceId, ThreadId,
+    providers::codex::generate_commit_message,
     repository::{
         Driver, RepositoryClient,
         github::{
@@ -36,7 +37,10 @@ pub enum Action {
 #[derive(Clone, Debug)]
 pub enum Status {
     Hidden,
-    Create,
+    Create {
+        branch: git::GitHubBranch,
+        unavailable: Option<String>,
+    },
     Conflicts,
     Found {
         branch: git::GitHubBranch,
@@ -44,14 +48,13 @@ pub enum Status {
         pr: Box<PullRequest>,
     },
     Multiple(Vec<PullRequest>),
-    Unavailable(String),
 }
 
 impl Status {
     pub fn action(&self) -> Option<Action> {
         Some(match self {
             Self::Hidden => return None,
-            Self::Create | Self::Unavailable(_) => Action::Create,
+            Self::Create { .. } => Action::Create,
             Self::Conflicts => Action::Resolve,
             Self::Found { branch, pr, .. } => primary_action(branch, pr),
             Self::Multiple(_) => Action::View,
@@ -104,6 +107,8 @@ pub(super) struct Checkout {
     pub runtime: Arc<Huggler>,
     pub thread: ThreadId,
     pub root: PathBuf,
+    pub provider: ProviderInstanceId,
+    pub model: Option<String>,
 }
 
 struct PullRequestTarget {
@@ -127,13 +132,25 @@ impl PullRequestTarget {
         self.configured_base.as_deref().unwrap_or(&self.default)
     }
 
-    fn has_commits(&self, root: &Path) -> bool {
-        self.branch.has_pr_commits(root, &self.default, self.base())
+    fn base_commit(&self, root: &Path) -> Option<String> {
+        self.branch.pr_base_commit(root, self.base())
+    }
+
+    fn can_create(&self, root: &Path, dirty: bool) -> bool {
+        self.branch.is_pr_head(&self.default, self.base())
+            && (dirty
+                || self
+                    .base_commit(root)
+                    .is_some_and(|base| self.branch.has_pr_commits(root, &base)))
     }
 
     fn compare_url(&self, root: &Path) -> Result<String> {
         ensure!(
-            self.has_commits(root),
+            !git::has_uncommitted_changes(root)?,
+            "GitHub status is required to include uncommitted changes in a pull request."
+        );
+        ensure!(
+            self.can_create(root, false),
             "Create PR needs commits on a topic branch beyond {}.",
             self.base()
         );
@@ -168,18 +185,22 @@ impl Checkout {
             .as_ref()
             .map_or(&branch, |target| &target.branch)
             .head;
+        let dirty = git::has_uncommitted_changes(&self.root).unwrap_or(false);
         let error = match client.github_pull_requests(head).await {
             Ok(requests) => {
-                let status = select_pull_request(branch.clone(), head, requests);
-                if !matches!(status, Status::Create) {
+                let status = select_pull_request(branch.clone(), head, requests, dirty);
+                if !matches!(status, Status::Create { .. }) {
                     return status;
                 }
                 base_error
             }
             Err(error) => Some(error.to_string()),
         };
-        if target.is_some_and(|target| target.has_commits(&self.root)) {
-            error.map_or(Status::Create, Status::Unavailable)
+        if target.is_some_and(|target| target.can_create(&self.root, dirty)) {
+            Status::Create {
+                branch,
+                unavailable: error,
+            }
         } else {
             Status::Hidden
         }
@@ -193,11 +214,15 @@ impl Checkout {
     }
 
     fn offline_create_status(&self, branch: &git::GitHubBranch, error: anyhow::Error) -> Status {
+        let dirty = git::has_uncommitted_changes(&self.root).unwrap_or(false);
         if self
             .cached_target(branch)
-            .is_ok_and(|target| target.has_commits(&self.root))
+            .is_ok_and(|target| target.can_create(&self.root, dirty))
         {
-            Status::Unavailable(format!("{error:#}"))
+            Status::Create {
+                branch: branch.clone(),
+                unavailable: Some(format!("{error:#}")),
+            }
         } else {
             Status::Hidden
         }
@@ -214,8 +239,12 @@ impl Checkout {
             .with_context(|| format!("{error:#}"))
     }
 
-    pub async fn create_pull_request(&self) -> Result<String> {
+    pub async fn create_pull_request(&self, displayed: &git::GitHubBranch) -> Result<String> {
         let original = git::github_branch(&self.root)?;
+        ensure!(
+            original.same_target(displayed),
+            "The checkout changed since Create PR appeared. Try again on the current branch."
+        );
         let client = match self.client(&original).await {
             Ok(client) => client,
             Err(error) => return self.offline_compare_url(&original, error),
@@ -225,7 +254,7 @@ impl Checkout {
             Err(error) => return self.offline_compare_url(&original, error.into()),
         };
         let target = PullRequestTarget::resolve(&original, &self.root, default)?;
-        let branch = &target.branch;
+        let mut branch = target.branch.clone();
         let base = target.base();
         let requests = client.github_pull_requests(&branch.head).await;
         self.verify_checkout(&original)?;
@@ -241,23 +270,48 @@ impl Checkout {
                     .with_context(|| error.to_string());
             }
         };
+        let dirty = git::has_uncommitted_changes(&self.root)?;
+        verify_can_create(&original, &branch.head, requests, dirty)?;
         ensure!(
-            matches!(
-                select_pull_request(original.clone(), &branch.head, requests),
-                Status::Create
-            ),
-            "The checkout or pull request status changed. Review the current action and try again."
+            branch.is_pr_head(&target.default, base),
+            "Create PR requires a topic branch."
         );
+        branch.verify_push_target(&self.root)?;
+        let mut expected = original;
+        if dirty && let Some(pending) = git::PendingCommit::prepare(&self.root, &branch)? {
+            let prompt = pending.message_prompt(&self.root)?;
+            let (subject, body) = self.commit_message(&prompt).await?;
+            let requests = client.github_pull_requests(&branch.head).await?;
+            verify_can_create(&expected, &branch.head, requests, true)?;
+            self.verify_checkout(&expected)?;
+            ensure!(
+                expected.configured_pr_base(&self.root)? == target.configured_base,
+                "The pull request base changed. Try again."
+            );
+            branch.verify_push_target(&self.root)?;
+            let oid = pending.commit(&self.root, &subject, &body)?;
+            expected.local_oid.clone_from(&oid);
+            branch.local_oid = oid;
+        } else {
+            ensure!(
+                target
+                    .base_commit(&self.root)
+                    .is_some_and(|base| branch.has_pr_commits(&self.root, &base)),
+                "Create PR needs changes on a topic branch beyond {base}."
+            );
+        }
         ensure!(
-            target.has_commits(&self.root),
-            "Create PR needs commits on a topic branch beyond the local copy of {base}."
+            !git::has_uncommitted_changes(&self.root)?,
+            "The checkout has uncommitted changes. Review them and try again."
         );
         let (title, body) = branch.pr_text(&self.root)?;
+        self.verify_checkout(&expected)?;
         branch.push(&self.root).await?;
         let current = git::github_branch(&self.root)?;
         ensure!(
             !git::has_conflicts(&self.root)
-                && original.same_target(&current)
+                && !git::has_uncommitted_changes(&self.root)?
+                && expected.same_target(&current)
                 && current.configured_pr_base(&self.root)? == target.configured_base,
             "The checkout or pull request status changed. Review the current action and try again."
         );
@@ -294,6 +348,28 @@ impl Checkout {
         }
     }
 
+    async fn commit_message(&self, prompt: &str) -> Result<(String, String)> {
+        let mut instances = self.runtime.provider_instances();
+        let selected = instances
+            .find(|instance| instance.id == self.provider && instance.driver == Provider::Codex);
+        let instance = selected
+            .or_else(|| {
+                self.runtime
+                    .provider_instances()
+                    .find(|instance| instance.id.as_str() == "codex")
+            })
+            .context("Configure Codex to generate a commit message.")?;
+        generate_commit_message(
+            instance,
+            self.runtime.output(),
+            &self.root,
+            selected.and(self.model.as_deref()),
+            prompt,
+        )
+        .await
+        .context("Generate a commit message with Codex")
+    }
+
     pub async fn update(
         &self,
         branch: &git::GitHubBranch,
@@ -314,7 +390,7 @@ impl Checkout {
             ),
             Status::Found { branch, head, pr } => {
                 let fresh = self.status().await;
-                if let Status::Unavailable(error) = &fresh {
+                if let Status::Create { unavailable: Some(error), .. } = &fresh {
                     bail!("Could not verify the pull request. {error}");
                 }
                 ensure!(
@@ -365,19 +441,37 @@ impl Checkout {
     }
 }
 
+fn verify_can_create(
+    branch: &git::GitHubBranch,
+    head: &str,
+    requests: BranchPullRequests,
+    dirty: bool,
+) -> Result<()> {
+    ensure!(
+        matches!(
+            select_pull_request(branch.clone(), head, requests, dirty),
+            Status::Create { .. }
+        ),
+        "The checkout or pull request status changed. Review the current action and try again."
+    );
+    Ok(())
+}
+
 fn select_pull_request(
     branch: git::GitHubBranch,
     head: &str,
     mut requests: BranchPullRequests,
+    dirty: bool,
 ) -> Status {
     let pr = match requests.open.len() {
-        0 => {
+        0 if !dirty => {
             // A branch name can be reused for another PR after closing or merging.
             requests
                 .recent
                 .into_iter()
                 .find(|pr| pr.head_commit() == branch.local_oid)
         }
+        0 => None,
         1 => requests.open.pop(),
         _ => return Status::Multiple(requests.open),
     };
@@ -387,7 +481,10 @@ fn select_pull_request(
             head: head.to_owned(),
             pr: Box::new(pr),
         },
-        None => Status::Create,
+        None => Status::Create {
+            branch,
+            unavailable: None,
+        },
     }
 }
 

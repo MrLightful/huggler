@@ -247,6 +247,13 @@ impl Desktop {
                         draft.saved = value;
                         draft.dirty = draft.input.read(cx).text() != draft.saved.as_str();
                         view.refresh_working_file_views(&thread, &path, cx);
+                        if view
+                            .current
+                            .as_ref()
+                            .is_some_and(|current| current.id == thread)
+                        {
+                            view.watch_pull_request(cx);
+                        }
                     }
                     Err(error) => draft.error = Some(format!("Could not save. {error:#}")),
                 }

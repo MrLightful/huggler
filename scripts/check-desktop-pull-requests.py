@@ -46,6 +46,14 @@ def github_response(fixture, query, variables):
         assert variables == {"owner": "fixture", "repo": "project"}
         return {"data": {"repository": {"defaultBranchRef": {"name": "main"}}}}
     pr = json.loads(fixture.read_text())
+    if pr == "switch_branch":
+        assert variables["head"] == "review"
+        subprocess.run(
+            ["git", "-C", fixture.parent / "checkout", "switch", "-qc", "other-topic"],
+            check=True,
+        )
+        fixture.write_text("null")
+        pr = None
     if isinstance(pr, dict) and "next" in pr:
         fixture.write_text(json.dumps(pr["next"]))
         pr = pr["current"]
@@ -78,7 +86,11 @@ def github_response(fixture, query, variables):
             assert variables == {"owner": "fixture", "repo": "project", "head": "main", "ref": "refs/heads/main"}
             assert pr is None
             return {"data": {"repository": {"ref": None, "recent": {"nodes": []}}}}
-        assert variables == {"owner": "fixture", "repo": "project", "head": "review", "ref": "refs/heads/review"}
+        assert variables["head"] in ("review", "other-topic")
+        assert variables == {
+            "owner": "fixture", "repo": "project",
+            "head": variables["head"], "ref": f"refs/heads/{variables['head']}",
+        }
         opened = pr if multiple else [pr] if pr and pr["state"] == "OPEN" else []
         recent = [pr] if pr and not opened else []
         return {"data": {"repository": {
@@ -117,7 +129,9 @@ def create_pr(fixture, payload):
     published = subprocess.check_output(
         ["git", "--git-dir", remote, "rev-parse", "refs/heads/review"], text=True,
     ).strip()
-    assert published == scenario["pr"]["headRefOid"]
+    if "headRefOid" in scenario["pr"]:
+        assert published == scenario["pr"]["headRefOid"]
+    scenario["pr"]["headRefOid"] = published
     fixture.write_text(json.dumps(scenario["pr"]))
     if scenario.get("lost_receipt"):
         return {"message": "Simulated response failure after creation"}, 503
@@ -164,6 +178,13 @@ def check(binary):
         checkout.mkdir()
         git("init", "-q", "-b", "main")
         git("init", "-q", "--bare", "-b", "main", str(remote))
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.test")
+        git("config", "commit.gpgsign", "false")
+        (checkout / ".gitignore").write_text("*.log\n")
+        (checkout / "unstaged.txt").write_text("Original content\n")
+        (checkout / "removed.txt").write_text("Remove this\n")
+        git("add", "-A")
         base = commit("Base")
         git("push", str(remote), "main")
         git("remote", "add", "origin", "ssh://git@github.com/fixture/project.git")
@@ -211,17 +232,75 @@ def check(binary):
 
         hidden = ({"absent": "Checking PR…"}, {"absent": "Create PR"})
         show(None, *launch_thread(checkout, "Review", current=True), {"see": "Open in"}, *hidden)
-        (checkout / "local-note.txt").write_text("Leave this out of the PR.")
+        (checkout / "ignored.log").write_text("Ignore this.\n")
         show(None, {"see": "Open in"}, *hidden)
 
-        # The first commit makes Create PR available. The click publishes it.
-        head = commit("Review head", "-m", "Review body")
-        pr["headRefOid"] = head
-        expect_creation(pr, "Review head", "Review body")
+        # Local changes alone make Create PR available. GitHub receives the commit made by the click.
+        (checkout / "staged.txt").write_text("Staged content\n")
+        git("add", "staged.txt")
+        (checkout / "unstaged.txt").write_text("Updated content\n")
+        (checkout / "removed.txt").unlink()
+        (checkout / "new.txt").write_text("New content\n")
+        status = git("--no-optional-locks", "status", "--porcelain")
+        show("switch_branch", {"click": "Create PR"}, {"contains": "checkout changed since Create PR"})
+        assert git("branch", "--show-current") == "other-topic"
+        assert git("rev-parse", "HEAD") == base
+        assert git("status", "--porcelain") == status
+        git("switch", "-q", "review")
+
+        git_dir = Path(git("rev-parse", "--absolute-git-dir"))
+        index = git_dir / "index"
+        index_before = index.read_bytes()
+        commit_message = root / "commit-message.json"
+        commit_message.write_text(json.dumps("invalid"))
+        show(None, {"click": "Create PR"}, {"contains": "invalid commit message"})
+        assert git("rev-parse", "HEAD") == base
+        assert index.read_bytes() == index_before
+        assert git("status", "--porcelain") == status
+        assert json.loads(fixture.read_text()) is None
+        commit_message.write_text(json.dumps("edit"))
+        show(None, {"click": "Create PR"}, {"contains": "changed while writing the commit message"})
+        assert git("rev-parse", "HEAD") == base
+        assert git("status", "--porcelain") == status
+        assert (checkout / "new.txt").read_text() == "New content, edited during generation.\n"
+        (checkout / "new.txt").write_text("New content\n")
+
+        show("offline", {"click": "Create PR"}, {"contains": "include uncommitted changes"})
+        assert git("rev-parse", "HEAD") == base
+        assert git("status", "--porcelain") == status
+        commit_message.write_text(json.dumps("success"))
+        hooks = root / "hooks"
+        hooks.mkdir()
+        hook = hooks / "pre-commit"
+        hook.write_text("#!/bin/sh\ngit add -f -- ignored.log || exit 2\nexit 1\n")
+        hook.chmod(0o755)
+        git("config", "core.hooksPath", str(hooks))
+        index_before = index.read_bytes()
+        show(None, {"click": "Create PR"}, {"contains": "Commit changes for the pull request"})
+        assert git("rev-parse", "HEAD") == base
+        assert index.read_bytes() == index_before
+        assert not index.with_name("index.lock").exists()
+        hook.unlink()
+        # A single-branch checkout can lack both copies of the base ref.
+        git("update-ref", "-d", "refs/remotes/origin/main")
+        git("update-ref", "-d", "refs/heads/main")
+        expect_creation(pr, "Update review fixtures", "Cover staged, unstaged, new, and removed files.")
         show(None, {"see": "Create PR"}, {"right_of": ["Create PR", "Open in"]},
              {"click": "Create PR"}, {"opened_url": pr["url"]}, {"see": "Merge"})
+        head = git("rev-parse", "HEAD")
+        pr["headRefOid"] = head
+        assert head == remote_ref("review") and git("rev-parse", "HEAD^") == base
         assert git("rev-parse", "@{upstream}") == head
-        assert git("status", "--porcelain") == "?? local-note.txt"
+        assert git("status", "--porcelain") == ""
+        assert git("diff", "--name-status", base, head).splitlines() == [
+            "A\tnew.txt", "D\tremoved.txt", "A\tstaged.txt", "M\tunstaged.txt",
+        ]
+        assert git("show", "HEAD:new.txt") == "New content"
+        assert git("show", "HEAD:staged.txt") == "Staged content"
+        assert git("show", "HEAD:unstaged.txt") == "Updated content"
+        assert (checkout / "ignored.log").read_text() == "Ignore this.\n"
+        git("update-ref", "refs/remotes/origin/main", base)
+        git("update-ref", "refs/heads/main", base)
         show(None, {"see": "Create PR"})
 
         # A tracked branch can also be ahead. Reconcile a lost create receipt.
@@ -310,6 +389,7 @@ def check(binary):
         # Local commits on the base branch do not make it a PR head.
         checkout = root / "repository"
         commit("Local commit on main")
+        (checkout / "local.txt").write_text("Local changes on main.\n")
         show(None, *launch_thread(checkout, "Base checkout", current=True), {"see": "Open in"}, *hidden)
     print("Native PR actions passed with a local GitHub fixture and a scripted Codex peer")
 

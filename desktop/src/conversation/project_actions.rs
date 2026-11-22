@@ -26,7 +26,9 @@ impl PrAction {
 
     fn tooltip(self) -> &'static str {
         match self {
-            Self::Create => "Push committed changes and create a pull request",
+            Self::Create => {
+                "Commit any pending changes, push the branch, and create a pull request"
+            }
             Self::Resolve => "Ask this conversation to resolve merge conflicts",
             Self::Fix => "Ask this conversation to fix failed checks or address requested changes",
             Self::Update(PullRequestUpdate::Merge(_)) => "Review and merge the pull request",
@@ -84,7 +86,7 @@ impl Desktop {
 
     fn pull_request_control(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let thread = self.current.as_ref().unwrap();
-        let busy = self.pull_request_action.contains(&thread.id);
+        let busy = self.pull_request_busy(&thread.id);
         let action = match &self.pull_request {
             Some(status) => status.action()?,
             None => PrAction::Create,
@@ -92,7 +94,12 @@ impl Desktop {
         let tooltip = match &self.pull_request {
             _ if busy => "Updating pull request…".into(),
             None => "Checking pull request status…".into(),
-            Some(Status::Unavailable(reason)) => format!("GitHub status is unavailable. {reason}"),
+            Some(Status::Create {
+                unavailable: Some(reason),
+                ..
+            }) => {
+                format!("GitHub status is unavailable. {reason}")
+            }
             _ => action.tooltip().into(),
         };
         let label = if busy {
@@ -166,11 +173,21 @@ impl Desktop {
     }
 
     fn pull_request_checkout(&self, id: &ThreadId) -> Checkout {
+        let thread = self.current.as_ref().expect("selected conversation");
         Checkout {
             runtime: self.runtime.clone(),
             thread: id.clone(),
             root: self.workspaces[id].root.clone(),
+            provider: thread.provider_instance.clone(),
+            model: thread.model.clone(),
         }
+    }
+
+    fn pull_request_busy(&self, id: &ThreadId) -> bool {
+        let root = &self.workspaces[id].root;
+        self.pull_request_action
+            .iter()
+            .any(|active| &self.workspaces[active].root == root)
     }
 
     fn activate_pull_request(
@@ -183,18 +200,19 @@ impl Desktop {
         let Some(status) = &self.pull_request else {
             return;
         };
-        if self.pull_request_action.contains(&thread.id) || status.action() != Some(action) {
+        if self.pull_request_busy(&thread.id) || status.action() != Some(action) {
             return;
         }
         match (status, action) {
-            (Status::Create | Status::Unavailable(_), PrAction::Create) => {
+            (Status::Create { branch, .. }, PrAction::Create) => {
                 let id = thread.id.clone();
                 let checkout = self.pull_request_checkout(&id);
+                let branch = branch.clone();
                 self.pull_request_action.insert(id.clone());
                 cx.notify();
                 let job = self
                     .executor
-                    .spawn(async move { checkout.create_pull_request().await });
+                    .spawn(async move { checkout.create_pull_request(&branch).await });
                 cx.spawn(async move |view, cx| {
                     let result = job
                         .await
@@ -210,6 +228,9 @@ impl Desktop {
                                 cx.open_url(&url);
                             }
                         });
+                        if let Some(workspace) = view.workspaces.get(&id) {
+                            workspace.refresh_after_checkout_update(view.workspace_tab, cx);
+                        }
                         view.finish_pull_request_action(id, Some(result), cx);
                     });
                 })
@@ -329,14 +350,14 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         self.pull_request_action.remove(&id);
-        if self.current.as_ref().is_some_and(|thread| thread.id == id) {
-            if let Some(result) = result {
-                self.error = result.err().map(|error| format!("{error:#}"));
-                self.pull_request = None;
-                self.watch_pull_request(cx);
-            }
-            cx.notify();
+        if self.current.as_ref().is_some_and(|thread| thread.id == id)
+            && let Some(result) = result
+        {
+            self.error = result.err().map(|error| format!("{error:#}"));
+            self.pull_request = None;
+            self.watch_pull_request(cx);
         }
+        cx.notify();
     }
 
     pub(super) fn run_project_action(
