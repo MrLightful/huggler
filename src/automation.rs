@@ -40,7 +40,7 @@ pub struct Schedule {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Occurrence {
     pub key: String,
     pub thread: ThreadId,

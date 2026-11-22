@@ -637,7 +637,7 @@ pub struct ThreadSummary {
 }
 
 /// Lightweight activity for a conversation, including work outside the foreground turn.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConversationSummary {
     pub settled: bool,
     pub id: ThreadId,
@@ -650,7 +650,7 @@ pub struct ConversationSummary {
     pub active_children: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConversationList {
     /// Invalidation cursor scoped to this state database.
     pub revision: i64,

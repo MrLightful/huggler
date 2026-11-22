@@ -21,6 +21,7 @@ pub enum Access {
 }
 
 /// Transfer the bearer to the approved host through a private channel.
+#[derive(Serialize)]
 pub struct Grant {
     pub id: GrantId,
     pub address: Address,

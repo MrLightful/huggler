@@ -1,0 +1,79 @@
+---
+title: Python API
+description: Runtime options, commands, async events, and the host integration API.
+---
+
+## Open and configure
+
+`await Huggler.open(state_dir=None, *, config=None, agent_text=None)` returns a runtime. Supply a state directory or a configuration name. Use `async with await Huggler.open(...)` or `await runtime.close()` to drain workers and release the database lock. The runtime expects one owner per database.
+
+```python
+runtime = await Huggler.open(
+    "/var/lib/my-app",
+    config={
+        "name": "Review Workbench",
+        "storage": {"database_path": "review.sqlite3",
+                    "worktree_root": {"shared": "worktrees"}},
+        "instances": [{"id": "review", "driver": "codex", "executable": "codex",
+                       "request_approvals": True}],
+    },
+)
+```
+
+- `name` and optional `slug` set the display name and default state directory. An explicit state directory defaults to `huggler.sqlite3`. Naming without a state directory uses `~/.<slug>/userdata/huggler.sqlite3`.
+- `storage` accepts `database_path`, `worktree_root` (a mapping with `shared` or `project_relative`), and `worktree_name`, which contains the literal `{id}` placeholder.
+- `output` accepts `name`, `title`, `version`, `instructions`, `tools`, and `provider_labels`. Tool entries can override `name`, `title`, and `description`. Use `output()` and `provider_label(id)` to inspect the presentation.
+- `agent_tools` enables the scoped agent MCP tools. `agent_policy` accepts `allowed_tools`, `defer_tools`, and `secret_ttl_seconds`. The host can also set `auto_resume_usage_limits` and `prompt_suggestions`.
+- Configure built-in executables with `codex` and `claude_agent`, or use `instances` for named installations. An instance accepts `id`, `driver`, `executable`, `args`, `home`, `pi_extension`, `server_url`, `request_approvals`, `workspace_write`, `password_env`, and `environment`. Read configured values with `provider_instances()` and read environment overrides explicitly with `provider_environment(id)`.
+- `agent_text` can implement any of the synchronous Rust `AgentText` methods. Omitted methods use Rust defaults. Fixed titles and prompts are resolved during `open`, which fails if one of those callbacks raises. Later callbacks can run inside a storage transaction. Keep them fast and free of runtime calls. An error in a later callback is reported through Python’s unraisable exception hook and uses the default text for that call. The `run_error` and `tool_error` callbacks receive the Rust diagnostic as a dictionary. [Rust AgentText methods](https://docs.rs/huggler/latest/huggler/trait.AgentText.html)
+
+Top-level path arguments accept `str` and `os.PathLike[str]`. Use strings for paths inside records. Synchronous runtime calls release the Python GIL. Use `asyncio.to_thread` for blocking Git or CLI operations from an async application. Use `asyncio.ensure_future` to schedule awaitable SDK methods alongside other work.
+
+## Commands and events
+
+`dispatch({"id": ..., "thread_id": ..., "action": {"type": ..., ...}})` accepts every [Rust Action variant](https://docs.rs/huggler/latest/huggler/enum.Action.html), using the Rust serialization names. Records use dictionaries, IDs use strings, and integer cursors retain their full precision as Python integers. For example, launch with `launch_instance`, then select a model with `set_model_selection`, including its `options` record.
+
+| Workflow | Python methods |
+| --- | --- |
+| Launch, send, and control | `open_project`, `launch`, `send`, `dispatch`, `stop_thread`, `resume_queue`, `steer_outcome` |
+| Observe and replay | `threads`, `conversation_list`, `wait_for_conversation_list`, `wait_for_threads_after`, `read`, `subscribe`, `wait`, `wait_for_change`, `retain_events` |
+| Respond to providers | `respond_to_permission`, `respond_to_question`, `respond_with_attachments`, `dismiss_question`, `interrupt_native_child` |
+| Inspect providers | `probe_provider`, `list_provider_skills`, `list_mcp_server_status`, `provider_usage` |
+| Read history and command output | `detail`, `read_message`, `read_message_body`, `command_items`, `command_output` |
+| Attach files | `prepare_upload`, `discard_upload`, `enqueue_files`, `read_attachment`, `read_attachment_file` |
+| Import and fork | `import_history`, `import_source`, `fork_history`, `checkpoint_diff`, plus the `capture_checkpoint`, `fork`, and `merge_back` actions |
+| Agent tools and requests | `peer_receipt`, `revoke_agent_tools`, `user_notices`, `secret_requests`, `answer_secret`, `approve_onepassword`, `consume_secret` |
+
+`subscribe(thread, after=None)` returns a snapshot and an async iterator. Omitting `after` starts after the snapshot. Pass a saved event sequence to replay strictly later events. Store the last sequence your application processed. For paginated history, pass the `older` record from `detail()["history"]` back as `before`.
+
+`wait(thread, run)` waits for one run. Cancelling a wait or an event read detaches the observer while provider work can continue. If an event read is cancelled before delivery, the next reader can still receive that event. Use `stop_thread` for interruption. A closed runtime ends async iteration. The stream’s explicit `next()` method reports closure as a `HugglerError`.
+
+`prepare_upload` takes `bytes`. Use `Attachment.from_bytes(name, contents)` for native MIME detection and pass the result to `enqueue_files`, or call `attachment.as_record()` to put it into an `enqueue_files` dispatch action. `read_attachment_file` returns an `Attachment` with `name`, `mime`, and `bytes` properties.
+
+An import source is a mapping such as `{"Codex": "/path/to/transcript.jsonl"}`, `{"Claude": "..."}`, `{"Pi": "..."}`, or `{"AcpRegistry": "native-session-id"}`. Questions take a dictionary mapping question IDs to text or lists of selected labels. Attachments for questions map question IDs to lists of upload IDs.
+
+Runtime failures raise `HugglerError` with `code` and `detail`. For `cursor_expired`, read a fresh snapshot. For `history_changed`, restart paging. A `conflict` carries the original and requested thread IDs. Python argument conversion can raise `TypeError`, `ValueError`, or `OverflowError`.
+
+## Application integrations
+
+| Workflow | Python methods |
+| --- | --- |
+| Workspaces | `clone_project`, `create_scratch`, `promote_scratch`, `allocate_workspace`, `allocate_workspace_at`, `allocate_workspace_on_branch`, `allocated_workspaces`, `setup_workspace`, `workspace_setup_status`, `release_workspace`, `inspect_orphaned_worktrees`, `cleanup_orphaned_worktrees`, `delete_thread` |
+| Schedules | `create_schedule`, `schedules`, `tick_schedule`, `deliver_webhook`, `schedule_history`, `delete_schedule` |
+| Repository integration | `bind_repository`, `bind_thread_repository`, `repository_client`, `link_repository_item`, `repository_links`, `unlink_repository_item`, `watch_repository_item`, `unwatch_repository_item`, `sync_repository_watch` |
+| Services | `set_service_host`, `install_terminal_host`, `install_mcp_app_host`, `thread_checkout`, `devices`, `open_service`, `service_handles`, `service_call`, `approve_app_context`, `close_service` |
+| Preferences | `preferences`, `set_preferences` |
+
+A branch selector takes `{"exact": "branch"}` or `{"from_title": "Branch title"}`. Schedule specs take a trigger such as `{"Once": {"at": 1750000000}}` plus `destination` (`Continue`, `FreshSession`, or `NewThread`) and `prompt`. The host owns timers and verifies delivery by supplying the exact body bytes, signature, and signing key to `deliver_webhook`.
+
+Repository driver names follow Rust, for example `GitHub` and `Linear`. Pass the complete authorization header value when making a repository client. Its awaitable methods are `list`, `checks`, `comment`, `comment_on_issue`, `github_default_branch`, `create_github_pull_request`, `github_pull_requests`, and `update_github_pull_request`. The update takes the original `PullRequest` snapshot and an action such as `{"type": "merge", "method": "squash"}`, `{"type": "enable_auto_merge", "method": None}`, or `{"type": "enqueue"}`.
+
+To implement a service, provide an object with `open(thread, checkout, request)` that returns an object with `call(action)`. Device hosts also provide `devices()`. Service requests and actions use a `type` field such as `{"type": "capture"}`. Return `{"type": "bytes", "mime": "image/png", "data": image}` for a capture. A returned resource may implement `close()` for cleanup. Service callbacks are synchronous and must avoid reentering the runtime’s service registry. The built-in MCP App host calls the provided connection’s `request(thread, method, params)` after it checks the resource and tool allowlists. [Rust application semantics](/bindings/rust/application-integrations/)
+
+## Peer and guest access
+
+Call `asgi_app(runtime.remote_router())` to mount the native peer and guest routes in a host-owned HTTP server. Huggler handles authorization and request semantics. The host binds the listener on loopback or supplies the authenticated TLS transport.
+
+- Read a thread address with `address` and issue a scoped bearer with `approve_link(thread, sender, "read" | "operate")`. Call `revoke_link` to withdraw the grant.
+- Use `Peer.loopback("127.0.0.1:port", bearer)` for `request`, `delegate_remote`, and `follow_remote`. The host drives follow-up polling.
+- Issue a guest invitation with `invite_guest`. Use `guest_inbox`, `moderate_guest`, and `close_share` for the invitation and its submissions. [Peer and guest protocol](/bindings/rust/connect-hosts/)

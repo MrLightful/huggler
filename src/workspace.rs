@@ -1,11 +1,12 @@
 //! Trusted-host checkout preparation. Git checkout operations are blocking.
 use crate::*;
+use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
 pub enum SetupStatus {
     Running,
     Failed(String),
@@ -22,7 +23,7 @@ pub enum WorktreeBranch<'a> {
 }
 
 /// Result of inspecting or cleaning one unreferenced managed checkout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum OrphanedWorktreeOutcome {
     /// Inspection found that cleanup can safely remove this checkout.
     Removable,
@@ -35,7 +36,7 @@ pub enum OrphanedWorktreeOutcome {
 }
 
 /// One unreferenced checkout and the reason it was removed or retained.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct OrphanedWorktreeEntry {
     pub path: PathBuf,
     pub outcome: OrphanedWorktreeOutcome,
@@ -45,7 +46,7 @@ pub struct OrphanedWorktreeEntry {
 }
 
 /// Inspection or cleanup results for all currently unreferenced managed checkouts.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct OrphanedWorktreeReport {
     pub entries: Vec<OrphanedWorktreeEntry>,
     /// Best-effort logical bytes belonging to successfully removed directories.

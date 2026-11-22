@@ -1,0 +1,45 @@
+---
+title: Control threads in Python
+description: Queue prompts, observe live output, and respond to provider requests.
+---
+
+## Choose how to send a prompt
+
+Use `runtime.send(command_id, thread, text)` for an idle thread. For other delivery policies, pass a command record to `dispatch`.
+
+```python
+receipt = runtime.dispatch({
+    "id": command_id,
+    "thread_id": thread,
+    "action": {"type": "enqueue", "text": "Review the workspace changes."},
+})
+run = await runtime.wait(thread, receipt["run_id"])
+```
+
+| Action `type` | What it does |
+| --- | --- |
+| `enqueue` | Starts the turn if the thread is idle or queues it for later. |
+| `send_auto` | Starts a turn, steers a bound Codex turn, or queues the prompt. |
+| `steer` | Sends input to the expected live Codex run identified by `active`. Check `steer_outcome(thread, command_id)` for delivery. |
+| `restart` | Interrupts the foreground run identified by `active` and puts the replacement ahead of queued work. |
+| `send_plan` | Starts a Codex turn in plan mode. |
+
+Use `edit_queued`, `move_queued`, and `cancel_queued` with the queued run ID. `stop_thread(command_id, thread)` interrupts owned work and holds the queues. Use `resume_queue(command_id, thread)` to resume delivery on a thread.
+
+## Stream and resume events
+
+Call `snapshot, events = runtime.subscribe(thread)` before sending and render the snapshot first. Consume `events` with `async for`. Read the event’s `change["type"]` and use `output_delta` for provisional text. Reconcile that text against the committed `message` or a fresh snapshot.
+
+Persist each processed event’s `sequence`. To resume a saved view, call `runtime.subscribe(thread, after=sequence)`. If it raises `HugglerError` with code `cursor_expired`, rebuild the view from a fresh subscription snapshot. Cancelling an event read or `wait` detaches that observer. Use `stop_thread` to interrupt the run. [Durability and recovery](/concepts/durability/)
+
+## Answer permissions and questions
+
+Render pending requests from the snapshot and listen for `permission_requested` and `question_requested`. Pass the thread, request’s `run_id`, request’s `id`, and chosen `optionId` to `respond_to_permission`. To answer a question, await `respond_to_question(thread, run_id, request_id, answers)`, with answers keyed by question ID. Each value is a string or a list of selected labels. For staged uploads, use `respond_with_attachments` and include a mapping from question IDs to upload IDs.
+
+Remove requests when their closure events arrive. Refresh the thread if a response races with closure.
+
+## Attach files to a message
+
+Create an attachment with `Attachment.from_bytes(name, contents)` and pass it in a list to `runtime.enqueue_files(command_id, thread, text, files)`. You can also stage bytes with `prepare_upload` and send them with the `send_attachments` action. Discard unused staged uploads with `discard_upload`.
+
+Read original bytes with `read_attachment_file(thread, message_id, position)`. The position is zero-based. A message can include up to eight files and 50 MiB total. Images can be up to 10 MiB each and 20 MiB in total.

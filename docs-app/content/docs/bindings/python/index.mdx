@@ -1,0 +1,21 @@
+---
+title: Python
+description: Embed Huggler in a CPython process with async waits and access to the Rust application features.
+---
+
+Use the Python SDK to run durable coding-agent conversations from an application, a script, or a CI job. The wheel embeds the Rust runtime and exposes its full host API, including Git workspaces, schedules, repository integrations, and host services.
+
+- [Python quickstart](/bindings/python/quickstart/)
+- [Python API reference](/bindings/python/api/)
+- [Compare bindings](/bindings/#feature-availability)
+
+The wheel targets standard CPython 3.11 and later on Apple Silicon macOS 14+ and Linux x86-64 with glibc 2.36+. Install or configure the provider you want to use separately. [Provider transports](/reference/providers/)
+
+## Build with Python
+
+- [Configure providers](/bindings/python/configure-providers/) and discover the models available in a checkout.
+- [Control threads](/bindings/python/control-threads/) with queues, event streams, approval handling, and attachments.
+- [Manage history and context](/bindings/python/history-and-context/) by paging, importing, or forking a conversation.
+- [Coordinate agents](/bindings/python/collaboration/) with scoped tools and follow delegated work or native children.
+- [Connect hosts and invite guests](/bindings/python/connect-hosts/) through the native routes served by your ASGI application.
+- [Integrate with the host application](/bindings/python/application-integrations/) to manage Git workspaces, schedules, and services.

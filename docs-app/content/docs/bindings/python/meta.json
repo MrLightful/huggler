@@ -1,0 +1,5 @@
+{
+  "title": "Python",
+  "pagesIndex": "index",
+  "pages": ["quickstart", "configure-providers", "control-threads", "history-and-context", "collaboration", "connect-hosts", "application-integrations", "api"]
+}

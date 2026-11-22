@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.12,<2"]
+build-backend = "maturin"
+
+[project]
+name = "huggler"
+version = "0.0.1"
+description = "Embed Huggler's durable coding-agent runtime in Python applications"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = ["Programming Language :: Python :: Implementation :: CPython", "Programming Language :: Rust"]
+
+[project.urls]
+Repository = "https://github.com/MrLightful/huggler"
+
+[tool.maturin]
+python-source = "python"
+module-name = "huggler._native"
+features = ["extension-module"]

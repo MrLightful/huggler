@@ -26,6 +26,10 @@ cargo test --locked --test provider_instances pi_extension_calls_scoped_tool -- 
 cargo test --locked --features application --test host_services chromium_capture -- --ignored --exact
 ```
 
+## Verify language packages
+
+Run the installed consumer for the binding you changed. The packaging guides cover prerequisites, distribution artifacts, and fixture coverage. [Python release wheels](python-sdk.md#build-and-test-from-a-checkout) · [TypeScript tarballs](typescript-sdk.md#build-and-test-from-a-checkout)
+
 ## macOS desktop checks
 
 Use Xcode and a macOS GUI session. Build the qualification binary once for the [desktop coding checks](desktop-coding.md#reproduce-the-desktop-check) and the history check.

@@ -1,0 +1,53 @@
+---
+title: Configure providers in Python
+description: Register a named provider instance and choose a model for its checkout.
+---
+
+## Register and probe an instance
+
+Use `config["codex"]` or `config["claude_agent"]` to override a built-in executable. Add an entry to `instances` for a separate installation or account. This example uses a signed-in Codex home at `~/.codex-work`.
+
+```python
+from pathlib import Path
+from uuid import uuid4
+
+from huggler import Huggler
+
+
+async def open_review_thread(state_dir, checkout):
+    config = {
+        "instances": [{
+            "id": "work-codex",
+            "driver": "codex",
+            "executable": "codex",
+            "home": str(Path.home() / ".codex-work"),
+            "request_approvals": True,
+        }],
+    }
+    async with await Huggler.open(state_dir, config=config) as runtime:
+        project = runtime.open_project(checkout)
+        report = await runtime.probe_provider("work-codex", project["root"])
+        thread = str(uuid4())
+        runtime.dispatch({
+            "id": str(uuid4()),
+            "thread_id": thread,
+            "action": {
+                "type": "launch_instance",
+                "project": project["id"],
+                "instance": "work-codex",
+                "name": "Work review",
+                "model": next(iter(report["models"]), None),
+            },
+        })
+        return thread
+```
+
+The thread snapshot records the chosen instance in `provider_instance`. Passing `None` for `model` uses the provider default. Pass an absolute path for an instance home and keep the instance configuration when reopening threads that need native continuation.
+
+## Inspect capabilities
+
+- Call `provider_instances()` to list configured instances without starting them. Call `provider_environment(instance)` to read that instance’s explicit environment overrides.
+- Use `probe_provider` to check the transport, version, models, session resumption, and agent-tool support. An `authenticated` value of `None` means the probe could not verify credentials.
+- Await `list_provider_skills(instance, checkout)` or `list_mcp_server_status(instance, checkout)` for checkout-scoped discovery. These return `None` when the operation is unavailable and an empty list when discovery succeeds and yields no entries.
+
+See the shared guide for discovery errors and the provider reference for driver settings. [Configure providers](/guides/configure-providers/) · [Provider transports](/reference/providers/)
