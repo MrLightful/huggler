@@ -34,9 +34,13 @@ if test "$*" = '--version'; then
     exit 0
 fi
 test "$*" = 'login status'
-if test -f "$HOME/status-checked"; then
+# The composer startup check and the Providers page both see a signed-out account.
+if test -f "$HOME/status-checked-in-settings"; then
     echo 'Logged in using ChatGPT' >&2
 else
+    if test -f "$HOME/status-checked"; then
+        touch "$HOME/status-checked-in-settings"
+    fi
     touch "$HOME/status-checked"
     echo 'Not logged in' >&2
     exit 1
@@ -45,6 +49,8 @@ fi
     codex.chmod(0o755)
     run_window(executable, state, [
         {"resize": [640, 440]},
+        {"click": "model-automatic"}, {"see": "model-status/Connect a provider in Settings."},
+        {"absent": "provider/Codex"}, {"see": "Edit"}, {"key": "escape"},
         {"key": "cmd-,"}, {"see": "Appearance"}, {"see": "Providers"},
         {"absent": "provider/codex"}, {"absent": "Dark"},
         {"click": "Providers"}, {"right_of": ["Add provider", "provider/codex"]},
@@ -172,18 +178,18 @@ exec "$MODEL_FIXTURE" "$@"
     ]
     run_window(executable, state, [
         *launch_thread(checkout, "Models check"),
-        {"click": "model/Provider default"},
+        {"click": "model-automatic"},
         {"above": ["model-option/fixture-fast", "model-option/fixture-deep"]},
-        {"click": "model-option/Provider default"},
+        {"click": "model-option-automatic"},
         *open_provider,
         {"absent": "Launch arguments"}, {"absent": "CLI executable"},
         {"above": ["model-enabled/fixture-fast", "model-enabled/fixture-deep"]},
         {"click": "model-up/fixture-deep"},
         {"above": ["model-enabled/fixture-deep", "model-enabled/fixture-fast"]},
         {"click": "model-enabled/fixture-deep"}, {"absent": "model-up/fixture-deep"},
-        {"click": "Done"}, {"click": "model/Provider default"},
+        {"click": "Done"}, {"click": "model-automatic"},
         {"see": "model-option/fixture-fast"}, {"absent": "model-option/fixture-deep"},
-        {"click": "model-option/Provider default"},
+        {"click": "model-option-automatic"},
     ], env)
     run_window(executable, state, [
         {"resize": [1120, 840]},
@@ -199,9 +205,9 @@ exec "$MODEL_FIXTURE" "$@"
         {"see": "settings-error/Start variable names with a letter or underscore and use only letters, numbers, and underscores."},
         {"click": "variable-name/0"}, {"type": "FIXTURE_PROVIDER_VARIABLE"},
         {"click": "Done"},
-        {"click": "model/Provider default"},
+        {"click": "model-automatic"},
         {"above": ["model-option/fixture-deep", "model-option/fixture-fast"]},
-        {"click": "model-option/Provider default"},
+        {"click": "model-option-automatic"},
     ], env)
     prefs = state / "preferences.json"
     preferences = json.loads(prefs.read_text())
@@ -247,7 +253,7 @@ def check(executable):
         prefs.write_text(json.dumps({"codexExecutable": str(state / "providers/codex/bin/codex")}))
         run_window(executable, state, [
             *launch_thread(checkout, "Original"),
-            {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Picked Claude"},
+            {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "After setup"},
             {"key": "cmd-,"}, {"click": "Appearance"}, {"absent": "provider/codex"},
             {"click": "Dark"}, {"click": "Back to Settings"}, {"absent": "Dark"},
             {"click": "Providers"}, {"absent": "CLI executable"},
@@ -262,7 +268,8 @@ def check(executable):
             {"click": "Add provider"}, {"click": "provider/claudeAgent"},
             {"see": "Installation guide"}, {"absent": "CLI executable"},
             {"click": "Done"},
-            {"click": "model/Provider default"}, {"click": "provider/Claude Agent"}, {"click": "model-option/Provider default"},
+            {"click": "model-automatic"}, {"absent": "provider/Claude Agent"},
+            {"see": "Edit"}, {"key": "escape"},
             {"click": "Open conversation"}, {"see": "status/Ready"},
         ], env)
         saved = {
@@ -307,7 +314,7 @@ exec /usr/bin/git "$@"
         ], dict(env, PATH=f"{root}:{env['PATH']}"))
         with sqlite3.connect(state / "huggler.sqlite3") as db:
             assert dict(db.execute("SELECT name,provider_instance FROM thread")) == {
-                "Original": "codex", "Picked Claude": "claudeAgent", "After restart": "codex",
+                "Original": "codex", "After setup": "codex", "After restart": "codex",
                 "Background": "codex",
             }
             selected = (state / "selected-thread").read_text()

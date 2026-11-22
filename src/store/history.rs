@@ -353,10 +353,11 @@ impl Database {
         limit: usize,
     ) -> Result<ConversationDetail> {
         let history = self.history(thread, before, query, limit)?;
-        let (name, instance, model, settled) = self.db.query_row(
-            "SELECT name,provider_instance,model,settled FROM thread WHERE id=?",
+        let (name, instance, model, settled, model_options) = self.db.query_row(
+            "SELECT name,provider_instance,model,settled,model_effort,model_service_tier FROM thread WHERE id=?",
             [&thread.0],
-            |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get(3)?,
+                ModelOptions { effort: r.get(4)?, service_tier: r.get(5)? })),
         )?;
         let latest_run = self
             .db
@@ -423,6 +424,7 @@ impl Database {
             name,
             provider_instance: instance.into(),
             model,
+            model_options,
             latest_run,
             foreground_run,
             queued_count,

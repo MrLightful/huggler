@@ -1,12 +1,140 @@
 use super::*;
 use anyhow::{Context as _, ensure};
-use huggler::Attachment;
+use huggler::{Attachment, MessageId};
 use std::{
     io::{Read, Write},
     path::Path,
 };
 
 const PREVIEW_BYTES: usize = 64 * 1024;
+const MAX_SENT_LABEL_WIDTH: Pixels = px(270.);
+const CHIP_SIDE_PADDING: f32 = 0.375;
+
+pub(super) const MESSAGE_LINE_HEIGHT: Pixels = px(22.);
+
+fn split_caption_before_last_line<'a>(
+    caption: &'a str,
+    width: Pixels,
+    window: &Window,
+    cx: &App,
+) -> (Option<&'a str>, &'a str) {
+    // Only the last visible line shares space with the attachment chips.
+    let (prefix, line) = caption
+        .rsplit_once('\n')
+        .map_or((None, caption), |(prefix, line)| (Some(prefix), line));
+    if line.is_empty() {
+        return (prefix, line);
+    }
+    let line_start = caption.len() - line.len();
+    let mut style = window.text_style();
+    style.font_family = cx.theme().font_family.clone();
+    let split = window
+        .text_system()
+        .shape_text(
+            line.to_owned().into(),
+            rems(0.875).to_pixels(window.rem_size()),
+            &[style.to_run(line.len())],
+            Some(width),
+            None,
+        )
+        .ok()
+        .and_then(|lines| {
+            let line = lines.first()?;
+            let wrap = line.wrap_boundaries().last()?;
+            Some(line.runs()[wrap.run_ix].glyphs[wrap.glyph_ix].index)
+        })
+        .unwrap_or(0);
+    let prefix = (split > 0)
+        .then(|| &caption[..line_start + split])
+        .or(prefix);
+    (prefix, &line[split..])
+}
+
+pub(super) fn caption_with_attachments(
+    caption: &str,
+    _caption_control: impl Fn() -> String,
+    width: Pixels,
+    chips: impl IntoIterator<Item = Div>,
+    window: &Window,
+    cx: &App,
+) -> Div {
+    let (earlier_lines, last_line) = split_caption_before_last_line(caption, width, window, cx);
+
+    v_flex()
+        .text_sm()
+        .line_height(MESSAGE_LINE_HEIGHT)
+        .when_some(earlier_lines, |body, text| {
+            let lines = div()
+                .min_h(MESSAGE_LINE_HEIGHT)
+                .max_w(width)
+                .child(text.to_owned());
+            body.child(if last_line.is_empty() {
+                control!(_caption_control(), lines)
+            } else {
+                lines
+            })
+        })
+        .child(
+            h_flex()
+                .max_w(width)
+                .flex_wrap()
+                .gap_x_1p5()
+                .gap_y_1()
+                .when(!last_line.is_empty(), |line| {
+                    line.child(control!(
+                        _caption_control(),
+                        div().max_w(width).child(last_line.to_owned())
+                    ))
+                })
+                .children(chips),
+        )
+}
+
+fn attachment_chip(
+    id: impl Into<ElementId>,
+    name: &str,
+    max_label_width: Pixels,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .xsmall()
+        .outline()
+        .rounded(px(5.))
+        .px(rems(CHIP_SIDE_PADDING))
+        .cursor_pointer()
+        .child(crate::file_icons::icon(
+            Path::new(name),
+            cx.theme().muted_foreground,
+        ))
+        .child(div().text_sm().child(AttachmentLabel {
+            text: name.replace(['\r', '\n', '\t'], " ").into(),
+            max_width: max_label_width,
+        }))
+}
+
+#[derive(IntoElement)]
+struct AttachmentLabel {
+    text: SharedString,
+    max_width: Pixels,
+}
+
+impl RenderOnce for AttachmentLabel {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let run = style.to_run(self.text.len());
+        // GPUI's intrinsic measurement can cache the untruncated label before flex sets its width.
+        let text = cx
+            .text_system()
+            .line_wrapper(style.font(), font_size)
+            .truncate_line(self.text, self.max_width, "…", &mut vec![run]);
+        div()
+            .max_w(self.max_width)
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(text)
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Attachments {
@@ -138,94 +266,175 @@ pub(super) fn image_preview(bytes: &[u8]) -> Option<Arc<RenderImage>> {
 }
 
 impl Desktop {
-    pub(super) fn sent_file(
+    pub(super) fn sent_file_chips(
         &self,
         thread: &ThreadId,
-        message: &huggler::MessageId,
+        message: &MessageId,
+        names: &[String],
+        row_width: Pixels,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Vec<Div> {
+        let rem = window.rem_size();
+        // Account for the icon and gap in rems, plus the two one-pixel borders.
+        let chip_extra = rems(2. * CHIP_SIDE_PADDING + 1.).to_pixels(rem) + px(2.);
+        let label_width = (row_width - chip_extra).clamp(px(0.), MAX_SENT_LABEL_WIDTH);
+        names
+            .iter()
+            .enumerate()
+            .map(|(position, name)| {
+                self.sent_file_chip(thread, message, position, name, label_width, cx)
+            })
+            .collect()
+    }
+
+    fn sent_file_chip(
+        &self,
+        thread: &ThreadId,
+        message: &MessageId,
         position: usize,
         name: &str,
+        max_label_width: Pixels,
         cx: &Context<Self>,
     ) -> Div {
         let key = (message.clone(), position);
         let thread = thread.clone();
+        let expanded = self.file_preview.as_ref().is_some_and(|(id, _)| id == &key);
+        control!(
+            format!("attachment/{message}/{position}/{name}"),
+            attachment_chip(
+                SharedString::from(format!("attachment-{message}-{position}")),
+                name,
+                max_label_width,
+                cx,
+            )
+            .when(expanded, |button| button.selected(true))
+            .tooltip(format!(
+                "{} {name}",
+                if expanded { "Hide" } else { "Preview" }
+            ))
+            .on_click(cx.listener(move |view, _, window, cx| {
+                if view.file_preview.as_ref().is_some_and(|(id, _)| id == &key) {
+                    view.file_preview = None;
+                    cx.notify();
+                } else {
+                    view.load_file_preview(thread.clone(), key.clone(), window, cx);
+                }
+            }))
+        )
+        .flex_shrink_0()
+    }
+
+    pub(super) fn sent_file_preview(
+        &self,
+        thread: &ThreadId,
+        message: &MessageId,
+        attachment_count: usize,
+        cx: &Context<Self>,
+    ) -> Option<Div> {
         let preview = self
             .file_preview
             .as_ref()
-            .filter(|(id, _)| id == &key)
-            .map(|(_, preview)| preview);
-        let expanded = preview.is_some();
-        let button_id = SharedString::from(format!("attachment-{message}-{position}"));
-        let preview_key = key.clone();
-        let preview_thread = thread.clone();
-        v_flex()
-            .min_w_0()
-            .gap_1()
-            .child(h_flex().min_w_0().child(control!(
-                format!("attachment/{message}/{position}/{name}"),
-                Button::new(button_id.clone())
-                    .small()
-                    .compact()
-                    .ghost()
-                    .max_w_full()
-                    .min_w_0()
-                    .justify_start()
-                    .icon(if expanded { IconName::ChevronDown } else { IconName::ChevronRight })
-                    .child(Icon::new(IconName::File).xsmall().flex_shrink_0())
-                    .child(div().min_w_0().max_w(px(270.)).truncate().child(name.to_owned()))
-                    .tooltip(format!("{} {}", if expanded { "Hide" } else { "Preview" }, name))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        if expanded {
-                            view.file_preview = None;
-                            cx.notify();
+            .filter(|((owner, position), _)| owner == message && *position < attachment_count)?;
+        let (key, preview) = preview;
+        let thread = thread.clone();
+        let key = key.clone();
+        let panel = match preview {
+            FilePreview::Loading => hint("Loading attachment…", cx),
+            FilePreview::Failed(error) => div()
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(error.clone()),
+            FilePreview::Ready(preview) => {
+                let body = match &preview.body {
+                    PreviewBody::Text { text, truncated } => {
+                        let body = if text.is_empty() {
+                            "Empty file".into()
                         } else {
-                            view.load_file_preview(preview_thread.clone(), preview_key.clone(), window, cx);
-                        }
-                    }))
-            )))
-            .when_some(preview, |row, preview| row.child(match preview {
-                FilePreview::Loading => hint("Loading attachment…", cx),
-                FilePreview::Failed(error) => div().text_sm().text_color(cx.theme().danger).child(error.clone()),
-                FilePreview::Ready(preview) => {
-                    let body = match &preview.body {
-                        PreviewBody::Text { text, truncated } => {
-                            let body = if text.is_empty() { "Empty file".into() } else { text.clone() };
-                            v_flex().gap_1().child(super::transcript::text_preview(
-                                SharedString::from(format!("preview-{button_id}")),
+                            text.clone()
+                        };
+                        v_flex()
+                            .gap_1()
+                            .child(super::transcript::text_preview(
+                                SharedString::from(format!("preview-{message}-{}", key.1)),
                                 control!(format!("file preview/{body}"), body),
                                 px(176.),
                                 cx,
-                            )).when(*truncated, |row| row.child(hint("Showing the first 64 KiB. Save the file for the full text.", cx)))
-                        }
-                        PreviewBody::Image(image) => div().w_full().max_w(px(420.)).child(control!(
-                            format!("image preview/{}", preview.name),
-                            img(image.clone()).w_full().h(px(220.)).object_fit(ObjectFit::Contain)
-                        )),
-                        PreviewBody::ImageUnavailable => hint("Image preview unavailable", cx),
-                        PreviewBody::PdfText(text) => v_flex()
+                            ))
+                            .when(*truncated, |row| {
+                                row.child(hint(
+                                    "Showing the first 64 KiB. Save the file for the full text.",
+                                    cx,
+                                ))
+                            })
+                    }
+                    PreviewBody::Image(image) => div().w_full().max_w(px(420.)).child(control!(
+                        format!("image preview/{}", preview.name),
+                        img(image.clone())
                             .w_full()
-                            .gap_1()
-                            .child(hint("Extracted PDF text", cx))
-                            .child(div()
-                                .id("pdf-text")
-                                .w_full().max_h(px(176.)).overflow_y_scroll()
-                                .rounded_md().p_2().bg(cx.theme().muted)
-                                .text_sm().whitespace_normal()
-                                .child(control!(format!("pdf preview/{}", preview.name), text.clone()))),
-                        PreviewBody::File => div(),
-                    };
-                    let name = preview.name.clone();
-                    v_flex().items_start().gap_1()
+                            .h(px(220.))
+                            .object_fit(ObjectFit::Contain)
+                    )),
+                    PreviewBody::ImageUnavailable => hint("Image preview unavailable", cx),
+                    PreviewBody::PdfText(text) => v_flex()
                         .w_full()
-                        .child(body)
-                        .child(h_flex().flex_wrap().gap_2().items_center()
-                            .child(hint(preview.description(), cx))
-                            .child(control!(format!("Save {name}"), Button::new("save-attachment")
-                                .small().ghost().label("Save as…")
+                        .gap_1()
+                        .child(hint("Extracted PDF text", cx))
+                        .child(
+                            div()
+                                .id("pdf-text")
+                                .w_full()
+                                .max_h(px(176.))
+                                .overflow_y_scroll()
+                                .rounded_md()
+                                .p_2()
+                                .bg(cx.theme().muted)
+                                .text_sm()
+                                .whitespace_normal()
+                                .child(control!(
+                                    format!("pdf preview/{}", preview.name),
+                                    text.clone()
+                                )),
+                        ),
+                    PreviewBody::File => div(),
+                };
+                let name = preview.name.clone();
+                v_flex().items_start().gap_1().w_full().child(body).child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .items_center()
+                        .child(hint(preview.description(), cx))
+                        .child(control!(
+                            format!("Save {name}"),
+                            Button::new("save-attachment")
+                                .small()
+                                .ghost()
+                                .label("Save as…")
                                 .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.save_attachment(thread.clone(), key.clone(), &name, window, cx);
-                                })))))
-                }
-            }))
+                                    view.save_attachment(
+                                        thread.clone(),
+                                        key.clone(),
+                                        &name,
+                                        window,
+                                        cx,
+                                    );
+                                }))
+                        )),
+                )
+            }
+        };
+        Some(
+            div()
+                .mt_1()
+                .w_full()
+                .min_w_0()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(panel),
+        )
     }
 
     fn load_file_preview(
@@ -450,11 +659,12 @@ impl Desktop {
                     let title = format!("Remove {}", file.name);
                     control!(
                         title.clone(),
-                        Button::new(("remove-attachment", index))
-                            .small()
-                            .compact()
-                            .icon(IconName::Close)
-                            .child(div().max_w(px(168.)).truncate().child(file.name.clone()))
+                        attachment_chip(("remove-attachment", index), &file.name, px(168.), cx)
+                            .child(
+                                Icon::new(IconName::Close)
+                                    .with_size(px(11.))
+                                    .flex_shrink_0()
+                            )
                             .tooltip(title)
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 let thread = view.current.as_ref().map(|t| t.id.clone());

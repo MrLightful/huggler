@@ -1,5 +1,6 @@
 //! Codex app-server over newline-delimited JSON-RPC on a managed child's stdio.
 mod children;
+pub(super) mod mcp_status;
 use super::registry::ProviderInstance;
 use super::{
     ChildInterrupt, CommandFrame, Control, Permissions, Turn, Update,
@@ -373,6 +374,20 @@ impl Client {
             params["collaborationMode"] = json!({"mode":mode,"settings":{"model":model}});
         } else if turn.plan_mode {
             return Err(protocol("Codex plan mode requires a model"));
+        }
+        let effort = turn.model_options.effort.as_deref().or_else(|| {
+            config
+                .pointer("/config/model_reasoning_effort")
+                .and_then(Value::as_str)
+        });
+        if let Some(effort) = effort {
+            params["effort"] = json!(effort);
+            if let Some(mode) = params.get_mut("collaborationMode") {
+                mode["settings"]["reasoning_effort"] = json!(effort);
+            }
+        }
+        if let Some(tier) = &turn.model_options.service_tier {
+            params["serviceTierForTurn"] = json!(tier);
         }
         turn.submitting_prompt(&update)?;
         let started = self.request("turn/start", params).await?;

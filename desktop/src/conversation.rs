@@ -3,6 +3,7 @@ mod document_tabs;
 mod file_tree;
 mod launch_workspace;
 mod markdown_view;
+mod mcp_status;
 mod models;
 mod project_actions;
 mod sidebar;
@@ -38,7 +39,7 @@ use gpui_component::{
 };
 use huggler::{
     Action, Command, CommandId, ConversationDetail, ConversationSummary, HistoryCursor, Huggler,
-    Provider, ProviderInstanceId, RunId, ThreadId,
+    ModelOptions, Provider, ProviderInstanceId, RunId, ThreadId,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -137,7 +138,11 @@ pub struct Desktop {
     suggestions: suggestions::Suggestions,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
+    launch_model_options: ModelOptions,
     model_picker: Option<Entity<ListState<Models>>>,
+    show_model_efforts: bool,
+    mcp_status: Option<mcp_status::McpStatus>,
+    mcp_status_focus: FocusHandle,
     model_catalogs: HashMap<(ProviderInstanceId, PathBuf), Entity<ProviderCatalog>>,
     checkout_preload: Option<Task<()>>,
     error: Option<String>,
@@ -172,6 +177,8 @@ impl Desktop {
             )
         });
         let catalog_fallback = state.clone();
+        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
+        settings.update(cx, |settings, cx| settings.refresh_provider_setup(cx));
         cx.subscribe_in(
             &settings,
             window,
@@ -253,7 +260,11 @@ impl Desktop {
             suggestions: suggestions::Suggestions::default(),
             instance: Provider::Codex.key().into(),
             launch_model: None,
+            launch_model_options: ModelOptions::default(),
             model_picker: None,
+            show_model_efforts: false,
+            mcp_status: None,
+            mcp_status_focus: cx.focus_handle(),
             model_catalogs: HashMap::new(),
             checkout_preload: None,
             error: None,
@@ -264,7 +275,9 @@ impl Desktop {
                     view.suggestions = Default::default();
                 }
                 view.launch_model = None;
+                view.launch_model_options = ModelOptions::default();
                 view.model_picker = None;
+                view.mcp_status = None;
                 view.launch_workspace = LaunchWorkspace::default();
                 view.load_launch_branches(true, cx);
                 let delay = cx
@@ -351,6 +364,7 @@ impl Desktop {
     ) -> huggler::Result<()> {
         self.launching = None;
         self.ensure_workspace(&id, window, cx)?;
+        self.mcp_status = None;
         self.workspaces[&id].refresh_after_checkout_update(self.workspace_tab, cx);
         self.workspaces
             .get_mut(&id)
@@ -604,6 +618,7 @@ impl Desktop {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
+        self.mcp_status = None;
         self.launch_workspace.close_picker();
         self.show_settings = true;
         self.settings
@@ -654,6 +669,7 @@ impl Desktop {
             None => return,
         };
         self.model_picker = None;
+        self.mcp_status = None;
         self.launch_workspace.close_picker();
         input.focus_handle(cx).focus(window);
         cx.notify();
@@ -662,6 +678,7 @@ impl Desktop {
     fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
+        self.mcp_status = None;
         self.launch_workspace.close_picker();
         self.show_settings = false;
         self.launch_setup = setup;
@@ -671,6 +688,7 @@ impl Desktop {
             return;
         }
         self.launch_model = None;
+        self.launch_model_options = ModelOptions::default();
         self.instance = Provider::Codex.key().into();
         self.subscription = None;
         self.command_log = None;
@@ -721,6 +739,7 @@ impl Desktop {
             .selected_branch(workspace_mode)
             .cloned();
         let model = self.launch_model.clone();
+        let model_options = self.launch_model_options.clone();
         let instance = self.instance.clone();
         let runtime = self.runtime.clone();
         let id = ThreadId(Uuid::new_v4().to_string());
@@ -767,11 +786,12 @@ impl Desktop {
             if let Err(error) = runtime.dispatch(Command {
                 id: CommandId(Uuid::new_v4().to_string()),
                 thread_id: thread.clone(),
-                action: Action::LaunchInstance {
+                action: Action::LaunchModelSelection {
                     project: project.id.clone(),
                     instance,
                     name,
                     model,
+                    options: model_options,
                 },
             }) {
                 let error = error.into();
@@ -881,6 +901,8 @@ impl Desktop {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
+            self.launch_model_options = ModelOptions::default();
+            self.mcp_status = None;
             if self.current.is_none() {
                 self.suggestions = Default::default();
             }
@@ -1055,13 +1077,15 @@ impl Desktop {
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted.opacity(0.55))
-                .children(self.attachment_list(&self.starter_attachments, cx))
                 .child(self.message_input("First message", &self.starter, window, cx))
+                .children(self.attachment_list(&self.starter_attachments, cx))
                 .child(
                     h_flex()
                         .justify_end()
+                        .flex_wrap()
                         .gap_2()
                         .child(self.model_control(cx))
+                        .child(self.mcp_status_control(window, cx))
                         .child(
                             self.send_controls(
                                 &self.starter_attachments,
@@ -1466,8 +1490,8 @@ impl Desktop {
                 .when_some(last_run.filter(|_| !self.checkout_unavailable).and_then(|r| r.error.clone()), |area, error| {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
-                .children(self.attachment_list(attachments, cx))
                 .child(self.message_input("Message", &self.prompt, window, cx))
+                .children(self.attachment_list(attachments, cx))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
                     let noun = if count == 1 { "message" } else { "messages" };
@@ -1505,8 +1529,9 @@ impl Desktop {
                         .flex_wrap().gap_2()
                         .child(self.model_control(cx))
                         .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
-                            format!("status/{status}"), label(status)
+                            format!("status/{status}"), label(status).truncate()
                         ))))
+                        .child(self.mcp_status_control(window, cx))
                         .child(self.send_controls(attachments, action_label, action_button, cx)),
                 ),
         )

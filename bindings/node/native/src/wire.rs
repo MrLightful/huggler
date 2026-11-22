@@ -118,6 +118,7 @@ pub fn event(e: Event) -> Value {
         Bound { native_thread } => json!({"type": "bound", "nativeThread": native_thread}),
         SettlementChanged { settled } => json!({"type":"settlementChanged","settled":settled}),
         ModelSelected { model } => json!({"type": "modelSelected", "model": model}),
+        ModelSelectionChanged { model, .. } => json!({"type": "modelSelected", "model": model}),
         QuestionRequested { request } => {
             json!({"type": "questionRequested", "request": question(request)})
         }

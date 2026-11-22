@@ -61,6 +61,17 @@ In **First message** or **Message**, type `@` and part of a filename or path to 
 
 Use **↑** and **↓** to move through the suggestions, **Enter** or **Tab** to insert the highlighted result, and **Esc** to close the menu. You can also click a result. Continue editing your draft or send it with the up arrow.
 
+## Check MCP servers
+
+Click **MCP server status** beside the attachment and send buttons in **First message** or **Message**. The popover shows the provider's tool counts, authentication requirements and connection errors. Use **Refresh MCP status** to check again.
+
+| Harness and transport | Status coverage |
+| --- | --- |
+| Codex CLI 0.170.0, app-server over stdio | Native `mcpServerStatus/list` using a temporary session to check the servers configured for the checkout. |
+| Other harnesses | Status is unavailable and the popover shows an explanation. |
+
+Each refresh checks the checkout in a fresh Codex session. Servers that Huggler injects into individual runs use their own sessions. The desktop owns the popover and refresh controls. [T3 Code Codex adapter](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts#L7865-L7884) · [macOS provider check](../scripts/check-provider-desktop.py)
+
 ## Find a conversation by status
 
 The conversation sidebar is visible when Huggler opens. Use the left sidebar button in the workspace header to hide or show conversations independently of Changes. The sidebar updates even while you work in another conversation. Needs attention and Ready sit at the top. Working and Settled sit together at the bottom. Click a section heading to collapse or expand it. Each section shows its count and lists the most recently active conversations first.
@@ -88,7 +99,9 @@ New conversations start with Codex selected. Use the composer’s provider and m
 
 Under **Storage**, use **Clean up now** to remove unused worktrees that have no local changes or new commits. Turn on **Automatic cleanup** to check immediately, at startup, and hourly.
 
-Select a provider and use **Models** to show or hide models in the conversation picker. Models appear in descending order by name until you reorder them with the arrows. Preferences apply to that provider instance across checkouts. The picker always offers **Provider default** and existing conversations retain their selected models. Model discovery uses the current checkout when available.
+Select a provider and use **Models** to show or hide models in the conversation picker. Models appear in descending order by name until you reorder them with the arrows. Preferences apply to that provider instance across checkouts. The first option follows the provider’s default. It shows the model name when available and **Automatic** when the model is unknown. Model discovery uses the current checkout when available.
+
+Use **Effort** or **Fast mode** for Codex models that support those options. **Use default** restores the checkout’s configured reasoning effort or the model’s default effort. Existing conversations remember their selections, and queued messages keep the settings selected when they were queued. Use the gear beside the model search field to manage provider setup.
 
 Under **Environment**, add variables such as a custom API endpoint for that provider. Use **Save variables**, or leave the provider’s settings to save valid edits automatically. Restart Huggler to apply them. Huggler masks values in the editor and saves them in the local preferences file with user-only permissions. They override inherited variables for that provider’s subprocesses. A config directory set in Advanced settings takes precedence over a matching environment variable. Configure the environment of any separately managed server where it runs.
 

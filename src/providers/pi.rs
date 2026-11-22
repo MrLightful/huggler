@@ -1,7 +1,7 @@
 //! Pi process RPC. Resume requires both the session file and its embedded identity.
 use super::{
     Turn, Update,
-    probe::ProviderReport,
+    probe::{ModelDetails, ProviderReport},
     rpc::{Rpc, protocol},
 };
 use crate::{Error, NativeThreadId, ProviderInstance, Result};
@@ -68,7 +68,7 @@ pub(super) async fn probe(
     cwd: &Path,
 ) -> Result<ProviderReport> {
     let mut rpc = Rpc::open(command(instance)?, cwd, output)?;
-    request(&mut rpc, "get_state", json!({})).await?;
+    let state = request(&mut rpc, "get_state", json!({})).await?;
     let catalog = request(&mut rpc, "get_available_models", json!({})).await?;
     let mut report = ProviderReport::new("Pi RPC");
     report.models = catalog["models"]
@@ -77,6 +77,17 @@ pub(super) async fn probe(
         .flatten()
         .filter_map(|m| Some(format!("{}/{}", m["provider"].as_str()?, m["id"].as_str()?)))
         .collect();
+    let model = &state["model"];
+    if let (Some(provider), Some(id)) = (model["provider"].as_str(), model["id"].as_str()) {
+        report.model_details.insert(
+            format!("{provider}/{id}"),
+            ModelDetails {
+                name: model["name"].as_str().unwrap_or(id).into(),
+                is_default: true,
+                ..Default::default()
+            },
+        );
+    }
     report.resume = true;
     report.agent_tools = instance.pi_extension.is_some();
     rpc.finish(Ok(())).await?;

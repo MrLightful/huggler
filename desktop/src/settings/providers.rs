@@ -92,6 +92,37 @@ impl ProviderSettings {
 }
 
 impl Settings {
+    pub(crate) fn provider_configured(&self, instance: &ProviderInstance) -> bool {
+        !matches!(initial_status(&self.state, instance), Status::Missing)
+            && !matches!(
+                self.status(&instance.id),
+                Status::Installed(setup::Account::SignedOut)
+            )
+    }
+
+    pub(crate) fn refresh_provider_setup(&mut self, cx: &mut Context<Self>) {
+        self.refresh_providers(cx);
+    }
+
+    pub(crate) fn open_provider_settings(
+        &mut self,
+        instance: &ProviderInstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_page(Page::Providers, window, cx);
+        if self
+            .runtime
+            .provider_instances()
+            .any(|provider| &provider.id == instance)
+        {
+            self.select_provider(instance, window, cx);
+        } else {
+            self.providers.panel = ProviderPanel::Choose;
+            cx.notify();
+        }
+    }
+
     pub(super) fn selected_provider(&self) -> &ProviderInstance {
         self.runtime
             .provider_instances()

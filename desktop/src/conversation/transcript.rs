@@ -1,5 +1,6 @@
 mod turn_rail;
 
+use super::attachments::{MESSAGE_LINE_HEIGHT, caption_with_attachments};
 use super::markdown_view::prose;
 use super::*;
 use gpui_component::{Icon, tooltip::Tooltip};
@@ -13,7 +14,6 @@ use turn_rail::TurnPreview;
 const GUTTER: Pixels = px(20.);
 // Markdown must measure at the final width so wrapped lines clear the footer.
 const MAX_RESPONSE_WIDTH: Pixels = px(700.);
-
 pub(super) struct TurnClock {
     pub(super) run: RunId,
     opened: Instant,
@@ -392,18 +392,14 @@ impl Desktop {
                 .as_ref()
                 .map_or(item.truncated, |files| files.truncated);
         let id = &message.id;
-        let preview_open = self
-            .file_preview
-            .as_ref()
-            .is_some_and(|((owner, _), _)| owner == id);
         let bubble_width = (content_width * 0.88).min(px(620.));
+        let message_padding = rems(1.);
         let mut body = v_flex()
             .min_w_0()
             .gap_2()
             .when(outgoing, |body| {
                 body.max_w(bubble_width)
-                    .when(preview_open, |body| body.w(bubble_width))
-                    .px_4()
+                    .px(message_padding)
                     .py_3()
                     .rounded_xl()
                     .bg(cx
@@ -412,13 +408,27 @@ impl Desktop {
                         .blend(cx.theme().foreground.opacity(0.035)))
             })
             .when(!outgoing, |body| body.w_full());
-        if !caption.is_empty() {
+        if let Some(files) = &item.files {
+            let width = if outgoing {
+                (bubble_width - message_padding.to_pixels(window.rem_size()) * 2.).max(px(0.))
+            } else {
+                content_width.min(MAX_RESPONSE_WIDTH)
+            };
+            body = body.child(caption_with_attachments(
+                caption,
+                || format!("{author}/{caption}"),
+                width,
+                self.sent_file_chips(&thread.id, id, &files.names, width, window, cx),
+                window,
+                cx,
+            ));
+        } else if !caption.is_empty() {
             body = body.child(control!(
                 format!("{author}/{caption}"),
                 if outgoing || message.origin.is_some() {
                     div()
                         .text_sm()
-                        .line_height(px(22.))
+                        .line_height(MESSAGE_LINE_HEIGHT)
                         .child(caption.to_owned())
                 } else {
                     prose(format!("message-{id}"), caption, window, cx)
@@ -448,15 +458,10 @@ impl Desktop {
                         }))
                 )));
         }
-        if let Some(files) = &item.files {
-            body = body.children(
-                files
-                    .names
-                    .iter()
-                    .enumerate()
-                    .map(|(index, name)| self.sent_file(&thread.id, id, index, name, cx)),
-            );
-        }
+        let preview = item
+            .files
+            .as_ref()
+            .and_then(|files| self.sent_file_preview(&thread.id, id, files.names.len(), cx));
         let group = format!("message-hover-{id}");
         let copy = if let Some(files) = item.files.as_ref().filter(|_| caption.is_empty()) {
             files.names.join("\n")
@@ -495,12 +500,16 @@ impl Desktop {
                         .justify_end()
                         .child(body.flex_shrink_0()),
                 )
+                .when_some(preview, |column, preview| {
+                    column.child(h_flex().justify_end().child(preview.w(bubble_width)))
+                })
                 .child(metadata.justify_end())
         } else {
             v_flex()
                 .w(content_width.min(MAX_RESPONSE_WIDTH))
                 .group(group)
                 .child(body)
+                .children(preview)
                 .child(metadata)
         }
     }

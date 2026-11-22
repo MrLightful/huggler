@@ -1284,6 +1284,7 @@ async fn project_services_and_ordered_watch_delivery() -> Result<()> {
     rt.close().await
 }
 
+#[cfg(feature = "application")]
 #[tokio::test]
 async fn github_pull_request_updates_are_bound_and_revalidate_the_head() -> Result<()> {
     use axum::{Json, Router, http::HeaderMap, routing::post};

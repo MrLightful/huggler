@@ -254,6 +254,13 @@ pub enum Action {
         model: Option<String>,
         instance: ProviderInstanceId,
     },
+    LaunchModelSelection {
+        project: ProjectId,
+        name: String,
+        model: Option<String>,
+        instance: ProviderInstanceId,
+        options: ModelOptions,
+    },
     /// Record the current clean Git HEAD at the thread's latest completed turn.
     CaptureCheckpoint {
         through: RunId,
@@ -336,6 +343,24 @@ pub enum Action {
     SetModel {
         model: Option<String>,
     },
+    SetModelSelection {
+        model: Option<String>,
+        options: ModelOptions,
+    },
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelOptions {
+    /// Native reasoning effort identifier. None inherits the harness default.
+    pub effort: Option<String>,
+    /// Native service tier identifier, including `default` for standard speed.
+    pub service_tier: Option<String>,
+}
+
+impl ModelOptions {
+    pub(crate) fn is_default(&self) -> bool {
+        self.effort.is_none() && self.service_tier.is_none()
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -580,6 +605,8 @@ pub struct ConversationDetail {
     /// Model requested for subsequent turns. None uses the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "ModelOptions::is_default")]
+    pub model_options: ModelOptions,
     pub latest_run: Option<Run>,
     /// Run holding the thread's execution slot, even when later messages are queued.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -850,6 +877,10 @@ pub enum Change {
     },
     ModelSelected {
         model: Option<String>,
+    },
+    ModelSelectionChanged {
+        model: Option<String>,
+        options: ModelOptions,
     },
     Bound {
         native_thread: NativeThreadId,
