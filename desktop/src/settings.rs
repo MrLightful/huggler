@@ -325,14 +325,6 @@ impl Settings {
         }
     }
 
-    pub(crate) fn show_in_draft_provider_picker(
-        &self,
-        instance: &huggler::ProviderInstance,
-    ) -> bool {
-        !self.prefs.provider_presets.contains(&instance.id)
-            || setup::executable_available(&self.state, instance)
-    }
-
     fn load_executable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((saved, variable)) = self.executable_preference() {
             let value = variable

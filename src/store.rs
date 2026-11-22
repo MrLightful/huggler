@@ -39,6 +39,13 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn validate_model_options(driver: &str, options: &ModelOptions) -> Result<()> {
+    if !options.is_default() && driver != Provider::Codex.key() {
+        return Err(Error::Invalid("model options require Codex".into()));
+    }
+    Ok(())
+}
+
 pub(crate) type RunJob = (ThreadId, RunId);
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -91,6 +98,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/040.sql"),
     include_str!("../migrations/041.sql"),
     include_str!("../migrations/042.sql"),
+    include_str!("../migrations/043.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion, started_at_ms";
@@ -268,8 +276,10 @@ fn start_message(
     let started = run_event(tx, thread, &id)?;
     let (msg, seq) = message(tx, thread, &id, Role::User, origin, text.to_owned())?;
     tx.execute(
-        "INSERT INTO turn_effect(run_id,model,state) VALUES(?,?,'pending')",
-        params![id.0, model],
+        "INSERT INTO turn_effect(run_id,model,state,model_effort,model_service_tier)
+         SELECT ?1,?2,'pending',CASE WHEN model IS ?2 THEN model_effort END,
+             CASE WHEN model IS ?2 THEN model_service_tier END FROM thread WHERE id=?3",
+        params![id.0, model, thread.0],
     )?;
     events.extend([started, seq]);
     Ok((id, msg, events, delivery))
@@ -513,6 +523,7 @@ impl Database {
                     | Action::Fork { .. }
                     | Action::LaunchProvider { .. }
                     | Action::LaunchInstance { .. }
+                    | Action::LaunchModelSelection { .. }
             )
         {
             return Err(Error::NotFound(thread.to_string()));
@@ -540,6 +551,12 @@ impl Database {
                 model,
                 ..
             }
+            | Action::LaunchModelSelection {
+                project,
+                name,
+                model,
+                ..
+            }
             | Action::LaunchProvider {
                 project,
                 name,
@@ -547,7 +564,8 @@ impl Database {
                 ..
             } => {
                 let instance = match &cmd.action {
-                    Action::LaunchInstance { instance, .. } => instance.as_str(),
+                    Action::LaunchInstance { instance, .. }
+                    | Action::LaunchModelSelection { instance, .. } => instance.as_str(),
                     Action::LaunchProvider { provider, .. } => provider.key(),
                     _ => Provider::Codex.key(),
                 };
@@ -558,8 +576,14 @@ impl Database {
                     return Err(Error::Invalid("thread already exists".into()));
                 }
                 let driver = creation::instance_driver(&tx, instance)?;
-                let n = tx.execute("INSERT INTO thread(id,name,model,provider,provider_instance,project) SELECT ?,?,?,?,?,id FROM project WHERE id=?",
-                    params![thread.0,name,model,driver,instance,project.0])?;
+                let options = match &cmd.action {
+                    Action::LaunchModelSelection { options, .. } => options.clone(),
+                    _ => ModelOptions::default(),
+                };
+                validate_model_options(&driver, &options)?;
+                let n = tx.execute("INSERT INTO thread(id,name,model,provider,provider_instance,model_effort,model_service_tier,project)
+                    SELECT ?,?,?,?,?,?,?,id FROM project WHERE id=?",
+                    params![thread.0,name,model,driver,instance,options.effort,options.service_tier,project.0])?;
                 if n == 0 {
                     return Err(Error::NotFound(project.to_string()));
                 }
@@ -657,7 +681,7 @@ impl Database {
             Action::SetModel { model } => {
                 if selection.as_ref() != Some(model) {
                     tx.execute(
-                        "UPDATE thread SET model=? WHERE id=?",
+                        "UPDATE thread SET model=?,model_effort=NULL,model_service_tier=NULL WHERE id=?",
                         params![model, thread.0],
                     )?;
                     receipt.event_sequences.push(event(
@@ -667,6 +691,22 @@ impl Database {
                             model: model.clone(),
                         },
                     )?);
+                }
+            }
+            Action::SetModelSelection { model, options } => {
+                let driver: String =
+                    tx.query_row("SELECT provider FROM thread WHERE id=?", [&thread.0], |r| {
+                        r.get(0)
+                    })?;
+                validate_model_options(&driver, options)?;
+                if tx.execute(
+                    "UPDATE thread SET model=?1,model_effort=?2,model_service_tier=?3 WHERE id=?4
+                     AND (model IS NOT ?1 OR model_effort IS NOT ?2 OR model_service_tier IS NOT ?3)",
+                    params![model, options.effort, options.service_tier, thread.0],
+                )? != 0 {
+                    receipt.event_sequences.push(event(&tx, thread, Change::ModelSelectionChanged {
+                        model: model.clone(), options: options.clone(),
+                    })?);
                 }
             }
             Action::Send { text }
@@ -882,7 +922,7 @@ impl Database {
             return Err(Error::Interrupted);
         }
         let (mut turn, message) = tx.query_row(
-            "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode,t.provider_instance,m.id FROM run r
+            "SELECT coalesce(t.worktree_path,p.root),t.name,m.text,e.model,t.native_thread,t.provider,m.origin,e.plan_mode,t.provider_instance,m.id,e.model_effort,e.model_service_tier FROM run r
              JOIN turn_effect e ON e.run_id=r.id
              JOIN thread t ON t.id=r.thread_id JOIN project p ON p.id=t.project
              JOIN message m ON m.run_id=r.id WHERE r.id=? AND m.role='user'",
@@ -905,6 +945,7 @@ impl Database {
                         None => r.get(2)?,
                     },
                     model: r.get(3)?,
+                    model_options: ModelOptions { effort: r.get(10)?, service_tier: r.get(11)? },
                     resume: r.get::<_, Option<String>>(4)?.map(NativeThreadId),
                 }, MessageId(r.get(9)?)))
             },

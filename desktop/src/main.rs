@@ -41,7 +41,9 @@ actions!(
         OpenSettings,
         NewConversation,
         NewConversationWithSetup,
-        FocusMessage
+        FocusMessage,
+        CloseDocument,
+        SaveDocument
     ]
 );
 
@@ -136,7 +138,6 @@ fn main() -> Result<()> {
         gpui_component::init(cx);
         fonts::init(cx);
         ui::init_theme(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-,", OpenSettings, None),
@@ -148,6 +149,16 @@ fn main() -> Result<()> {
                 Some(conversation::COMPOSER_CONTEXT),
             ),
             KeyBinding::new("secondary-l", FocusMessage, None),
+            KeyBinding::new(
+                "secondary-w",
+                CloseDocument,
+                Some(conversation::DOCUMENT_CONTEXT),
+            ),
+            KeyBinding::new(
+                "secondary-s",
+                SaveDocument,
+                Some(conversation::DOCUMENT_CONTEXT),
+            ),
         ]);
         cx.set_menus(vec![Menu {
             name: "Huggler".into(),
@@ -193,10 +204,33 @@ fn main() -> Result<()> {
                     let view = cx.new(|cx| {
                         Desktop::new(runtime, handle, paths, prefs, load_error, window, cx)
                     });
+                    let desktop = view.downgrade();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        desktop
+                            .update(cx, |view, cx| view.can_close_with_edits(window, cx))
+                            .unwrap_or(true)
+                    });
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )
             .expect("open Huggler window");
+        cx.on_action(move |_: &Quit, cx| {
+            cx.defer(move |cx| {
+                let _ = AnyWindowHandle::from(window_handle).update(cx, |root, window, cx| {
+                    let Ok(root) = root.downcast::<Root>() else {
+                        return;
+                    };
+                    let Ok(desktop) = root.read(cx).view().clone().downcast::<Desktop>() else {
+                        return;
+                    };
+                    desktop.update(cx, |view, cx| {
+                        if view.can_close_with_edits(window, cx) {
+                            cx.quit();
+                        }
+                    });
+                });
+            });
+        });
         cx.on_action(move |_: &FocusMessage, cx| {
             // A dismissed popover can leave GPUI without a focused element to route through.
             cx.defer(move |cx| {

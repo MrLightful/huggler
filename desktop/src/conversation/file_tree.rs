@@ -29,6 +29,7 @@ pub(super) struct FileTree {
 }
 
 pub(super) enum FileAction {
+    Open(Arc<Path>),
     AttachFile(Arc<Path>),
     AttachReference(Arc<Path>),
     OpenIn(OpenIn, Arc<Path>),
@@ -225,6 +226,9 @@ impl Row {
         let accent = cx.theme().sidebar_accent;
         let label = label
             .id("file-label")
+            .tab_index(0)
+            .focus(move |style| style.bg(accent))
+            .cursor_pointer()
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .child(disclosure)
             .child(icon)
@@ -236,17 +240,20 @@ impl Row {
                     .text_sm()
                     .child(SharedString::from(name.into_owned())),
             )
+            // Expanding with the mouse should leave keyboard focus where it was.
             .when(is_directory, |label| {
-                label
-                    .tab_index(0)
-                    .focus(move |style| style.bg(accent))
-                    // Expanding with the mouse should leave keyboard focus where it was.
-                    .capture_any_mouse_down(|_, window, _| window.prevent_default())
-                    .on_click(cx.listener({
-                        let path = path.clone();
-                        move |tree, _, _, cx| tree.toggle(&path, cx)
-                    }))
-            });
+                label.capture_any_mouse_down(|_, window, _| window.prevent_default())
+            })
+            .on_click(cx.listener({
+                let path = path.clone();
+                move |tree, _, _, cx| {
+                    if is_directory {
+                        tree.toggle(&path, cx);
+                    } else {
+                        cx.emit(FileAction::Open(path.clone()));
+                    }
+                }
+            }));
         let attach_file = matches!(self.entry, Entry::File);
         let attach_path = path.clone();
         let attach = row_action("attach-to-chat", IconName::Plus)

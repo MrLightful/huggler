@@ -1,6 +1,8 @@
 mod attachments;
+mod document_tabs;
 mod file_tree;
 mod launch_workspace;
+mod markdown_view;
 mod mcp_status;
 mod models;
 mod project_actions;
@@ -9,6 +11,8 @@ mod suggestions;
 mod transcript;
 
 use attachments::Attachments;
+pub(crate) use document_tabs::DOCUMENT_CONTEXT;
+use document_tabs::{Document, DocumentTabs};
 use file_tree::{FileAction, FileTree};
 use gpui_component::list::ListState;
 use launch_workspace::{LaunchWorkspace, WorkspaceMode};
@@ -18,7 +22,7 @@ use transcript::TurnClock;
 
 use self::launch_workspace::{LaunchProgress, WorktreeStage};
 use crate::{
-    changes::Changes,
+    changes::{Changes, RevertFinished, ReviewRow},
     git,
     paths::StoragePaths,
     questions::Questions,
@@ -35,7 +39,7 @@ use gpui_component::{
 };
 use huggler::{
     Action, Command, CommandId, ConversationDetail, ConversationSummary, HistoryCursor, Huggler,
-    Provider, ProviderInstanceId, RunId, ThreadId,
+    ModelOptions, Provider, ProviderInstanceId, RunId, ThreadId,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -57,6 +61,7 @@ struct Workspace {
     root: PathBuf,
     files: Entity<FileTree>,
     changes: Entity<Changes>,
+    documents: DocumentTabs,
     draft: Entity<InputState>,
     attachments: Attachments,
     questions: HashMap<huggler::RequestId, Entity<Questions>>,
@@ -133,7 +138,9 @@ pub struct Desktop {
     suggestions: suggestions::Suggestions,
     instance: ProviderInstanceId,
     launch_model: Option<String>,
+    launch_model_options: ModelOptions,
     model_picker: Option<Entity<ListState<Models>>>,
+    show_model_efforts: bool,
     mcp_status: Option<mcp_status::McpStatus>,
     mcp_status_focus: FocusHandle,
     model_catalogs: HashMap<(ProviderInstanceId, PathBuf), Entity<ProviderCatalog>>,
@@ -170,6 +177,8 @@ impl Desktop {
             )
         });
         let catalog_fallback = state.clone();
+        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
+        settings.update(cx, |settings, cx| settings.refresh_provider_setup(cx));
         cx.subscribe_in(
             &settings,
             window,
@@ -251,7 +260,9 @@ impl Desktop {
             suggestions: suggestions::Suggestions::default(),
             instance: Provider::Codex.key().into(),
             launch_model: None,
+            launch_model_options: ModelOptions::default(),
             model_picker: None,
+            show_model_efforts: false,
             mcp_status: None,
             mcp_status_focus: cx.focus_handle(),
             model_catalogs: HashMap::new(),
@@ -264,6 +275,7 @@ impl Desktop {
                     view.suggestions = Default::default();
                 }
                 view.launch_model = None;
+                view.launch_model_options = ModelOptions::default();
                 view.model_picker = None;
                 view.mcp_status = None;
                 view.launch_workspace = LaunchWorkspace::default();
@@ -354,6 +366,11 @@ impl Desktop {
         self.ensure_workspace(&id, window, cx)?;
         self.mcp_status = None;
         self.workspaces[&id].refresh_after_checkout_update(self.workspace_tab, cx);
+        self.workspaces
+            .get_mut(&id)
+            .expect("selected workspace")
+            .documents
+            .show_chat();
         if self.current.as_ref().is_some_and(|thread| thread.id == id) {
             self.focus_workspace(window, cx);
             self.checkout_unavailable = !self.workspaces[&id].root.is_dir();
@@ -443,10 +460,15 @@ impl Desktop {
                     return;
                 }
                 match action {
+                    FileAction::Open(path) => {
+                        view.open_document(Document::File(path.clone()), window, cx);
+                    }
                     FileAction::AttachFile(path) => {
+                        view.return_to_chat(window, cx);
                         view.attach_workspace_file(&thread, path.clone(), window, cx);
                     }
                     FileAction::AttachReference(path) => {
+                        view.return_to_chat(window, cx);
                         view.insert_file_reference(path, window, cx);
                     }
                     FileAction::OpenIn(destination, path) => {
@@ -458,6 +480,30 @@ impl Desktop {
                     }
                 }
             })
+            .detach();
+            let thread = id.clone();
+            cx.subscribe_in(
+                &changes,
+                window,
+                move |view, _, row: &ReviewRow, window, cx| {
+                    if view
+                        .current
+                        .as_ref()
+                        .is_some_and(|current| current.id == thread)
+                    {
+                        view.open_document(Document::Diff(row.clone()), window, cx);
+                    }
+                },
+            )
+            .detach();
+            let thread = id.clone();
+            cx.subscribe_in(
+                &changes,
+                window,
+                move |view, _, result: &RevertFinished, window, cx| {
+                    view.refresh_reverted_documents(&thread, result, window, cx);
+                },
+            )
             .detach();
             let draft = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -471,6 +517,7 @@ impl Desktop {
                     root,
                     files,
                     changes,
+                    documents: DocumentTabs::default(),
                     draft,
                     attachments: Attachments::default(),
                     questions: HashMap::new(),
@@ -590,7 +637,16 @@ impl Desktop {
                 self.name.focus_handle(cx).focus(window)
             }
             None if self.launching.is_none() => self.starter.focus_handle(cx).focus(window),
-            Some(_) => self.prompt.focus_handle(cx).focus(window),
+            Some(thread) => {
+                let documents = &self.workspaces[&thread.id].documents;
+                let focus = match documents.active() {
+                    Some(_) => documents
+                        .active_editor_focus(cx)
+                        .unwrap_or_else(|| self.focus.clone()),
+                    None => self.prompt.focus_handle(cx),
+                };
+                focus.focus(window);
+            }
             _ => self.focus.focus(window),
         }
     }
@@ -601,6 +657,7 @@ impl Desktop {
         }
         let input = match &self.current {
             Some(_) => {
+                self.return_to_chat(window, cx);
                 if window.viewport_size().width < NARROW_VIEWPORT_WIDTH
                     && self.right_sidebar.is_open(false)
                 {
@@ -631,6 +688,7 @@ impl Desktop {
             return;
         }
         self.launch_model = None;
+        self.launch_model_options = ModelOptions::default();
         self.instance = Provider::Codex.key().into();
         self.subscription = None;
         self.command_log = None;
@@ -681,6 +739,7 @@ impl Desktop {
             .selected_branch(workspace_mode)
             .cloned();
         let model = self.launch_model.clone();
+        let model_options = self.launch_model_options.clone();
         let instance = self.instance.clone();
         let runtime = self.runtime.clone();
         let id = ThreadId(Uuid::new_v4().to_string());
@@ -727,11 +786,12 @@ impl Desktop {
             if let Err(error) = runtime.dispatch(Command {
                 id: CommandId(Uuid::new_v4().to_string()),
                 thread_id: thread.clone(),
-                action: Action::LaunchInstance {
+                action: Action::LaunchModelSelection {
                     project: project.id.clone(),
                     instance,
                     name,
                     model,
+                    options: model_options,
                 },
             }) {
                 let error = error.into();
@@ -841,6 +901,7 @@ impl Desktop {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
+            self.launch_model_options = ModelOptions::default();
             self.mcp_status = None;
             if self.current.is_none() {
                 self.suggestions = Default::default();
@@ -1577,6 +1638,15 @@ impl Render for Desktop {
         div()
             .flex()
             .track_focus(&self.focus)
+            .when(
+                !self.show_settings
+                    && self.current.as_ref().is_some_and(|thread| {
+                        self.workspaces[&thread.id].documents.active().is_some()
+                    }),
+                |layout| layout.key_context(DOCUMENT_CONTEXT),
+            )
+            .on_action(cx.listener(Self::close_active_document))
+            .on_action(cx.listener(Self::save_active_document))
             .on_action(cx.listener(|v, _: &crate::OpenSettings, w, cx| v.open_settings(w, cx)))
             .on_action(
                 cx.listener(|v, _: &crate::NewConversation, w, cx| {
@@ -1666,6 +1736,7 @@ impl Render for Desktop {
                     .min_w_0()
                     .when(!self.show_settings, |pane| {
                         pane.child(self.workspace_header(navigation_open, right_open, cx))
+                            .child(self.document_tab_strip(window, cx))
                     })
                     .child(if self.show_settings {
                         v_flex()
@@ -1682,9 +1753,22 @@ impl Render for Desktop {
                             .into_any_element()
                     } else {
                         match &self.current {
-                            Some(thread) => self
-                                .conversation(thread, conversation_width, window, cx)
-                                .into_any_element(),
+                            Some(thread) => {
+                                let workspace = &self.workspaces[&thread.id];
+                                match workspace.documents.active() {
+                                    Some(tab) => tab
+                                        .render(
+                                            &workspace.changes,
+                                            &workspace.documents,
+                                            window,
+                                            cx,
+                                        )
+                                        .into_any_element(),
+                                    None => self
+                                        .conversation(thread, conversation_width, window, cx)
+                                        .into_any_element(),
+                                }
+                            }
                             None => {
                                 self.launch_form(viewport - left_width * left < 800., window, cx)
                             }

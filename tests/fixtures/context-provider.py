@@ -46,7 +46,16 @@ for line in sys.stdin:
     result = {}
     if method == "model/list" and not acp:
         models = [] if Path("empty-model-list").exists() else ["fixture-fast", "fixture-deep"]
-        result = {"data": [{"id": model} for model in models]}
+        result = {"data": [{
+            "id": model,
+            "displayName": "Fixture Deep" if model == "fixture-deep" else "Fixture Fast",
+            "isDefault": model == "fixture-fast",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [{"reasoningEffort": "medium"}, {"reasoningEffort": "high"}],
+            **({"serviceTiers": [{"id": "priority", "name": "Fast"}]} if model == "fixture-deep" else {}),
+        } for model in models]}
+    elif method == "config/read" and Path("codex-fixture-config.json").exists():
+        result = {"config": json.loads(Path("codex-fixture-config.json").read_text())}
     elif method == "skills/list" and not acp:
         assert params["cwds"] == [str(Path.cwd())]
         if Path("skill-list-unavailable").exists():

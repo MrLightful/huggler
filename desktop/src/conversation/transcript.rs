@@ -1,8 +1,7 @@
-mod markdown;
 mod turn_rail;
 
-use self::markdown::prose;
 use super::attachments::{MESSAGE_LINE_HEIGHT, caption_with_attachments};
+use super::markdown_view::prose;
 use super::*;
 use gpui_component::{Icon, tooltip::Tooltip};
 use huggler::{
@@ -1026,7 +1025,7 @@ pub(super) fn text_preview(
     div().w_full().child(panel)
 }
 
-fn transcript_muted(cx: &App) -> Hsla {
+pub(super) fn transcript_muted(cx: &App) -> Hsla {
     cx.theme()
         .muted_foreground
         .blend(cx.theme().foreground.opacity(0.24))
