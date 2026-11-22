@@ -60,8 +60,8 @@ exec /usr/bin/git "$@"
             {"click": "Settings"}, {"click": "Light"}, {"see": "thread/Background"}, {"click": "Done"},
             {"click": "Message"}, {"type": "Review my draft"},
             {"click": "Settings"}, {"click": "Done"},
-            {"click": "Show changes"}, {"see": "Working tree clean"},
-            {"click": "Hide changes"}, {"absent": "Refresh changes"}, {"click": "Send"},
+            {"click": "Show changes"}, {"see": "All changes"},
+            {"click": "Hide changes"}, {"absent": "Changes tab"}, {"click": "Send"},
             {"see": "Codex/reply Review my draft"},
         ], dict(env, PATH=f"{root}:{env['PATH']}"))
         with sqlite3.connect(state / "huggler.sqlite3") as db:

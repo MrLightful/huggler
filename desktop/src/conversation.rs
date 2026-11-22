@@ -148,8 +148,8 @@ impl Desktop {
         let mut view = Self {
             settings,
             show_settings: false,
-            navigation: sidebar::Sidebar::new(256.),
-            changes_sidebar: sidebar::Sidebar::new(300.),
+            navigation: sidebar::Sidebar::new(288.),
+            changes_sidebar: sidebar::Sidebar::new(336.),
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
@@ -375,7 +375,8 @@ impl Desktop {
     ) -> huggler::Result<()> {
         if !self.workspaces.contains_key(id) {
             let root = self.runtime.thread_checkout(id)?;
-            let changes = cx.new(|_| Changes::new(root.clone()));
+            let approvals_file = self.selection_file.with_file_name("file-approvals.json");
+            let changes = cx.new(|cx| Changes::new(root.clone(), approvals_file, id.0.clone(), cx));
             let draft = cx.new(|cx| {
                 InputState::new(window, cx)
                     .auto_grow(2, 5)
@@ -826,6 +827,11 @@ impl Desktop {
                         .tooltip(action)
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.changes_sidebar.toggle(changes_open);
+                            if !changes_open && let Some(thread) = &view.current {
+                                view.workspaces[&thread.id]
+                                    .changes
+                                    .update(cx, |panel, cx| panel.refresh(cx));
+                            }
                             cx.notify();
                         }))
                 ))
@@ -901,7 +907,7 @@ impl Desktop {
                             self.send_controls(
                                 &self.starter_attachments,
                                 "Send first message",
-                                Self::send_icon("send-first", "Send first message (Enter)")
+                                Self::send_icon("send-first", "Send (Enter)")
                                     .disabled(empty_message || self.starter_attachments.loading)
                                     .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
                                 cx,
@@ -1004,7 +1010,7 @@ impl Desktop {
                                     .label("Open conversation")
                                     .icon(IconName::ArrowRight)
                             } else {
-                                Self::send_icon("launch", "Send first message")
+                                Self::send_icon("launch", "Send")
                             })
                             .disabled(
                                 self.starter_attachments.loading
@@ -1041,7 +1047,7 @@ impl Desktop {
                                 Button::new("browse")
                                     .ghost()
                                     .icon(IconName::FolderOpen)
-                                    .tooltip("Browse for a checkout")
+                                    .tooltip("Browse")
                                     .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
                             )),
                     ),
@@ -1146,7 +1152,7 @@ impl Desktop {
                             .rounded_sm()
                             .bg(cx.theme().primary_foreground),
                     )
-                    .tooltip("Stop thread")
+                    .tooltip("Stop")
                     .on_click(cx.listener(move |view, _, _, cx| {
                         let result = view
                             .runtime
@@ -1157,7 +1163,7 @@ impl Desktop {
             )
         } else {
             let (label, tooltip) = if busy {
-                ("Queue message", "Queue message (Enter)")
+                ("Queue message", "Queue (Enter)")
             } else {
                 ("Send", "Send (Enter)")
             };
@@ -1477,7 +1483,7 @@ impl Render for Desktop {
                                 .flex_shrink_0()
                                 .bg(cx.theme().sidebar)
                                 .border_r_1()
-                                .border_color(cx.theme().border)
+                                .border_color(cx.theme().sidebar_border)
                                 .p_3()
                                 .gap_3()
                                 .child(
@@ -1520,7 +1526,13 @@ impl Render for Desktop {
                                                 }))
                                         )),
                                 )
-                                .child(div().w_full().h_px().flex_shrink_0().bg(cx.theme().border))
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_px()
+                                        .flex_shrink_0()
+                                        .bg(cx.theme().sidebar_border),
+                                )
                                 .child(self.conversation_sidebar(left_width, cx)),
                         ),
                 )
@@ -1565,22 +1577,44 @@ impl Render for Desktop {
                     .as_ref()
                     .filter(|_| right > 0. && !self.show_settings),
                 |layout, thread| {
+                    let tabs = h_flex()
+                        .flex_shrink_0()
+                        .h_10()
+                        .px_2()
+                        .gap_1()
+                        .child(control!(
+                            "Changes tab",
+                            label("Changes")
+                                .px_2p5()
+                                .py_1()
+                                .rounded_lg()
+                                .bg(cx.theme().sidebar_accent)
+                                .text_color(cx.theme().sidebar_accent_foreground)
+                        ));
                     layout.child(
                         div()
                             .w(px(right_width * right))
                             .overflow_hidden()
                             .flex_shrink_0()
+                            // Keep file clicks inside the panel even when it covers the workspace.
+                            .occlude()
                             .when(narrow, |panel| {
-                                panel.absolute().right_0().top_10().bottom_0().occlude()
+                                panel.absolute().right_0().top_10().bottom_0()
                             })
                             .child(
-                                div()
+                                v_flex()
                                     .w(px(right_width))
                                     .h_full()
                                     .border_l_1()
-                                    .border_color(cx.theme().border)
+                                    .border_color(cx.theme().sidebar_border)
                                     .bg(cx.theme().sidebar)
-                                    .child(self.workspaces[&thread.id].changes.clone()),
+                                    .child(tabs)
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h_0()
+                                            .child(self.workspaces[&thread.id].changes.clone()),
+                                    ),
                             ),
                     )
                 },

@@ -123,6 +123,18 @@ impl Section {
             Self::Settled => "Settled",
         }
     }
+
+    fn icon(self, cx: &App) -> Icon {
+        let (icon, light, dark) = match self {
+            Self::Attention => (IconName::TriangleAlert, 0x9a470c, 0xf6aa61),
+            Self::Ready => (IconName::ArrowRight, 0x177243, 0x63ce91),
+            Self::Working => (IconName::LoaderCircle, 0x285eaa, 0x7fb3ff),
+            Self::Settled => (IconName::Check, 0x5d6576, 0xaaa7bc),
+        };
+        Icon::new(icon)
+            .small()
+            .text_color(rgb(if cx.theme().is_dark() { dark } else { light }))
+    }
 }
 
 fn activity(thread: &ConversationSummary) -> (Section, &'static str) {
@@ -200,16 +212,31 @@ impl Desktop {
                 .compact()
                 .ghost()
                 .justify_start()
-                .icon(if fully_expanded {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                })
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!("{title} ({count})")),
+                    h_flex()
+                        // Fit inside the sidebar padding, border, and compact button padding.
+                        .w(px(width - 37.))
+                        .gap_1p5()
+                        .child(section.icon(cx))
+                        .child(
+                            div().min_w_0().flex_1().overflow_hidden().child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("{title} ({count})")),
+                            ),
+                        )
+                        .child(
+                            Icon::new(if fully_expanded {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
+                        ),
                 )
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.expanded_sections.insert(section, !fully_expanded);
@@ -256,6 +283,7 @@ impl Desktop {
             });
         let settled = thread.settled;
         let action = if settled { "Unsettle" } else { "Settle" };
+        let group = "conversation-row";
         let enabled = settled
             || (!thread.needs_approval
                 && !thread.needs_answer
@@ -268,12 +296,15 @@ impl Desktop {
                 .ghost()
                 .small()
                 .compact()
+                .opacity(0.)
+                .group_hover(group, |style| style.opacity(1.))
+                .focus(|style| style.opacity(1.))
                 .icon(if settled {
                     IconName::Undo2
                 } else {
                     IconName::CircleCheck
                 })
-                .tooltip(format!("{action} conversation"))
+                .tooltip(action)
                 .disabled(!enabled)
                 .on_click(cx.listener(move |view, _, _, cx| {
                     cx.stop_propagation();
@@ -291,6 +322,7 @@ impl Desktop {
         control!(
             format!("thread/{}", thread.name),
             Button::new(SharedString::from(id.0.clone()))
+                .group(group)
                 .w_full()
                 .compact()
                 .justify_start()

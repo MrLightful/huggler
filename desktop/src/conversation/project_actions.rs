@@ -1,8 +1,8 @@
 use super::*;
 use crate::github::{self, Action as PrAction, Status};
-use anyhow::{Context as _, ensure};
+use crate::open_in::OpenIn;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
-use std::{process::Command as ProcessCommand, time::Duration};
+use std::time::Duration;
 
 impl PrAction {
     fn label(self) -> &'static str {
@@ -24,7 +24,7 @@ impl PrAction {
 
     fn tooltip(self) -> &'static str {
         match self {
-            Self::Create => "Create a pull request on GitHub",
+            Self::Create => "Open PR form",
             Self::Resolve => "Ask this conversation to resolve merge conflicts",
             Self::Fix => "Ask this conversation to fix failed checks or address requested changes",
             Self::Merge => "Review and merge the pull request",
@@ -55,29 +55,17 @@ impl Desktop {
             )
             .tooltip("Open in")
             .dropdown_menu_with_anchor(Corner::TopRight, move |mut menu, _, _| {
-                for (name, bundle) in [
-                    ("Finder", "com.apple.finder"),
-                    ("Terminal", "com.apple.Terminal"),
-                    ("VS Code", "com.microsoft.VSCode"),
-                ] {
+                for destination in OpenIn::OPTIONS {
                     let view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(name).on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            view.run_project_action(cx, move |root| {
-                                let output = ProcessCommand::new("/usr/bin/open")
-                                    .args(["-b", bundle])
-                                    .arg(root)
-                                    .output()
-                                    .with_context(|| format!("Could not open {name}"))?;
-                                ensure!(
-                                    output.status.success(),
-                                    "Could not open {name}. {}",
-                                    String::from_utf8_lossy(&output.stderr).trim()
-                                );
-                                Ok(())
+                    menu = menu.item(PopupMenuItem::new(destination.label()).on_click(
+                        move |_, _, cx| {
+                            let _ = view.update(cx, |view, cx| {
+                                view.run_project_action(cx, move |root| {
+                                    destination.open_workspace(&root)
+                                });
                             });
-                        });
-                    }));
+                        },
+                    ));
                 }
                 menu
             });
