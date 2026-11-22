@@ -13,7 +13,9 @@ python3 scripts/install-desktop.py "$HOME/Applications/Huggler.app"
 "$HOME/Applications/Huggler.app/Contents/MacOS/huggler-desktop"
 ```
 
-To add provider instances, set `HUGGLER_PROVIDERS` to the path of a JSON file before launch. For example, this file registers a separate Cursor instance.
+Use **Settings → Providers → Add provider** for Cursor, Grok Build, fx, Kiro, Antigravity, OpenCode, Pi, and Muse Code. Huggler finds installed CLIs at startup. If it cannot find one, open the provider's installation guide or save the full path under **Custom executable**. Restart Huggler after installing a CLI or saving its path, then choose the provider from the composer.
+
+For a separate provider instance or custom launch arguments, set `HUGGLER_PROVIDERS` to the path of a JSON file before launch. This file registers a separate Cursor instance.
 
 ```json
 [
@@ -21,7 +23,7 @@ To add provider instances, set `HUGGLER_PROVIDERS` to the path of a JSON file be
 ]
 ```
 
-Use unique instance IDs. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` override the executables for the built-in instances. [Provider configuration](../docs-app/content/docs/guides/configure-providers.mdx)
+Use unique instance IDs. A JSON entry with the same ID as one of the eight presets replaces that preset. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` override the executables for `codex` and `claudeAgent`. Use JSON to register other ACP agents or connect an existing OpenCode server. [Provider configuration](../docs-app/content/docs/guides/configure-providers.mdx)
 
 1. **Start a conversation.** Choose **Create** and select your repository with the folder button. **New worktree** starts a linked worktree from the repository's default branch. Huggler uses the cached remote default when available, then looks for `main`, `master`, the checked-out commit, or another available branch. Open **From …** to search local and remote-tracking branches for a different base. Choose **Current checkout** to use the selected folder. Pick a local branch to switch to it when the conversation opens. If Git detects a conflict with local files, the draft stays open so you can change your selection. Repositories without a starting commit use the current checkout. For a fresh scratch directory, choose **or start without a project**.
 
@@ -105,7 +107,7 @@ Use **Effort** or **Fast mode** for Codex models that support those options. **U
 
 Under **Environment**, add variables such as a custom API endpoint for that provider. Use **Save variables**, or leave the provider’s settings to save valid edits automatically. Restart Huggler to apply them. Huggler masks values in the editor and saves them in the local preferences file with user-only permissions. They override inherited variables for that provider’s subprocesses. A config directory set in Advanced settings takes precedence over a matching environment variable. Configure the environment of any separately managed server where it runs.
 
-Open **Advanced settings** to set an executable path, a config directory, or launch arguments for Codex or Claude Agent. Save and restart Huggler to apply runtime changes. Clear the executable field to return to automatic discovery. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` take precedence over the corresponding saved paths. Other configured instances show their runtime details in Advanced settings and use `HUGGLER_PROVIDERS` for changes. Preferences are stored in `preferences.json` in the app’s state directory.
+Open **Advanced settings** to set a preset's executable path. Codex and Claude Agent also expose a config directory and launch arguments. Save and restart Huggler to apply runtime changes. Clear the executable field to return to automatic discovery. `HUGGLER_CODEX` and `HUGGLER_CLAUDE_ACP` take precedence over the corresponding saved paths. Instances defined in `HUGGLER_PROVIDERS` show their launch configuration in Advanced settings. Edit the JSON file to change those settings. Desktop stores preferences in `preferences.json` in the app’s state directory.
 
 ## Reproduce the desktop check
 

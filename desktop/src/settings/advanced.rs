@@ -116,7 +116,7 @@ impl Settings {
     }
 
     pub(super) fn runtime_edited(&self, cx: &App) -> bool {
-        if self.executable_preference().is_none() {
+        if !self.runtime_editable() {
             return false;
         }
         let (home, args) = self.runtime_fields.values(cx);
@@ -130,7 +130,7 @@ impl Settings {
     }
 
     pub(super) fn apply_runtime_edit(&mut self, prefs: &mut Preferences, cx: &App) -> Result<bool> {
-        if self.executable_preference().is_none() {
+        if !self.runtime_editable() {
             return Ok(false);
         }
         let (home, args) = self.runtime_fields.values(cx);
@@ -145,6 +145,10 @@ impl Settings {
             prefs.runtime_overrides.insert(id.to_owned(), saved);
         }
         Ok(true)
+    }
+
+    pub(super) fn runtime_editable(&self) -> bool {
+        matches!(self.providers.selected.as_str(), "codex" | "claudeAgent")
     }
 
     pub(super) fn render_advanced(&self, installed: bool, cx: &Context<Self>) -> Div {
@@ -170,7 +174,7 @@ impl Settings {
                 )))
             .when(self.advanced, |section| {
                 section.child(self.executable_field(installed, cx)).child(
-                    if self.executable_preference().is_some() {
+                    if self.runtime_editable() {
                         self.runtime_editor(cx)
                     } else {
                         self.configured_runtime(cx)
@@ -247,7 +251,9 @@ impl Settings {
                         .child(hint(variable.clone(), cx)),
                 )
             })
-            .child(hint("Edit HUGGLER_PROVIDERS to change this instance.", cx))
+            .when(self.executable_preference().is_none(), |fields| {
+                fields.child(hint("Edit HUGGLER_PROVIDERS to change this instance.", cx))
+            })
     }
 }
 

@@ -1,4 +1,5 @@
 mod advanced;
+mod catalog;
 mod environment;
 mod models;
 mod providers;
@@ -19,14 +20,14 @@ use gpui_component::{
     v_flex,
 };
 use huggler::{
-    Huggler, Provider, ProviderInstanceId,
+    Huggler, HugglerOptions, Provider, ProviderInstanceId,
     workspace::{OrphanedWorktreeOutcome, OrphanedWorktreeReport},
 };
 pub(crate) use models::ModelPreferences;
 use providers::ProviderSettings;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -60,6 +61,11 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_agent_executable: Option<PathBuf>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    provider_executables: BTreeMap<String, PathBuf>,
+    // Which instances this launch supplied, as opposed to the JSON configuration.
+    #[serde(skip)]
+    provider_presets: HashSet<ProviderInstanceId>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     models: BTreeMap<String, ModelPreferences>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     runtime_overrides: BTreeMap<String, RuntimePreferences>,
@@ -74,6 +80,8 @@ impl Default for Preferences {
             appearance: Appearance::System,
             codex_executable: None,
             claude_agent_executable: None,
+            provider_executables: BTreeMap::new(),
+            provider_presets: HashSet::new(),
             models: BTreeMap::new(),
             runtime_overrides: BTreeMap::new(),
             provider_environment: BTreeMap::new(),
@@ -83,6 +91,30 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    pub(crate) fn configure_providers(
+        &mut self,
+        options: &mut HugglerOptions,
+        state: &Path,
+    ) -> Result<()> {
+        self.provider_presets = catalog::register(options, self, state);
+        self.apply_runtime_overrides(options)
+    }
+
+    fn set_executable(&mut self, id: &str, path: Option<PathBuf>) {
+        match id {
+            "codex" => self.codex_executable = path,
+            "claudeAgent" => self.claude_agent_executable = path,
+            _ => match path {
+                Some(path) => {
+                    self.provider_executables.insert(id.into(), path);
+                }
+                None => {
+                    self.provider_executables.remove(id);
+                }
+            },
+        }
+    }
+
     pub fn load(state: &Path) -> Result<Self> {
         match fs::read(state.join("preferences.json")) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
@@ -266,23 +298,39 @@ impl Settings {
     fn path_edited(&self, cx: &App) -> bool {
         self.executable_preference()
             .is_some_and(|(saved, variable)| {
-                std::env::var_os(variable).is_none() && self.entered_path(cx) != *saved
+                variable.and_then(std::env::var_os).is_none()
+                    && self.entered_path(cx).as_deref() != saved
             })
     }
 
-    fn executable_preference(&self) -> Option<(&Option<PathBuf>, &'static str)> {
-        match self.providers.selected.as_str() {
-            "codex" => Some((&self.prefs.codex_executable, "HUGGLER_CODEX")),
-            "claudeAgent" => Some((&self.prefs.claude_agent_executable, "HUGGLER_CLAUDE_ACP")),
+    fn executable_preference(&self) -> Option<(Option<&Path>, Option<&'static str>)> {
+        let id = &self.providers.selected;
+        match id.as_str() {
+            "codex" => Some((
+                self.prefs.codex_executable.as_deref(),
+                Some("HUGGLER_CODEX"),
+            )),
+            "claudeAgent" => Some((
+                self.prefs.claude_agent_executable.as_deref(),
+                Some("HUGGLER_CLAUDE_ACP"),
+            )),
+            key if self.prefs.provider_presets.contains(id) => Some((
+                self.prefs
+                    .provider_executables
+                    .get(key)
+                    .map(PathBuf::as_path),
+                None,
+            )),
             _ => None,
         }
     }
 
     fn load_executable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((saved, variable)) = self.executable_preference() {
-            let value = std::env::var_os(variable)
+            let value = variable
+                .and_then(std::env::var_os)
                 .map(PathBuf::from)
-                .or_else(|| saved.clone())
+                .or_else(|| saved.map(Path::to_owned))
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let automatic = self.automatic_executable();
@@ -304,6 +352,9 @@ impl Settings {
 
     fn automatic_executable(&self) -> PathBuf {
         let driver = self.selected_provider().driver;
+        if let Some(preset) = catalog::preset(driver) {
+            return preset.executable(&self.state);
+        }
         let name = match driver {
             Provider::Codex => huggler::providers::codex::CodexOptions::default().executable,
             Provider::ClaudeAgent => {
@@ -328,11 +379,7 @@ impl Settings {
         if let Some(path) = &path {
             validate_program(path)?;
         }
-        match self.providers.selected.as_str() {
-            "codex" => prefs.codex_executable = path,
-            "claudeAgent" => prefs.claude_agent_executable = path,
-            _ => unreachable!("only built-in providers have editable paths"),
-        }
+        prefs.set_executable(self.providers.selected.as_str(), path);
         Ok(true)
     }
 
@@ -553,14 +600,19 @@ impl Settings {
                 .child(label("CLI executable"))
                 .child(hint(instance.executable.display().to_string(), cx));
         };
-        let managed = std::env::var_os(variable).is_some();
+        let override_key = variable.filter(|key| std::env::var_os(key).is_some());
+        let managed = override_key.is_some();
         let edited = self.path_edited(cx);
         let executable = &instance.executable;
-        let path_hint = if managed {
+        let path_hint = if let Some(variable) = override_key {
             format!("{variable} sets this path at startup.")
         } else if edited {
             "Save the path to use it the next time Huggler starts.".into()
-        } else if saved.clone().unwrap_or_else(|| self.automatic_executable()) != *executable {
+        } else if saved
+            .map(Path::to_owned)
+            .unwrap_or_else(|| self.automatic_executable())
+            != *executable
+        {
             format!(
                 "Saved. Restart Huggler to apply. Currently using {}.",
                 executable.display()

@@ -352,7 +352,7 @@ exec /usr/bin/git "$@"
             *open_claude, {"see": "Connected"}, {"see": "Models"}, {"see": "Advanced settings"},
             {"absent": "Custom executable"}, {"right_of": ["provider/claudeAgent", "provider/codex"]},
             {"right_of": ["Add provider", "provider/claudeAgent"]},
-            {"click": "Add provider"}, {"see": "All providers detected"},
+            {"click": "Add provider"}, {"see": "Choose a provider"}, {"see": "provider/opencode"},
             {"click": "provider/claudeAgent"}, {"see": "Connected"}, {"click": "Done"},
         ], dict(claude_env, HUGGLER_CODEX=str(fixture)))
         check_models_and_runtime(executable, root, checkout, fixture, env)

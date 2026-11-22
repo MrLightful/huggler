@@ -1,10 +1,11 @@
-use super::{Page, Settings, setup};
+use super::{Page, Settings, catalog, setup};
 use crate::ui::{heading, label, section_title};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
+    scroll::ScrollableElement,
     tooltip::Tooltip,
     v_flex,
 };
@@ -75,6 +76,7 @@ pub(super) struct ProviderSettings {
     custom_executable: bool,
     reset_pending: bool,
     reset_needs_restart: bool,
+    detected_scroll: ScrollHandle,
     setup: HashMap<ProviderInstanceId, SetupState>,
 }
 
@@ -86,6 +88,7 @@ impl ProviderSettings {
             custom_executable: false,
             reset_pending: false,
             reset_needs_restart: false,
+            detected_scroll: ScrollHandle::default(),
             setup: HashMap::new(),
         }
     }
@@ -335,7 +338,10 @@ impl Settings {
         instances.sort_by_key(|instance| match instance.id.as_str() {
             "codex" => 0,
             "claudeAgent" => 1,
-            _ => 2,
+            id => catalog::PRESETS
+                .iter()
+                .position(|preset| preset.driver.key() == id)
+                .map_or(catalog::PRESETS.len() + 2, |index| index + 2),
         });
         instances
     }
@@ -343,6 +349,12 @@ impl Settings {
     pub(super) fn provider_selector(&self, cx: &Context<Self>) -> Div {
         let add_selected = self.providers.panel == ProviderPanel::Choose
             || (self.provider_details_open() && !self.provider_detected(&self.providers.selected));
+        let detected = self
+            .ordered_providers()
+            .into_iter()
+            .filter(|instance| self.provider_detected(&instance.id))
+            .map(|instance| self.provider_card(instance, cx).flex_none().w(px(168.)))
+            .collect::<Vec<_>>();
         let add = control!(
             "Add provider",
             Button::new("add-provider")
@@ -370,9 +382,8 @@ impl Settings {
                     }
                 }))
         )
-        .flex_1()
-        .min_w(px(152.))
-        .max_w(px(336.));
+        .w(px(168.))
+        .flex_shrink_0();
         div().w_full().max_w(px(720.)).px_5().flex_shrink_0().child(
             h_flex()
                 .id("provider-selector")
@@ -381,13 +392,22 @@ impl Settings {
                 .py_3()
                 .border_b_1()
                 .border_color(cx.theme().border)
-                .overflow_x_scroll()
-                .children(
-                    self.ordered_providers()
-                        .into_iter()
-                        .filter(|instance| self.provider_detected(&instance.id))
-                        .map(|instance| self.provider_card(instance, cx)),
-                )
+                .when(!detected.is_empty(), |selector| {
+                    selector.child(
+                        div()
+                            .min_w_0()
+                            .relative()
+                            .child(
+                                h_flex()
+                                    .id("detected-providers")
+                                    .gap_2()
+                                    .overflow_x_scroll()
+                                    .track_scroll(&self.providers.detected_scroll)
+                                    .children(detected),
+                            )
+                            .horizontal_scrollbar(&self.providers.detected_scroll),
+                    )
+                })
                 .child(add),
         )
     }
@@ -760,10 +780,8 @@ impl Settings {
     fn reset_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.providers.selected.as_str();
         let mut prefs = self.prefs.clone();
-        match id {
-            "codex" => prefs.codex_executable = None,
-            "claudeAgent" => prefs.claude_agent_executable = None,
-            _ => {}
+        if self.executable_preference().is_some() {
+            prefs.set_executable(id, None);
         }
         prefs.models.remove(id);
         prefs.runtime_overrides.remove(id);
@@ -776,9 +794,9 @@ impl Settings {
             let instance = self.selected_provider();
             self.providers.reset_needs_restart = !instance.environment().is_empty()
                 || self.executable_preference().is_some_and(|(_, key)| {
-                    instance.home.is_some()
-                        || !instance.args.is_empty()
-                        || (std::env::var_os(key).is_none()
+                    (self.runtime_editable()
+                        && (instance.home.is_some() || !instance.args.is_empty()))
+                        || (key.and_then(std::env::var_os).is_none()
                             && instance.executable != self.automatic_executable())
                 });
         }
@@ -797,12 +815,7 @@ impl Settings {
                     .on_click(cx.listener(|view, _, _, cx| view.install_provider(false, cx)))
             ))
         } else {
-            match instance.driver {
-                Provider::Codex => Some(setup::CODEX_GUIDE),
-                Provider::ClaudeAgent => Some(setup::CLAUDE_GUIDE),
-                _ => None,
-            }
-            .map(|url| guide_button("Installation guide", url))
+            setup_guide(instance.driver).map(|url| guide_button("Installation guide", url))
         };
         let custom = self.providers.custom_executable;
         v_flex()
@@ -829,6 +842,9 @@ impl Settings {
                             }))
                     )),
             )
+            .when(self.prefs.provider_presets.contains(&instance.id), |page| {
+                page.child(hint("Install and sign in with the provider’s CLI, then restart Huggler to find the installation.", cx))
+            })
             .when(custom, |page| {
                 page.child(
                     v_flex()
@@ -862,6 +878,14 @@ fn provider_logo(provider: Provider, size: Pixels, cx: &App) -> AnyElement {
         .flex_shrink_0()
         .text_color(cx.theme().foreground)
         .into_any_element()
+}
+
+fn setup_guide(driver: Provider) -> Option<&'static str> {
+    match driver {
+        Provider::Codex => Some(setup::CODEX_GUIDE),
+        Provider::ClaudeAgent => Some(setup::CLAUDE_GUIDE),
+        _ => catalog::preset(driver).map(|preset| preset.guide),
+    }
 }
 
 fn initial_status(directory: &Path, instance: &ProviderInstance) -> Status {
@@ -922,7 +946,9 @@ fn sign_in_actions(instance: &ProviderInstance) -> Option<Div> {
             "Claude credentials guide",
             setup::CLAUDE_AUTH_GUIDE,
         ))),
-        _ => None,
+        driver => {
+            setup_guide(driver).map(|url| h_flex().child(guide_button("Provider setup guide", url)))
+        }
     }
 }
 

@@ -400,7 +400,13 @@ impl Desktop {
             });
             let mut content = v_flex().w(PICKER_WIDTH).gap_1();
             if self.current.is_none() {
-                content = content.child(h_flex().gap_1().flex_wrap().children(provider_choices));
+                content = content.child(
+                    div()
+                        .id("model-picker-providers")
+                        .max_h(px(96.))
+                        .overflow_y_scroll()
+                        .child(h_flex().gap_1().flex_wrap().children(provider_choices)),
+                );
             }
             let instance = source.0;
             let edit = control!(

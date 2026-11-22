@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise instance discovery in a macOS qualification build using isolated state."""
 import json
+import shlex
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -8,6 +9,72 @@ import sys
 import tempfile
 
 from desktop_check import ROOT, isolated_env, launch_thread, run_window, send_message
+
+
+def check_provider_presets(executable, tmp, env):
+    state = tmp / "presets-state"
+    checkout = tmp / "presets-checkout"
+    subprocess.run(["git", "init", "--quiet", checkout], check=True)
+    fixture = str(ROOT / "tests/fixtures/providers/replay.py")
+    cursor = tmp / "Cursor CLI"
+    cursor.write_text(
+        '#!/bin/sh\nif [ "$*" = "--version" ]; then echo 2026.11.19-f005e9d; exit; fi\n'
+        'test "$*" = "acp" || exit 2\n'
+        f'exec {shlex.join([sys.executable, "-B", fixture, "cursor"])}\n'
+    )
+    cursor.chmod(0o755)
+    fx = Path(env["HOME"]) / ".local/bin/fx"
+    fx.parent.mkdir(parents=True)
+    fx.write_text(
+        '#!/bin/sh\nif [ "$*" = "--version" ]; then echo 0.0.13; exit; fi\n'
+        'test "$*" = "acp" || exit 2\n'
+        f'exec {shlex.join([sys.executable, "-B", fixture, "fx"])}\n'
+    )
+    fx.chmod(0o755)
+    run_window(executable, state, [
+        {"key": "cmd-,"}, {"click": "Providers"}, {"see": "provider/fx"},
+        {"click": "Add provider"},
+        *[{"see": f"provider/{key}"} for key in (
+            "antigravity", "cursor", "grok", "kiro", "muse", "opencode", "pi"
+        )],
+        {"click": "provider/cursor"}, {"see": "Installation guide"},
+        {"click": "Custom executable"}, {"click": "CLI executable"}, {"type": str(cursor)},
+        {"click": "Save path"}, {"click": "Done"},
+        {"click": "model-automatic"}, {"absent": "provider/Cursor"},
+        {"absent": "provider/Antigravity"}, {"see": "provider/fx"},
+    ], env)
+    assert json.loads((state / "preferences.json").read_text())["providerExecutables"] == {
+        "cursor": str(cursor)
+    }
+    run_window(executable, state, [
+        {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/cursor"},
+        {"see": "v2026.11.19-f005e9d"}, {"see": "model-enabled/grok-build"},
+        {"click": "Done"}, {"key": "cmd-shift-n"}, {"click": "Git checkout"},
+        {"key": "cmd-a"}, {"type": str(checkout)}, {"click": "model-automatic"},
+        {"click": "provider/Cursor"}, {"click": "model-option/grok-build"},
+        {"click": "Conversation name"}, {"type": "Cursor replay"}, {"click": "Open conversation"},
+        {"see": "status/Ready"}, {"see": "model/grok-build"},
+        *send_message("fresh"), {"click": "permission/reject_once"},
+        {"see": "Ready/Cursor replay/Completed"},
+    ], env)
+    with sqlite3.connect(state / "huggler.sqlite3") as db:
+        assert db.execute("SELECT provider_instance FROM thread").fetchall() == [("cursor",)]
+
+    config = tmp / "override.json"
+    config.write_text(json.dumps([
+        {"id": "cursor", "driver": "cursor", "executable": sys.executable,
+         "args": ["-B", fixture, "cursor"]},
+        *[{"id": f"agent-{index}", "driver": "acpRegistry", "executable": sys.executable,
+           "args": ["-B", fixture, "registry"]} for index in range(4)],
+    ]))
+    cursor.unlink()
+    run_window(executable, state, [
+        {"key": "cmd-,"}, {"click": "Providers"}, {"click": "provider/cursor"},
+        {"see": "model-enabled/grok-build"}, {"click": "Advanced settings"},
+        {"absent": "Save path"}, {"click": "Add provider"}, {"see": "provider/muse"},
+        {"click": "Done"}, {"key": "cmd-n"}, {"click": "model-automatic"},
+        {"see": "provider/cursor"}, {"absent": "provider/Cursor"},
+    ], dict(env, HUGGLER_PROVIDERS=str(config)))
 
 
 def check_models(executable, tmp, env):
@@ -180,6 +247,7 @@ def main():
             {"see": status + "ACP v1 · 1 · login unverified · 2 models"},
         ]
         env = dict(isolated_env(tmp), HUGGLER_PROVIDERS=str(config), HUGGLER_CODEX=str(missing))
+        check_provider_presets(executable, tmp, env)
         check_models(executable, tmp, env)
         check_suggestions(executable, tmp, env)
         check_mcp_status(executable, tmp, env)
