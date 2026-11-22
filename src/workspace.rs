@@ -12,6 +12,15 @@ pub enum SetupStatus {
     Ready,
 }
 
+/// How to name the local branch of a new managed worktree.
+#[derive(Clone, Copy, Debug)]
+pub enum WorktreeBranch<'a> {
+    /// Create this literal Git branch name. An existing branch is an error.
+    Exact(&'a str),
+    /// Derive a branch name from a descriptive title and disambiguate it if needed.
+    FromTitle(&'a str),
+}
+
 /// Result of inspecting or cleaning one unreferenced managed checkout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrphanedWorktreeOutcome {
@@ -84,7 +93,18 @@ impl Huggler {
     /// Resolve a Git revision in the source repository and allocate a detached checkout of its commit.
     pub fn allocate_workspace_at(&self, source: &ProjectId, revision: &str) -> Result<Project> {
         self.shared
-            .access(|db| db.allocate_workspace(source, revision))
+            .access(|db| db.allocate_workspace(source, revision, None))
+    }
+    /// Create a managed checkout and a new local branch at the resolved Git revision.
+    /// The checkout directory includes a readable name and a generated suffix.
+    pub fn allocate_workspace_on_branch(
+        &self,
+        source: &ProjectId,
+        revision: &str,
+        branch: WorktreeBranch<'_>,
+    ) -> Result<Project> {
+        self.shared
+            .access(|db| db.allocate_workspace(source, revision, Some(branch)))
     }
     /// Enumerate managed checkout reservations in the same Git repository as the source.
     pub fn allocated_workspaces(&self, source: &ProjectId) -> Result<Vec<Project>> {

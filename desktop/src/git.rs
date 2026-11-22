@@ -270,28 +270,6 @@ fn git_output(output: Output) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-pub fn validate_new_branch(root: &Path, branch: &str) -> Result<()> {
-    let checked = execute(git(root).args(["check-ref-format", "--branch", branch]))?;
-    // Git's --branch syntax also expands previous-checkout expressions.
-    ensure!(
-        checked.strip_suffix(b"\n") == Some(branch.as_bytes()),
-        "Enter a literal branch name."
-    );
-    Ok(())
-}
-
-pub fn create_branch(root: &Path, branch: &str) -> Result<()> {
-    execute(git(root).args([
-        "-c",
-        "core.hooksPath=/dev/null",
-        "switch",
-        "--no-track",
-        "-c",
-        branch,
-    ]))?;
-    Ok(())
-}
-
 pub fn switch_branch(root: &Path, branch: &str) -> Result<()> {
     execute(git(root).args([
         "-c",
@@ -1281,7 +1259,7 @@ mod tests {
         fs::write(root.join(restored), "base\n").unwrap();
         commit_fixture(root);
         execute(git(root).args(["branch", "-M", "main"])).unwrap();
-        create_branch(root, "topic").unwrap();
+        execute(git(root).args(["switch", "-c", "topic"])).unwrap();
         fs::remove_file(root.join(restored)).unwrap();
         fs::write(root.join(committed), "branch\n").unwrap();
         commit_fixture(root);
@@ -1357,7 +1335,7 @@ mod tests {
         fs::write(&path, "base\n").unwrap();
         commit_fixture(root);
         execute(git(root).args(["branch", "-M", "main"])).unwrap();
-        create_branch(root, "topic").unwrap();
+        execute(git(root).args(["switch", "-c", "topic"])).unwrap();
         fs::write(root.join("branch"), "branch change\n").unwrap();
         commit_fixture(root);
         fs::write(&path, "staged edit\n").unwrap();

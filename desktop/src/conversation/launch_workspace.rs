@@ -4,8 +4,10 @@ use gpui_component::{
     list::{List, ListDelegate, ListEvent, ListItem},
     menu::{DropdownMenu, PopupMenuItem},
     popover::Popover,
+    spinner::Spinner,
 };
-use huggler::Project;
+use huggler::{Project, workspace::WorktreeBranch};
+use markdown::{ParseOptions, mdast::Node, to_mdast};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -13,6 +15,207 @@ pub(super) enum WorkspaceMode {
     Current,
     #[default]
     Worktree,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum WorktreeStage {
+    ResolveBase,
+    Checkout,
+    OpenConversation,
+}
+
+pub(super) struct LaunchProgress {
+    pub thread: ThreadId,
+    pub title: String,
+    pub stage: Option<WorktreeStage>,
+}
+
+impl LaunchProgress {
+    pub(super) fn render(&self, cx: &App) -> Div {
+        let view = v_flex().size_full().items_center().justify_center().p_4();
+        let Some(current) = self.stage else {
+            return view.child(label("Opening conversation…"));
+        };
+        let theme = cx.theme();
+        let steps = [
+            (WorktreeStage::ResolveBase, "Select base branch"),
+            (WorktreeStage::Checkout, "Create branch and check out files"),
+            (WorktreeStage::OpenConversation, "Open conversation"),
+        ];
+        view.child(
+            v_flex()
+                .w_full()
+                .max_w(px(420.))
+                .gap_4()
+                .p_5()
+                .rounded_xl()
+                .border_1()
+                .border_color(theme.border)
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(control!(
+                            "Setting up worktree",
+                            crate::ui::heading("Setting up worktree")
+                        ))
+                        .child(hint(self.title.clone(), cx).truncate()),
+                )
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .pt_4()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .children(steps.into_iter().map(|(stage, name)| {
+                            let (indicator, status) = match stage.cmp(&current) {
+                                std::cmp::Ordering::Less => (
+                                    Icon::new(IconName::Check)
+                                        .with_size(px(14.))
+                                        .into_any_element(),
+                                    "Done",
+                                ),
+                                std::cmp::Ordering::Equal => (
+                                    Spinner::new().with_size(px(14.)).into_any_element(),
+                                    "In progress",
+                                ),
+                                std::cmp::Ordering::Greater => (
+                                    Icon::new(IconName::Minus)
+                                        .with_size(px(14.))
+                                        .into_any_element(),
+                                    "Waiting",
+                                ),
+                            };
+                            control!(
+                                format!("{name}/{status}"),
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().flex_shrink_0().child(indicator))
+                                    .child(label(name).flex_1())
+                                    .child(hint(status, cx).flex_shrink_0())
+                            )
+                        })),
+                ),
+        )
+    }
+}
+
+pub(super) fn conversation_title(message: &str, attachment: Option<&str>) -> String {
+    fn append_inline_text(node: &Node, text: &mut String) {
+        match node {
+            Node::Break(_) => text.push('\n'),
+            Node::Image(image) => text.push_str(&image.alt),
+            Node::ImageReference(image) => text.push_str(&image.alt),
+            Node::Html(_) => (),
+            _ => {
+                if let Some(children) = node.children() {
+                    for child in children {
+                        append_inline_text(child, text);
+                    }
+                } else {
+                    text.push_str(&node.to_string());
+                }
+            }
+        }
+    }
+
+    fn first_prose(node: &Node) -> Option<String> {
+        match node {
+            Node::Paragraph(_) | Node::Heading(_) => {
+                let mut text = String::new();
+                append_inline_text(node, &mut text);
+                (!text.trim().is_empty()).then_some(text)
+            }
+            Node::Root(_) | Node::List(_) | Node::ListItem(_) => {
+                node.children()?.iter().find_map(first_prose)
+            }
+            _ => None,
+        }
+    }
+
+    let message = message.trim();
+    let prefix = &message[..message.floor_char_boundary(message.len().min(4096))];
+    let prose = match to_mdast(prefix, &ParseOptions::gfm()) {
+        Ok(root) => first_prose(&root).unwrap_or_default(),
+        Err(_) => prefix.to_owned(),
+    };
+    let first_line = prose
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let line = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = line
+        .match_indices(['.', '!', '?'])
+        .find(|&(index, mark)| line[index + mark.len()..].starts_with(' '))
+        .map_or(line.len(), |(index, _)| index);
+    let mut title = line[..end].to_owned();
+    let lower = title.to_ascii_lowercase();
+    let prefixes = [
+        "please ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "i would like you to ",
+        "i'd like you to ",
+        "i would like to ",
+        "i'd like to ",
+    ];
+    let mut rest = lower.as_str();
+    while let Some(stripped) = prefixes.iter().find_map(|prefix| rest.strip_prefix(prefix)) {
+        rest = stripped;
+    }
+    if rest.len() < lower.len() {
+        let mut chars = title[lower.len() - rest.len()..].chars();
+        if let Some(first) = chars.next() {
+            title = first.to_uppercase().chain(chars).collect();
+        }
+    }
+    let title = title.trim_end_matches(['.', '!', '?']).trim_end();
+    let title = if title.is_empty() {
+        attachment
+            .filter(|name| !name.is_empty())
+            .unwrap_or("New conversation")
+    } else {
+        title
+    };
+    match title.char_indices().nth(72) {
+        Some((end, _)) => {
+            let prefix = &title[..end];
+            let (earliest, _) = prefix.char_indices().nth(48).unwrap();
+            let cut = prefix[earliest..]
+                .rfind(char::is_whitespace)
+                .map(|cut| earliest + cut);
+            format!("{}…", &prefix[..cut.unwrap_or(end)])
+        }
+        None => title.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::conversation_title;
+
+    #[test]
+    fn derives_the_title_from_the_first_task() {
+        for (message, attachment, expected) in [
+            (
+                "Could you please **fix the parser**? Add a test.",
+                None,
+                "Fix the parser",
+            ),
+            (
+                "Update [parser.rs](src/parser.rs)  \nKeep the fixtures.",
+                None,
+                "Update parser.rs",
+            ),
+            (
+                "```rust\nfn main() {}\n```",
+                Some("fixture.rs"),
+                "fixture.rs",
+            ),
+        ] {
+            assert_eq!(conversation_title(message, attachment), expected);
+        }
+    }
 }
 
 impl WorkspaceMode {
@@ -81,7 +284,8 @@ pub(super) fn prepare(
     mode: WorkspaceMode,
     selected: Option<git::Branch>,
     branch: &str,
-    thread: &ThreadId,
+    title: &str,
+    report_stage: impl Fn(Option<WorktreeStage>),
 ) -> anyhow::Result<(Project, bool)> {
     if mode == WorkspaceMode::Current {
         if let Some(branch) = selected {
@@ -94,19 +298,16 @@ pub(super) fn prepare(
         None => git::branches(&source.root)?.default,
     };
     let Some(base) = base else {
+        report_stage(None);
         return Ok((source, false));
     };
-    let generated = format!("huggler/{}", thread.0);
     let branch = if branch.is_empty() {
-        &generated
+        WorktreeBranch::FromTitle(title)
     } else {
-        branch
+        WorktreeBranch::Exact(branch)
     };
-    git::validate_new_branch(&source.root, branch)?;
-    let project = runtime.allocate_workspace_at(&source.id, &base.reference)?;
-    if let Err(error) = git::create_branch(&project.root, branch) {
-        return Err(release_after_failure(runtime, &project, error));
-    }
+    report_stage(Some(WorktreeStage::Checkout));
+    let project = runtime.allocate_workspace_on_branch(&source.id, &base.reference, branch)?;
     Ok((project, true))
 }
 

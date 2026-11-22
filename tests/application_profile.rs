@@ -554,9 +554,85 @@ async fn durable_clock_and_signed_delivery() -> Result<()> {
 }
 
 #[cfg(feature = "application")]
+fn run_git(root: &Path, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(String::from_utf8(output.stdout)
+        .unwrap()
+        .trim_end()
+        .to_owned())
+}
+
+#[cfg(feature = "application")]
+#[tokio::test]
+async fn named_workspace_respects_git_case_and_existing_storage_templates() -> Result<()> {
+    use workspace::WorktreeBranch;
+
+    let dir = tempfile::tempdir()?;
+    let mut opts = options(&dir.path().join("state"));
+    let prefix = "w".repeat(205);
+    opts.storage.worktree_name = format!("{prefix}{{id}}");
+    let root = dir.path().join("repo");
+    checkout(&root);
+    run_git(
+        &root,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "Fixture",
+        ],
+    )?;
+    let name = "case-sensitive-branch-with-an-extra-long-description";
+    run_git(&root, &["branch", &name.to_ascii_uppercase()])?;
+    // Pack the existing ref to exercise Git's case-sensitive ref matching
+    // even on volumes where loose ref filenames are case-insensitive.
+    run_git(&root, &["pack-refs", "--all"])?;
+    let rt = Huggler::open(opts).await?;
+    let project = rt.open_project(&root)?;
+    let branch = WorktreeBranch::Exact(name);
+    run_git(&root, &["config", "core.ignoreCase", "true"])?;
+    assert!(matches!(
+        rt.allocate_workspace_on_branch(&project.id, "HEAD", branch),
+        Err(Error::Invalid(message)) if message.contains("already in use")
+    ));
+    assert!(rt.allocated_workspaces(&project.id)?.is_empty());
+
+    run_git(&root, &["config", "core.ignoreCase", "false"])?;
+    let worktree = rt.allocate_workspace_on_branch(&project.id, "HEAD", branch)?;
+    assert_eq!(
+        run_git(&worktree.root, &["branch", "--show-current"])?,
+        name
+    );
+    let folder = worktree.root.file_name().unwrap().to_str().unwrap();
+    assert!(
+        folder
+            .strip_prefix(&prefix)
+            .unwrap()
+            .starts_with("case-sensitive-")
+    );
+    assert!(folder.len() <= prefix.len() + 36);
+    rt.release_workspace(&worktree.id)?;
+    rt.close().await
+}
+
+#[cfg(feature = "application")]
 #[tokio::test]
 async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
-    use workspace::SetupStatus;
+    use workspace::{SetupStatus, WorktreeBranch};
     let dir = tempfile::tempdir()?;
     let mut opts = options(&dir.path().join("state"));
     let pool = dir.path().join("external pool");
@@ -613,21 +689,6 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
             Err(Error::Forbidden)
         ));
     }
-    let run_git = |root: &Path, args: &[&str]| -> Result<String> {
-        let output = std::process::Command::new("git")
-            .current_dir(root)
-            .args(args)
-            .output()?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(String::from_utf8(output.stdout)
-            .unwrap()
-            .trim_end()
-            .to_owned())
-    };
     run_git(&cloned.root, &["branch", "fixture-base"])?;
     let original = run_git(&cloned.root, &["rev-parse", "HEAD"])?;
     run_git(
@@ -641,7 +702,101 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
     assert!(rt.allocated_workspaces(&cloned.id)?.is_empty());
     let project = rt.allocate_workspace_at(&cloned.id, "refs/heads/fixture-base")?;
     assert_eq!(run_git(&project.root, &["rev-parse", "HEAD"])?, original);
+    assert_eq!(run_git(&project.root, &["branch", "--show-current"])?, "");
     assert_eq!(project.root.parent().unwrap(), pool.canonicalize()?);
+
+    let revision = "refs/heads/fixture-base";
+    let title = WorktreeBranch::FromTitle("Fix the parser!");
+    run_git(
+        &cloned.root,
+        &["branch", "huggler/fix-the-parser/child", revision],
+    )?;
+    let named = rt.allocate_workspace_on_branch(&cloned.id, revision, title)?;
+    assert_eq!(run_git(&named.root, &["rev-parse", "HEAD"])?, original);
+    assert_eq!(
+        run_git(&named.root, &["branch", "--show-current"])?,
+        "huggler/fix-the-parser-2"
+    );
+    assert!(
+        named
+            .root
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("fix-the-parser-2-")
+    );
+    assert!(
+        rt.allocate_workspace_on_branch(
+            &cloned.id,
+            revision,
+            WorktreeBranch::Exact("huggler/fix-the-parser-2"),
+        )
+        .is_err()
+    );
+    assert_eq!(rt.allocated_workspaces(&cloned.id)?.len(), 2);
+    rt.release_workspace(&named.id)?;
+    run_git(
+        &cloned.root,
+        &[
+            "branch",
+            "-D",
+            "huggler/fix-the-parser-2",
+            "huggler/fix-the-parser/child",
+        ],
+    )?;
+
+    // A concurrent Git command can take the suggested name while files are
+    // being checked out. Use a smudge filter to make that ordering repeatable.
+    let attributes = cloned.root.join(".git/info/attributes");
+    std::fs::write(&attributes, "original filter=branch-race\n")?;
+    run_git(
+        &cloned.root,
+        &[
+            "config",
+            "filter.branch-race.smudge",
+            &format!("git update-ref refs/heads/huggler/fix-the-parser {original} && cat"),
+        ],
+    )?;
+    assert!(
+        rt.allocate_workspace_on_branch(
+            &cloned.id,
+            revision,
+            WorktreeBranch::Exact("huggler/fix-the-parser"),
+        )
+        .is_err()
+    );
+    assert_eq!(rt.allocated_workspaces(&cloned.id)?.len(), 1);
+    run_git(&cloned.root, &["branch", "-D", "huggler/fix-the-parser"])?;
+    let raced = rt.allocate_workspace_on_branch(&cloned.id, revision, title)?;
+    std::fs::remove_file(attributes)?;
+    run_git(
+        &cloned.root,
+        &["config", "--remove-section", "filter.branch-race"],
+    )?;
+    assert_eq!(
+        run_git(&raced.root, &["branch", "--show-current"])?,
+        "huggler/fix-the-parser-2"
+    );
+    assert_eq!(rt.allocated_workspaces(&cloned.id)?.len(), 2);
+    rt.release_workspace(&raced.id)?;
+    run_git(
+        &cloned.root,
+        &[
+            "branch",
+            "-D",
+            "huggler/fix-the-parser",
+            "huggler/fix-the-parser-2",
+        ],
+    )?;
+
+    run_git(&cloned.root, &["branch", "huggler", revision])?;
+    let fallback = rt.allocate_workspace_on_branch(&cloned.id, revision, title)?;
+    assert_eq!(
+        run_git(&fallback.root, &["branch", "--show-current"])?,
+        "huggler-fix-the-parser"
+    );
+    rt.release_workspace(&fallback.id)?;
     rt.close().await?;
     opts.storage.worktree_root = WorktreeRoot::Shared("new pool".into());
     let rt = Huggler::open(opts).await?;

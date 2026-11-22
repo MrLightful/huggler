@@ -81,7 +81,7 @@ for line in sys.stdin:
             notify("item/agentMessage/delta", delta="Waiting for your instruction.")
         elif prompt == "Review the staged result.":
             complete("Reviewed the staged result.")
-        elif prompt == "Start from default [base-only.txt](base-only.txt) ":
+        elif prompt == "Please start from default [base-only.txt](base-only.txt) ":
             assert Path(".git").is_file() and Path("base-only.txt").is_file() and not file.exists()
             complete("Started from the default branch.")
         elif prompt == "Watch for the review signal.":

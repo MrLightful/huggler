@@ -13,6 +13,7 @@ use models::Models;
 pub(crate) use models::ProviderCatalog;
 use transcript::TurnClock;
 
+use self::launch_workspace::{LaunchProgress, WorktreeStage};
 use crate::{
     changes::Changes,
     git,
@@ -87,7 +88,7 @@ pub struct Desktop {
     checkout: Entity<InputState>,
     launch_workspace: LaunchWorkspace,
     branch: Entity<InputState>,
-    launching: Option<ThreadId>,
+    launching: Option<LaunchProgress>,
     name: Entity<InputState>,
     starter: Entity<InputState>,
     starter_attachments: Attachments,
@@ -195,7 +196,8 @@ impl Desktop {
                     )
                     .placeholder("/path/to/project")
             }),
-            branch: cx.new(|cx| InputState::new(window, cx).placeholder("Generated automatically")),
+            branch: cx
+                .new(|cx| InputState::new(window, cx).placeholder("Generated from the title")),
             launch_workspace: LaunchWorkspace::default(),
             launching: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Name this conversation…")),
@@ -582,30 +584,27 @@ impl Desktop {
         }
         let message = self.starter.read(cx).value().to_string();
         let explicit_name = self.name.read(cx).value();
-        let name = if explicit_name.trim().is_empty() {
-            let mut chars = message.trim().lines().next().unwrap_or("").chars();
-            let mut title: String = chars.by_ref().take(72).collect();
-            if chars.next().is_some() {
-                title.push('…');
-            }
-            if title.is_empty() {
-                self.starter_attachments
-                    .first_name()
-                    .unwrap_or("")
-                    .to_owned()
-            } else {
-                title
-            }
-        } else {
-            explicit_name.trim().to_owned()
-        };
-        if name.is_empty() {
+        let explicit_name = explicit_name.trim();
+        if explicit_name.is_empty()
+            && message.trim().is_empty()
+            && self.starter_attachments.is_empty()
+        {
             return;
         }
+        let name = if explicit_name.is_empty() {
+            launch_workspace::conversation_title(&message, self.starter_attachments.first_name())
+        } else {
+            explicit_name.to_owned()
+        };
         let checkout = self.checkout.read(cx).value();
         let scratch_root = self.scratch_root.clone();
         let branch = self.branch.read(cx).value();
-        let workspace_mode = self.launch_workspace.requested_mode();
+        let scratch = checkout.trim().is_empty();
+        let workspace_mode = if scratch {
+            WorkspaceMode::Current
+        } else {
+            self.launch_workspace.requested_mode()
+        };
         let selected_branch = self
             .launch_workspace
             .selected_branch(workspace_mode)
@@ -614,7 +613,12 @@ impl Desktop {
         let instance = self.instance.clone();
         let runtime = self.runtime.clone();
         let id = ThreadId(Uuid::new_v4().to_string());
-        self.launching = Some(id.clone());
+        self.launching = Some(LaunchProgress {
+            thread: id.clone(),
+            title: name.clone(),
+            stage: (workspace_mode == WorkspaceMode::Worktree)
+                .then_some(WorktreeStage::ResolveBase),
+        });
         self.launch_workspace.close_picker();
         self.suggestions = Default::default();
         self.focus.focus(window);
@@ -627,8 +631,8 @@ impl Desktop {
         let first_message = (!message.trim().is_empty() || !attachments.is_empty())
             .then(|| attachments.action(message.clone()));
         let launch_name = name.clone();
+        let (report_stage, mut stages) = tokio::sync::mpsc::unbounded_channel();
         let launch = cx.background_spawn(async move {
-            let scratch = checkout.trim().is_empty();
             let source = if scratch {
                 fs::create_dir_all(&scratch_root)?;
                 runtime.create_scratch(&scratch_root.join(&thread.0))?
@@ -638,15 +642,17 @@ impl Desktop {
             let (project, allocated) = launch_workspace::prepare(
                 &runtime,
                 source,
-                if scratch {
-                    WorkspaceMode::Current
-                } else {
-                    workspace_mode
-                },
+                workspace_mode,
                 selected_branch,
                 branch.trim(),
-                &thread,
+                &name,
+                |stage| {
+                    let _ = report_stage.send(stage);
+                },
             )?;
+            if allocated {
+                let _ = report_stage.send(Some(WorktreeStage::OpenConversation));
+            }
             if let Err(error) = runtime.dispatch(Command {
                 id: CommandId(Uuid::new_v4().to_string()),
                 thread_id: thread.clone(),
@@ -678,9 +684,17 @@ impl Desktop {
             anyhow::Ok(sent)
         });
         cx.spawn_in(window, async move |view, cx| {
+            while let Some(stage) = stages.recv().await {
+                let _ = view.update_in(cx, |v, _, cx| {
+                    if let Some(progress) = v.launching.as_mut().filter(|p| p.thread == id) {
+                        progress.stage = stage;
+                        cx.notify();
+                    }
+                });
+            }
             let result = launch.await;
             let _ = view.update_in(cx, |v, w, cx| {
-                let still_open = v.launching.as_ref() == Some(&id);
+                let still_open = v.launching.as_ref().is_some_and(|p| p.thread == id);
                 if still_open {
                     v.launching = None;
                 }
@@ -879,13 +893,8 @@ impl Desktop {
     }
 
     fn launch_form(&self, compact: bool, window: &Window, cx: &Context<Self>) -> AnyElement {
-        if self.launching.is_some() {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(label("Opening conversation…"))
-                .into_any_element();
+        if let Some(progress) = &self.launching {
+            return progress.render(cx).into_any_element();
         }
         let check = self
             .model_catalogs
