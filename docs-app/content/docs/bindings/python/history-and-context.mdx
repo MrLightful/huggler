@@ -1,0 +1,45 @@
+---
+title: Manage history and context in Python
+description: Page through a thread, import a transcript, or start a fork from a completed run.
+---
+
+## Page and search one thread
+
+Use `read(thread)` for the whole snapshot. Use `detail` to fetch bounded history and carry the returned `older` record across requests.
+
+```python
+page = runtime.detail(thread, query="build error", limit=40)["history"]
+older = page["older"]
+if older is not None:
+    previous = runtime.detail(thread, before=older, query="build error", limit=40)["history"]
+```
+
+Keep the query fixed while paging. Restart with the newest page if `HugglerError.code` is `history_changed`. Call `read_message(thread, message_id)` to expand a truncated preview.
+
+## Import an existing conversation
+
+Await `runtime.import_history(project_id, thread, name, instance, source)` with a new destination thread ID. For a file import, pass a record such as `{"Codex": "/path/to/transcript.jsonl"}`. The other file keys are `Claude` and `Pi`. For a session the configured ACP Registry instance can load, pass `{"AcpRegistry": native_session_id}`. Use `import_source(thread)` to retrieve the provenance later.
+
+## Fork at a completed turn
+
+Dispatch a `fork` action with a new destination thread ID. This example starts a portable fork on the built-in Codex instance.
+
+```python
+receipt = runtime.dispatch({
+    "id": command_id,
+    "thread_id": fork_thread,
+    "action": {
+        "type": "fork",
+        "source": source_thread,
+        "through": completed_run_id,
+        "name": "Investigate build failure",
+        "instance": "codex",
+        "mode": "portable",
+        "text": "Continue investigating the build failure.",
+    },
+})
+```
+
+Use `native` for a Codex fork on the original instance. Use `checkpoint` for a portable fork with a separate Git worktree. To prepare that worktree, commit the files you want to preserve and dispatch `capture_checkpoint` on an idle source thread with its latest completed run as `through` and a clean checkout.
+
+Read `fork_history` for the inherited prefix and origin. Send a completed branch result to its direct parent by dispatching `merge_back` on the parent with the fork thread as `source`, the completed fork run as `through`, and the message as `text`. Git changes can be merged separately by the host.

@@ -18,7 +18,7 @@ pub enum Driver {
     Linear,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Binding {
     pub id: RepositoryBindingId,
     pub project: ProjectId,
@@ -176,13 +176,13 @@ impl Huggler {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct LinkedItem {
     pub link: RepositoryLinkId,
     pub binding: RepositoryBindingId,
     pub item: String,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct Item {
     pub key: String,
     pub title: String,

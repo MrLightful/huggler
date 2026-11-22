@@ -1,6 +1,6 @@
 # Huggler engineering documentation
 
-The [documentation site](../docs-app/content/docs/index.mdx) covers how to use the Rust crate and TypeScript SDK. Build the Rust API reference from a checkout with `cargo doc --locked --all-features --no-deps`.
+The [documentation site](../docs-app/content/docs/index.mdx) covers how to use the Rust crate and the TypeScript and Python SDKs. Build the Rust API reference from a checkout with `cargo doc --locked --all-features --no-deps`.
 
 ## Maintainer references
 
@@ -11,6 +11,7 @@ The [documentation site](../docs-app/content/docs/index.mdx) covers how to use t
 | Reproduce the desktop coding workflow | [Planning through pull request](desktop-coding.md) |
 | Run regression checks or qualify a release | [Verification and release checks](verification.md) |
 | Build and verify TypeScript packages | [Local packaging and consumer checks](typescript-sdk.md#build-and-test-from-a-checkout) |
+| Build and verify Python wheels | [Local packaging and consumer checks](python-sdk.md#build-and-test-from-a-checkout) |
 
 ## Consumer and orchestration boundary
 

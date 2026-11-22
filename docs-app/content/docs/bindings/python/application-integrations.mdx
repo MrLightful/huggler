@@ -1,0 +1,33 @@
+---
+title: Integrate with the host application in Python
+description: Prepare Git workspaces, drive scheduled turns, and expose host services.
+---
+
+## Prepare a managed workspace
+
+Register a Git checkout with `open_project`. Call `allocate_workspace_on_branch` with the project ID, a revision that resolves to a commit, and a branch selector. Pass `{"exact": "review-branch"}` to supply a name or `{"from_title": "Review changes"}` to derive one. The returned project record contains the new checkout’s `id` and `root`.
+
+Await `setup_workspace(project_id, program, args)` if the checkout needs a setup command, then use that project ID for new threads. Call `inspect_orphaned_worktrees()` to show unused managed checkouts before offering cleanup. Huggler checks which can be removed safely when `cleanup_orphaned_worktrees()` runs.
+
+## Drive a scheduled turn
+
+Create a schedule on an existing thread. Use Unix seconds for the scheduled time and the current time.
+
+```python
+from time import time
+
+now = int(time())
+schedule_id = runtime.create_schedule(thread, {
+    "trigger": {"Once": {"at": now + 60}},
+    "destination": "Continue",
+    "prompt": "Summarize the completed work.",
+}, now)
+```
+
+Have the host timer call `tick_schedule(schedule_id, int(time()))` when the schedule comes due. An occurrence includes the `thread` and `run` for `wait` or subscription. After a restart, `schedules(thread)` gives the schedule definitions and next times. For webhook delivery, keep the signing key in the host and pass it with the exact request bytes and signature to `deliver_webhook`.
+
+## Connect a repository or service
+
+Use `bind_repository` and `repository_client` to connect a repository and supply the authorization header. To update a GitHub pull request, pass the original `PullRequest` snapshot to `update_github_pull_request` so Huggler can check whether its revision and eligible actions still match.
+
+Use `install_terminal_host()` for the native terminal or `set_service_host(kind, host)` to provide a preview, device, or HTML host. Call `open_service` for a thread, use the returned handle with `service_call`, and release it with `close_service`. [Application API and callback contracts](/bindings/python/api/#application-integrations)

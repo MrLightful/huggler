@@ -50,7 +50,7 @@ const host = await Huggler.open({
 | `stopThread({ commandId, threadId })` | Requests interruption and returns a receipt. |
 | `respondToPermission({ threadId, runId, requestId, option })` | Submits an offered option ID for a pending permission. |
 | `respondToQuestion({ threadId, runId, requestId, answers })` | Submits answers keyed by question ID. Each value is a string or an array of strings. |
-| `close()` | Shuts down the runtime and releases database ownership. Await it before reopening the database in Rust or Node.js. |
+| `close()` | Shuts down the runtime and releases database ownership. Await it before reopening the database in any host. |
 
 Use `threadId("…")` and `commandId("…")` for application-owned IDs. Save command IDs with their payloads so a retry can recover the original receipt. Pass IDs returned by the SDK directly to subsequent calls.
 

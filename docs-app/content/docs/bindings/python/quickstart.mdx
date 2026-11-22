@@ -1,0 +1,50 @@
+---
+title: Python quickstart
+description: Install a wheel, launch a conversation, and read its reply.
+---
+
+## Install the wheel
+
+Use CPython 3.11 or later. Download and extract the artifact for your platform from a successful workflow run. The wheels target Apple Silicon macOS 14+ and Linux x86-64 with glibc 2.36+. [Python bindings workflow](https://github.com/MrLightful/huggler/actions/workflows/python-bindings.yml)
+
+Create a virtual environment, then run the install command for your platform.
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+# Apple Silicon macOS
+python -m pip install ./huggler-0.0.1-cp311-abi3-macosx_14_0_arm64.whl
+# Linux x86-64
+python -m pip install ./huggler-0.0.1-cp311-abi3-manylinux_2_36_x86_64.whl
+```
+
+To build a wheel from a checkout, use the release builder and install the wheel it writes to `bindings/python/dist/`. [Build and test from a checkout](https://github.com/MrLightful/huggler/blob/master/docs/python-sdk.md#build-and-test-from-a-checkout)
+
+## Run one turn
+
+This example uses the built-in Codex instance. Run it in a Git checkout with the Codex CLI installed and signed in. Select a state directory that your process can write to.
+
+```python
+import asyncio
+from pathlib import Path
+from uuid import uuid4
+
+from huggler import Huggler
+
+
+async def main():
+    async with await Huggler.open(Path.home() / ".huggler-example") as runtime:
+        project = runtime.open_project(Path.cwd())
+        thread = str(uuid4())
+        runtime.launch(str(uuid4()), thread, project["id"], "Python example")
+        receipt = runtime.send(str(uuid4()), thread, "Summarize this repository in one paragraph.")
+        run = await runtime.wait(thread, receipt["run_id"])
+        if run["status"] != "completed":
+            raise RuntimeError(run["error"] or run["status"])
+        print(runtime.read(thread)["messages"][-1]["text"])
+
+
+asyncio.run(main())
+```
+
+Use a stable command ID and the same payload when retrying a command. Huggler returns the original receipt, including after reopening the state directory. For live output, call `subscribe(thread)` before sending. [Stream and resume events](/bindings/python/control-threads/#stream-and-resume-events)

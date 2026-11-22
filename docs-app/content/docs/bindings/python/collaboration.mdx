@@ -1,0 +1,24 @@
+---
+title: Coordinate agents in Python
+description: Enable scoped agent tools and observe peers, delegated tasks, and native child sessions.
+---
+
+## Enable agent tools
+
+Pass `config={"agent_tools": True}` to `Huggler.open`. Huggler starts a loopback MCP endpoint and gives supported providers a run-scoped connection. Check the `agent_tools` field from `await runtime.probe_provider(instance, checkout)` to see whether the provider can use it.
+
+Limit access with `agent_policy.allowed_tools`, using the built-in tool keys. Use `agent_policy.defer_tools` to enable discovery. The host can revoke a run’s access with `runtime.revoke_agent_tools(thread, run_id)`. [Agent tool catalog](/reference/agent-tools/)
+
+## Follow peers and delegated tasks
+
+An agent can create independent peers with `create_threads` and communicate with them through `thread_send`. The host can look up a receipt with `runtime.peer_receipt(sender_thread, key)` using the original delivery key.
+
+For owned work, the calling agent uses `delegate_task`. The host reads the thread snapshot’s `tasks` list and handles events with `change["type"] == "task"`. Display the stored child thread and task state so the user can follow progress or take action on pending requests. [Shared collaboration guide](/guides/collaboration/)
+
+## Follow provider-native children
+
+Use the snapshot’s `native_children` and changes with type `native_child` to follow a provider-native child. A provider can keep a child active after its owning application run finishes.
+
+Await `runtime.interrupt_native_child(thread, run_id, child_id, turn_id)` to interrupt it. Use the owning application run and the native child identity. Codex also requires the child’s native turn ID.
+
+For collaboration across runtimes, use the peer and guest host APIs. [Connect hosts and invite guests](/bindings/python/connect-hosts/)

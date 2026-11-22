@@ -1,0 +1,32 @@
+---
+title: Connect hosts and invite guests in Python
+description: Serve the native peer and guest routes with ASGI and grant access to a thread.
+---
+
+## Serve the routes
+
+Pass the app to your ASGI server. The routes are `POST /v1/peer` and `POST /v1/guest`. Keep the runtime open for the lifetime of the server. Bind on loopback or provide an authenticated TLS transport.
+
+```python
+from huggler import asgi_app
+
+app = asgi_app(runtime.remote_router())
+```
+
+## Grant peer access
+
+Give each host its own state database. Get the sender’s address with `sender_runtime.address(sender_thread)`. On the target runtime, use `runtime.approve_link(target_thread, sender_address, "read")`. Transfer the returned `address` and `bearer` privately to the approved host.
+
+```python
+from huggler import Peer
+
+peer = Peer.loopback("127.0.0.1:8765", bearer)
+reply = await peer.request({"method": "read", "target": address, "before": None})
+history = reply["history"]
+```
+
+Use `history["older"]` as the next `before` cursor. For an `operate` grant, call `delegate_remote` on the sender’s runtime and poll `follow_remote` to retrieve the result. Use `revoke_link(grant_id)` on the target runtime to withdraw access.
+
+## Moderate guest submissions
+
+Call `invite_guest(thread)` to issue an invitation. A guest client redeems the bearer through `/v1/guest` and uses its session bearer to submit text. Read pending submissions with `guest_inbox(thread)`. Call `moderate_guest(thread, submission_id, accept)` with the user’s decision. Acceptance returns the resulting run ID. Call `close_share(share_id)` to end the share. [Peer and guest request contract](/bindings/rust/connect-hosts/)

@@ -41,11 +41,12 @@ pub enum Reply {
         id: SubmissionId,
     },
 }
+#[derive(Serialize)]
 pub struct Invitation {
     pub id: ShareId,
     pub bearer: String,
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Submission {
     pub id: SubmissionId,
     pub name: String,

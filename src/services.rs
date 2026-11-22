@@ -1,6 +1,7 @@
 //! Thread-owned resources provided by an embedding host. These are trusted host APIs.
 //! Adapters apply their URL, HTML, device and MCP server policies before external I/O.
 use crate::*;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -11,7 +12,8 @@ pub mod mcp_app;
 #[cfg(unix)]
 pub mod terminal;
 
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Kind {
     Terminal,
     Preview,
@@ -20,7 +22,8 @@ pub enum Kind {
     McpApp,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Open {
     Terminal {
         executable: PathBuf,
@@ -50,7 +53,8 @@ impl Open {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     /// None starts at the oldest retained byte, including after an expired cursor.
     Output {
