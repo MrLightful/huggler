@@ -11,6 +11,16 @@ import tempfile
 from desktop_check import ROOT, isolated_env, launch_thread, run_window
 
 
+def check_storage(executable, state, env):
+    run_window(executable, state, [
+        {"key": "cmd-,"}, {"click": "Storage"},
+        {"see": "automatic-cleanup/Off"}, {"click": "Clean up worktrees now"},
+        {"see": "No unused worktrees found."}, {"click": "automatic-cleanup/On"},
+        {"click": "Back to Settings"}, {"see": "Providers"}, {"click": "Done"},
+    ], env)
+    assert json.loads((state / "preferences.json").read_text())["automaticWorktreeCleanup"] is True
+
+
 def check_provider_setup(executable, root, env):
     state = root / "provider-setup"
     codex = root / "test-codex"
@@ -197,7 +207,9 @@ exec "$MODEL_FIXTURE" "$@"
         {"above": ["model-enabled/fixture-fast", "model-enabled/fixture-deep"]},
         {"absent": "environment-variable/FIXTURE_PROVIDER_VARIABLE"}, {"click": "Done"},
     ], env)
-    assert json.loads((state / "preferences.json").read_text()) == {"appearance": "system", "codexExecutable": None}
+    assert json.loads((state / "preferences.json").read_text()) == {
+        "appearance": "system", "codexExecutable": None, "automaticWorktreeCleanup": False,
+    }
 
 
 def check(executable):
@@ -209,6 +221,7 @@ def check(executable):
         with (checkout / ".git/info/exclude").open("a") as exclude:
             exclude.write("\n/frames.ndjson\n")
         env = dict(isolated_env(root), HUGGLER_CLAUDE_ACP=str(root / "missing-claude-agent"))
+        check_storage(executable, root / "storage", env)
         check_provider_setup(executable, root, env)
         fixture = ROOT / "tests/fixtures/context-provider.py"
         check_model_refresh(executable, root, fixture, env)
@@ -232,7 +245,9 @@ def check(executable):
             {"click": "model/Provider default"}, {"click": "provider/Claude Agent"}, {"click": "model-option/Provider default"},
             {"click": "Open conversation"}, {"see": "status/Ready"},
         ], env)
-        saved = {"appearance": "dark", "codexExecutable": str(fixture)}
+        saved = {
+            "appearance": "dark", "codexExecutable": str(fixture), "automaticWorktreeCleanup": False,
+        }
         assert json.loads(prefs.read_text()) == saved
         prefs.write_text(json.dumps(dict(saved, provider="claudeAgent")))
         # Hold checkout discovery until Settings saves a new appearance. This
@@ -265,8 +280,8 @@ exec /usr/bin/git "$@"
             {"click": "Settings"}, {"click": "Appearance"}, {"click": "Light"}, {"see": "thread/Background"}, {"click": "Done"},
             {"click": "Message"}, {"type": "Review my draft"},
             {"click": "Settings"}, {"click": "Done"},
-            {"see": "Working tree clean"}, {"click": "Hide changes"},
-            {"absent": "Refresh changes"}, {"click": "Send"},
+            {"see": "All changes"},
+            {"click": "Hide changes"}, {"absent": "Changes tab"}, {"click": "Send"},
             {"see": "Codex/reply Review my draft"},
         ], dict(env, PATH=f"{root}:{env['PATH']}"))
         with sqlite3.connect(state / "huggler.sqlite3") as db:
@@ -291,7 +306,7 @@ exec /usr/bin/git "$@"
             {"see": "provider/codex"}, {"click": "Done"}, {"see": "Message"},
         ], env)
         assert json.loads(prefs.read_text()) == {
-            "appearance": "system", "codexExecutable": None,
+            "appearance": "system", "codexExecutable": None, "automaticWorktreeCleanup": False,
         }
         claude_env = {key: value for key, value in env.items() if key != "HUGGLER_CLAUDE_ACP"}
         claude = root / "claude"

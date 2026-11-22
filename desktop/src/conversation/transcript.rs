@@ -780,9 +780,8 @@ impl Desktop {
         } else {
             format!("command/{run}/{index}")
         };
-        let label = format!("Command {index} output");
         let title = if item.title.is_empty() {
-            label.clone()
+            format!("Command {index} output")
         } else {
             item.title.split_whitespace().collect::<Vec<_>>().join(" ")
         };
@@ -813,7 +812,11 @@ impl Desktop {
                                     .font_family(cx.theme().mono_font_family.clone())
                                     .child(title)
                             )
-                            .tooltip(label)
+                            .tooltip(if log.is_some() {
+                                "Hide output"
+                            } else {
+                                "Show output"
+                            })
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.toggle_command(
                                     thread.clone(),
@@ -894,7 +897,7 @@ fn copy_button(group: &str) -> Button {
         .small()
         .compact()
         .icon(IconName::Copy)
-        .tooltip("Copy message")
+        .tooltip("Copy")
 }
 
 fn message_footer(
@@ -915,7 +918,7 @@ fn message_footer(
     let time = control!(format!("message-time/{time}"), div().child(time))
         .id(SharedString::from(format!("time-{group}")))
         .when_some(local, |time, date| {
-            let date = date.format("%a, %b. %-d, %Y at %H:%M").to_string();
+            let date = date.format("%b %-d, %Y · %H:%M").to_string();
             time.tooltip(move |window, cx| Tooltip::new(date.clone()).build(window, cx))
         });
     let duration = duration_ms.map_or_else(

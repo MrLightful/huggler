@@ -122,15 +122,17 @@ def main():
                 (first,), ("Review my changes\nInclude the tests.",),
             ]
         run_window(executable, starter_state, [
-            {"resize": [640, 440]}, {"click": "Show conversations"}, {"click": "Settle/" + first},
+            {"resize": [640, 440]}, {"click": "Show conversations"},
+            {"hover": "thread/" + first}, {"click": "Settle/" + first},
             {"in_lower_half": "section/Settled/1"}, {"absent": "thread/" + first},
-            {"click": "Settle/Review my changes"}, {"absent": "section/Ready/1"},
-            {"in_lower_half": "section/Settled/2"}, {"click": "Unsettle/Review my changes"},
+            {"hover": "thread/Review my changes"}, {"click": "Settle/Review my changes"},
+            {"absent": "section/Ready/1"}, {"in_lower_half": "section/Settled/2"},
+            {"hover": "thread/Review my changes"}, {"click": "Unsettle/Review my changes"},
         ], env)
         run_window(executable, starter_state, [
             {"click": "Show conversations"}, {"click": "section/Settled/1"}, {"click": "thread/" + first},
-            {"see": "Codex/reply " + first}, {"click": "Unsettle/" + first},
-            {"see": "Ready/" + first + "/Completed"}, {"click": "Settle/" + first},
+            {"see": "Codex/reply " + first}, {"hover": "thread/" + first}, {"click": "Unsettle/" + first},
+            {"see": "Ready/" + first + "/Completed"}, {"hover": "thread/" + first}, {"click": "Settle/" + first},
             {"see": "Settled/" + first + "/Settled"}, *send_message("Continue"),
             {"see": "Codex/reply Continue"}, {"see": "Ready/" + first + "/Completed"},
             {"absent": "section/Settled/1"},
@@ -215,8 +217,8 @@ def main():
             {"click": "Suggested reply"}, {"click": "Send"}, {"see": "You/Explain the result."},
             {"see": "Suggested reply"}, {"click": "Message"}, {"type": "My own question"},
             {"click": "Suggested reply"}, {"key": "tab"}, {"resize": [640, 440]},
-            {"click": "Show changes"}, {"see": "Resize changes"}, {"key": "cmd-l"},
-            {"absent": "Refresh changes"}, {"key": "cmd-right"},
+            {"click": "Show changes"}, {"see": "Changes tab"}, {"see": "Resize changes"}, {"key": "cmd-l"},
+            {"absent": "Changes tab"}, {"key": "cmd-right"},
             {"type": " about the tests"}, {"click": "Send"}, {"see": "You/My own question about the tests"},
         ], env)
     print("Native turn navigation, history paging, full message and suggested replies passed")

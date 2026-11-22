@@ -19,6 +19,7 @@ pub enum Step {
     CenterX(String, i16),
     NextFileSelection(Vec<std::path::PathBuf>),
     NextSavePath(std::path::PathBuf),
+    NextPromptAnswer(usize),
     FileSize(std::path::PathBuf, u64),
     Resize([u16; 2]),
     Type(String),
@@ -67,6 +68,14 @@ pub fn take_save_path(cx: &mut App) -> Option<std::path::PathBuf> {
     cx.default_global::<SavePath>().0.take()
 }
 
+#[derive(Default)]
+struct PromptAnswer(Option<usize>);
+impl Global for PromptAnswer {}
+
+pub fn take_prompt_answer(cx: &mut App) -> Option<usize> {
+    cx.default_global::<PromptAnswer>().0.take()
+}
+
 pub fn begin_frame(cx: &mut App) {
     cx.default_global::<Controls>().0.clear();
 }
@@ -95,6 +104,10 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
         }
         Step::NextSavePath(path) => {
             cx.default_global::<SavePath>().0 = Some(path.clone());
+            true
+        }
+        Step::NextPromptAnswer(answer) => {
+            cx.default_global::<PromptAnswer>().0 = Some(*answer);
             true
         }
         Step::FileSize(path, size) => fs::metadata(path).is_ok_and(|file| file.len() == *size),

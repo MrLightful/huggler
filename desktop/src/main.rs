@@ -14,6 +14,8 @@ mod assets;
 mod changes;
 mod fonts;
 mod git;
+mod github;
+mod open_in;
 mod paths;
 mod questions;
 mod settings;
@@ -96,6 +98,31 @@ fn main() -> Result<()> {
     prefs.apply_runtime_overrides(&mut options)?;
     let executor = tokio::runtime::Runtime::new()?;
     let runtime = Arc::new(executor.block_on(Huggler::open(options))?);
+    let cleanup_runtime = runtime.clone();
+    let cleanup_state = paths.state_dir();
+    executor.spawn(async move {
+        loop {
+            match settings::Preferences::load(&cleanup_state) {
+                Ok(prefs) if prefs.automatic_worktree_cleanup => {
+                    let runtime = cleanup_runtime.clone();
+                    match tokio::task::spawn_blocking(move || runtime.cleanup_orphaned_worktrees())
+                        .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            eprintln!("Could not clean up worktrees: {error}");
+                        }
+                        Err(error) => {
+                            eprintln!("Worktree cleanup task failed: {error}");
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("Could not read cleanup preference: {error}"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
+        }
+    });
 
     #[cfg(unix)]
     runtime.set_service_host(
@@ -107,6 +134,7 @@ fn main() -> Result<()> {
     app.run(move |cx| {
         gpui_component::init(cx);
         fonts::init(cx);
+        ui::init_theme(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),

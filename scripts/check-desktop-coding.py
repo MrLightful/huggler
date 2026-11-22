@@ -2,6 +2,7 @@
 """Drive a complete local coding cycle in the native macOS qualification window."""
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,8 @@ def check(binary):
         checkout = root / "checkout"
         state = root / "state"
         name = "answer [v1].txt"
-        subprocess.run(["git", "init", "-q", checkout], check=True)
+        committed_name = "branch-only.txt"
+        subprocess.run(["git", "init", "-q", "-b", "main", checkout], check=True)
 
         def git(*args):
             return subprocess.check_output(["git", "-C", checkout, *args], text=True).strip()
@@ -24,6 +26,18 @@ def check(binary):
         git("config", "user.email", "fixture@example.test")
         git("config", "commit.gpgsign", "false")
         git("config", "core.hooksPath", os.devnull)
+        (checkout / "base-only.txt").touch()
+        (checkout / "base-only-link.txt").symlink_to("base-only.txt")
+        git("add", "base-only.txt", "base-only-link.txt")
+        git("commit", "-qm", "Default branch")
+        default_commit = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/main", default_commit)
+        git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git("switch", "-qc", "topic")
+        git("rm", "-q", "base-only.txt", "base-only-link.txt")
+        git("commit", "-qm", "Topic branch")
+        topic_commit = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/topic", topic_commit)
         env = isolated_env(root)
         # A host launched from another repository must still run the provider
         # against each conversation's selected worktree.
@@ -31,18 +45,20 @@ def check(binary):
         env.update(GIT_DIR=str(root / ".git"), GIT_WORK_TREE=str(root),
                    GIT_COMMON_DIR=str(root / ".git"), GIT_INDEX_FILE=str(root / ".git/index"))
         env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
+        env["HUGGLER_PROMPT_SUGGESTIONS"] = "1"
         run_window(binary, state, [
             {"see": "First message"}, {"right_of": ["Send first message", "Attach files"]}, {"absent": "Conversation options"},
-            *launch_thread(checkout, "Implementation"), {"click": "Show conversations"},
+            *launch_thread(checkout, "Implementation", current=True), {"click": "Show conversations"},
             {"see": "Ready/Implementation/New conversation"},
             {"resize": [1120, 740]},
-            {"center_x": ["Resize conversations", 256]}, {"center_x": ["Resize changes", 820]},
-            {"drag_x": ["Resize conversations", 40]}, {"center_x": ["Resize conversations", 296]},
-            {"drag_x": ["Resize changes", 40]}, {"center_x": ["Resize changes", 860]},
-            {"click": "Hide changes"}, {"absent": "Refresh changes"},
-            {"drag_x": ["Resize conversations", 200]}, {"center_x": ["Resize conversations", 496]},
-            {"drag_x": ["Resize conversations", -200]}, {"center_x": ["Resize conversations", 296]},
-            {"click": "Show changes"}, {"center_x": ["Resize changes", 860]},
+            {"center_x": ["Resize conversations", 288]}, {"center_x": ["Resize changes", 784]},
+            {"drag_x": ["Resize conversations", 40]}, {"center_x": ["Resize conversations", 328]},
+            {"drag_x": ["Resize changes", 40]}, {"center_x": ["Resize changes", 824]},
+            {"see": "Changes tab"}, {"absent": "Refresh changes"},
+            {"click": "Hide changes"}, {"absent": "Changes tab"},
+            {"drag_x": ["Resize conversations", 200]}, {"center_x": ["Resize conversations", 528]},
+            {"drag_x": ["Resize conversations", -200]}, {"center_x": ["Resize conversations", 328]},
+            {"click": "Show changes"}, {"see": "Changes tab"}, {"center_x": ["Resize changes", 824]},
             {"click": "section/Ready/1"}, {"absent": "thread/Implementation"},
             {"click": "section/Ready/1"}, {"see": "thread/Implementation"},
             {"right_of": ["Send", "Attach files"]}, {"absent": "Send plan"}, {"right_of": ["Create PR", "Open in"]},
@@ -63,12 +79,13 @@ def check(binary):
             {"click": "Hide changes"}, {"absent": f"Changed/{name}"},
             {"click": "Show conversations"}, {"see": "thread/Implementation"},
             {"click": "Show changes"},
-            {"center_x": ["Resize conversations", 296]}, {"center_x": ["Resize changes", 860]},
+            {"center_x": ["Resize conversations", 328]}, {"center_x": ["Resize changes", 824]},
             {"right_of": [f"Changed/{name}", "Message"]}, {"absent": "Publish"}, {"absent": "Checks"},
             *send_message("Use a single line."), {"see": "Codex/Corrected the answer."},
         ], env)
         assert (checkout / name).read_text() == "42\n"
-        git("add", "--", name)
+        (checkout / committed_name).write_text("committed on topic\n")
+        git("add", "--", name, committed_name)
         git("commit", "-qm", "Produce the expected answer")
         (checkout / name).write_text("staged change\n")
         git("add", "--", name)
@@ -80,10 +97,13 @@ def check(binary):
             {"right_of": ["Create PR", "Open in"]},
             {"right_of": ["Show changes", "Create PR"]},
             {"absent": f"Changed/{name}"}, {"click": "Show changes"}, {"see": f"Changed/{name}"},
+            {"click": f"Open in/{name}"}, {"see": f"Open Finder/{name}"},
+            {"see": f"Open Terminal/{name}"}, {"see": f"Open VS Code/{name}"},
+            {"key": "escape"}, {"absent": f"Open Finder/{name}"},
             {"click": "Hide changes"}, {"resize": [1120, 740]}, {"click": "Show changes"},
             {"click": "Message"}, {"type": "Wait for my next instruction."},
             {"click": "Create"}, *launch_thread(other, "Review"),
-            {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
+            {"see": "No changes"}, {"absent": f"Changed/{name}"},
             {"click": "thread/Implementation"}, {"see": f"Changed/{name}"}, {"click": "Send"},
             {"see": "status/Running"}, {"click": "Message"}, {"type": "Review the staged result."},
             {"see": "Stop thread"}, {"absent": "Queue message"}, {"key": "enter"}, {"see": "1 queued message"},
@@ -96,12 +116,158 @@ def check(binary):
         ], env)
         assert git("show", f":{name}") == "staged change"
         assert (checkout / name).read_text() == "later edit\n"
+        other_name = "draft.txt"
+        (checkout / other_name).write_text("keep this\n")
         run_window(binary, state, [
             {"click": "Show conversations"}, {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
-            {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review"),
+            {"click": "Create"}, {"next_file_selection": [str(checkout)]}, {"click": "Choose project"},
+            {"see": "From main (remote)"}, {"click": "First message"}, {"type": "Start from default @base-only"},
+            {"see": "suggestion/base-only.txt"}, {"absent": "suggestion/base-only-link.txt"}, {"key": "enter"},
+            {"click": "Send first message"}, {"see": "Codex/Started from the default branch."},
+            {"click": "Create"}, *launch_thread(checkout, "Isolated review", branch="feature/review", base="origin/topic"),
+            {"see": "Changed/base-only.txt"},
+            {"click": "All changes"}, {"see": "Change filter/Uncommitted files"},
+            {"key": "down"}, {"key": "down"}, {"key": "enter"},
             {"see": "Working tree clean"}, {"absent": f"Changed/{name}"},
-            {"click": "thread/Implementation"}, {"click": "Refresh changes"}, {"see": f"Changed/{name}"},
+            {"click": "thread/Implementation"}, {"see": f"Changed/{name}"},
+            {"resize": [1120, 740]}, {"see": "All changes"}, {"see": f"Changed/{other_name}"},
+            {"see": f"Changed/{committed_name}"}, {"hover": f"Changed/{committed_name}"},
+            {"absent": f"Revert/{committed_name}"},
+            {"click": f"Open in/{committed_name}"}, {"see": f"Open VS Code/{committed_name}"},
+            {"absent": f"Open VS Code/{name}"}, {"key": "escape"},
+            {"click": f"Open in/{name}"}, {"see": f"Open VS Code/{name}"},
+            {"absent": f"Open VS Code/{committed_name}"}, {"key": "escape"},
+            {"absent": f"Diff/{name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"see": "Uncommitted files"}, {"see": f"Changed/{name}"},
+            {"absent": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+            {"click": "Uncommitted files"}, {"click": "Change filter/All changes"},
+            {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{name}"},
+            {"hover": f"Changed/{name}"}, {"click": f"Revert/{name}"},
+            {"see": "Confirm file revert"}, {"key": "escape"},
+            {"absent": "Confirm file revert"},
+            {"file_size": [str(checkout / name), len("later edit\n")]},
+            {"hover": f"Changed/{name}"}, {"click": f"Revert/{name}"},
+            {"click": "Confirm file revert"}, {"see": f"Changed/{name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"absent": f"Changed/{name}"}, {"see": f"Changed/{other_name}"},
+            {"file_size": [str(checkout / other_name), len("keep this\n")]},
+            {"hover": f"Changed/{other_name}"}, {"click": f"Revert/{other_name}"},
+            {"click": "Confirm file revert"}, {"see": "Working tree clean"},
         ], env)
+        assert git("status", "--short") == ""
+        assert (checkout / name).read_text() == "42\n"
+        assert not (checkout / other_name).exists()
+
+        (checkout / other_name).write_text("first edit\n")
+        run_window(binary, state, [
+            {"see": "All changes"}, {"see": f"Changed/{committed_name}"},
+            {"hover": f"Changed/{committed_name}"}, {"click": f"Approve/{committed_name}"},
+            {"see": f"Changed/{other_name}"}, {"absent": f"Changed/{committed_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"see": f"Changed/{other_name}"},
+            {"hover": f"Changed/{other_name}"}, {"click": f"Approve/{other_name}"},
+            {"see": "No changes to review"},
+            {"click": "Uncommitted files"}, {"click": "Change filter/All changes"},
+            {"see": f"Changed/{name}"}, {"absent": f"Changed/{other_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Approved"},
+            {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+            {"click": f"Open in/{other_name}"}, {"see": f"Open Finder/{other_name}"},
+            {"key": "escape"}, {"absent": f"Open Finder/{other_name}"},
+        ], env)
+        assert git("status", "--short") == f"?? {other_name}"
+        assert (checkout / other_name).read_text() == "first edit\n"
+        (checkout / other_name).write_text("later edit\n")
+        run_window(binary, state, [
+            {"see": f"Changed/{other_name}"}, {"absent": f"Changed/{committed_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Approved"},
+            {"see": f"Changed/{committed_name}"}, {"absent": f"Changed/{other_name}"},
+            {"hover": f"Changed/{committed_name}"}, {"click": f"Undo approval/{committed_name}"},
+            {"see": "No approved files"},
+            {"click": "Approved"}, {"click": "Change filter/All changes"},
+            {"see": f"Changed/{committed_name}"}, {"see": f"Changed/{other_name}"},
+        ], env)
+        assert git("status", "--short") == f"?? {other_name}"
+
+        (checkout / name).write_text("bulk staged edit\n")
+        git("add", "--", name)
+        (checkout / name).write_text("bulk working edit\n")
+        protected = "approved-only.txt"
+        (checkout / protected).write_text("keep this approved file\n")
+        run_window(binary, state, [
+            {"see": "All changes"}, {"see": f"Changed/{committed_name}"},
+            {"click": "All changes"}, {"click": "Change filter/Uncommitted files"},
+            {"see": "Uncommitted files"}, {"absent": f"Changed/{committed_name}"},
+            {"see": f"Changed/{name}"}, {"see": f"Changed/{other_name}"},
+            {"click": "File actions"}, {"click": "Approve all"},
+            {"see": "No changes to review"},
+            {"click": "Uncommitted files"}, {"click": "Change filter/Approved"},
+            {"see": "Approved"}, {"see": f"Changed/{name}"}, {"see": f"Changed/{other_name}"},
+            {"see": f"Changed/{protected}"}, {"absent": f"Changed/{committed_name}"},
+            {"click": "File actions"}, {"click": "Undo all approvals"},
+            {"see": "No approved files"},
+            {"click": "Approved"}, {"click": "Change filter/Uncommitted files"},
+            {"see": "Uncommitted files"}, {"hover": f"Changed/{protected}"},
+            {"click": f"Approve/{protected}"}, {"absent": f"Changed/{protected}"},
+            {"click": "File actions"}, {"click": "Revert all"},
+            {"see": "Confirm revert all"}, {"click": "Cancel file revert"},
+            {"absent": "Confirm revert all"},
+            {"file_size": [str(checkout / name), len("bulk working edit\n")]},
+            {"file_size": [str(checkout / other_name), len("later edit\n")]},
+            {"click": "File actions"}, {"click": "Revert all"},
+            {"click": "Confirm revert all"}, {"see": "No changes to review"},
+        ], env)
+        assert git("status", "--short") == f"?? {protected}"
+        assert git("show", f":{name}") == "42"
+        assert (checkout / name).read_text() == "42\n"
+        assert not (checkout / other_name).exists()
+        assert (checkout / protected).read_text() == "keep this approved file\n"
+
+        (checkout / name).write_text("staged change\n")
+        git("add", "--", name)
+        (checkout / name).write_text("later edit\n")
+        with sqlite3.connect(state / "huggler.sqlite3") as db:
+            roots = dict(db.execute("SELECT t.name,p.root FROM thread t JOIN project p ON t.project=p.id"))
+        assert Path(roots["Implementation"]) == checkout.resolve()
+        for thread, expected_commit in [("Start from default [base-only.txt](base-only.txt)", default_commit),
+                                        ("Isolated review", topic_commit)]:
+            worktree = Path(roots[thread])
+            assert worktree != checkout.resolve() and worktree.joinpath(".git").is_file()
+            assert subprocess.check_output(["git", "-C", worktree, "rev-parse", "HEAD"], text=True).strip() == expected_commit
+        assert git("branch", "--show-current") == "topic"
+        assert git("rev-parse", "feature/review") == topic_commit
+        git("branch", "checkout-review")
+        conflicting = root / "conflicting"
+        git("worktree", "add", "-qb", "ignored-file-conflict", str(conflicting))
+        (conflicting / "base-only.txt").write_text("tracked on the target branch\n")
+        git("-C", str(conflicting), "add", "base-only.txt")
+        git("-C", str(conflicting), "commit", "-qm", "Track the local filename")
+        git("worktree", "remove", str(conflicting))
+        (checkout / ".git/info/exclude").write_text("base-only.txt\n")
+        private_file = checkout / "base-only.txt"
+        private_file.write_text("keep this local file\n")
+        run_window(binary, state, [
+            {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
+            {"click": "Conversation name"}, {"type": "Current branch review"},
+            {"see": "From main (remote)"}, {"click": "Choose workspace"}, {"click": "Current checkout"},
+            {"click": "Choose checkout branch"}, {"see": "branch/checkout-review"},
+            {"type": "checkout-review"}, {"key": "down"}, {"key": "enter"},
+            {"see": "Switch to checkout-review"}, {"click": "Open conversation"}, {"see": "status/Ready"},
+            {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Conflicting branch"},
+            {"see": "From main (remote)"}, {"click": "Choose workspace"}, {"click": "Current checkout"},
+            {"click": "Choose checkout branch"}, {"see": "branch/checkout-review"},
+            {"type": "ignored-file-conflict"}, {"click": "branch/ignored-file-conflict"},
+            {"see": "Switch to ignored-file-conflict"}, {"click": "Open conversation"},
+            {"contains": "untracked working tree files would be overwritten"},
+        ], env)
+        with sqlite3.connect(state / "huggler.sqlite3") as db:
+            roots = dict(db.execute("SELECT t.name,p.root FROM thread t JOIN project p ON t.project=p.id"))
+        assert Path(roots["Current branch review"]) == checkout.resolve()
+        assert "Conflicting branch" not in roots
+        assert git("branch", "--show-current") == "checkout-review"
+        assert private_file.read_text() == "keep this local file\n"
+        assert git("show", f":{name}") == "staged change"
+        assert (checkout / name).read_text() == "later edit\n"
     print("Native conversation, queue and sidebar file list passed with a scripted Codex peer")
 
 

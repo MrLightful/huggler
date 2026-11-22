@@ -214,7 +214,7 @@ impl Desktop {
             .small()
             .ghost()
             .dropdown_caret(true)
-            .tooltip("Provider and model")
+            .tooltip("Provider & model")
             .child(div().max_w(px(240.)).truncate().child(format!(
                 "{provider} · {}",
                 model.as_deref().unwrap_or("Default")
