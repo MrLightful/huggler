@@ -38,6 +38,8 @@ pub struct HugglerOptions {
     pub auto_resume_usage_limits: bool,
     /// Ask Codex for an optional follow-up after eligible independent conversations.
     pub prompt_suggestions: bool,
+    /// Explicit provider instances. Entries using a built-in ID replace that built-in's
+    /// configuration and must use the same driver. IDs in this list must be unique.
     pub instances: Vec<crate::providers::registry::ProviderInstance>,
     pub codex: CodexOptions,
     pub claude_agent: ClaudeAgentOptions,

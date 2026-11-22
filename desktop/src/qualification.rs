@@ -20,14 +20,17 @@ pub enum Step {
     NextFileSelection(Vec<std::path::PathBuf>),
     NextSavePath(std::path::PathBuf),
     NextPromptAnswer(usize),
+    OpenedUrl(String),
     FileSize(std::path::PathBuf, u64),
     Resize([u16; 2]),
     Type(String),
     Key(String),
     See(String),
     RightOf([String; 2]),
+    Above([String; 2]),
     InLowerHalf(String),
     InUpperHalf(String),
+    MinHeight(String, u16),
     MaxHeight(String, u16),
     Contains(String),
     Absent(String),
@@ -75,6 +78,18 @@ pub fn take_prompt_answer(cx: &mut App) -> Option<usize> {
     cx.default_global::<PromptAnswer>().0.take()
 }
 
+#[derive(Default)]
+struct OpenedUrl(Option<String>);
+impl Global for OpenedUrl {}
+
+pub fn record_open_url(url: &str, cx: &mut App) -> bool {
+    if std::env::var_os("HUGGLER_UI_SCRIPT").is_none() {
+        return false;
+    }
+    cx.default_global::<OpenedUrl>().0 = Some(url.to_owned());
+    true
+}
+
 pub fn begin_frame(cx: &mut App) {
     cx.default_global::<Controls>().0.clear();
 }
@@ -109,6 +124,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             cx.default_global::<PromptAnswer>().0 = Some(*answer);
             true
         }
+        Step::OpenedUrl(url) => cx.default_global::<OpenedUrl>().0.as_ref() == Some(url),
         Step::FileSize(path, size) => fs::metadata(path).is_ok_and(|file| file.len() == *size),
         Step::Resize([width, height]) => {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
@@ -180,6 +196,9 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
         Step::InUpperHalf(key) => controls.get(key.as_str()).is_some_and(|bounds| {
             bounds.top() >= px(0.) && bounds.bottom() <= window.viewport_size().height / 2.
         }),
+        Step::MinHeight(key, height) => controls
+            .get(key.as_str())
+            .is_some_and(|bounds| bounds.size.height >= px(f32::from(*height))),
         Step::MaxHeight(key, height) => controls.get(key.as_str()).is_some_and(|bounds| {
             bounds.size.height > px(0.) && bounds.size.height <= px(f32::from(*height))
         }),
@@ -187,6 +206,10 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             .get(item.as_str())
             .zip(controls.get(reference.as_str()))
             .is_some_and(|(item, reference)| item.left() >= reference.right()),
+        Step::Above([item, reference]) => controls
+            .get(item.as_str())
+            .zip(controls.get(reference.as_str()))
+            .is_some_and(|(item, reference)| item.bottom() <= reference.top()),
         Step::Contains(text) => controls.keys().any(|key| key.contains(text.as_str())),
         Step::SeeAny(keys) => keys.iter().any(|key| controls.contains_key(key.as_str())),
         Step::Absent(key) => !controls.contains_key(key.as_str()),

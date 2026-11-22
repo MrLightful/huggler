@@ -26,7 +26,7 @@ impl PrAction {
 
     fn tooltip(self) -> &'static str {
         match self {
-            Self::Create => "Open PR form",
+            Self::Create => "Push committed changes and create a pull request",
             Self::Resolve => "Ask this conversation to resolve merge conflicts",
             Self::Fix => "Ask this conversation to fix failed checks or address requested changes",
             Self::Update(PullRequestUpdate::Merge(_)) => "Review and merge the pull request",
@@ -79,20 +79,20 @@ impl Desktop {
             .gap_2()
             .flex_shrink_0()
             .child(control!("Open in", launcher))
-            .child(self.pull_request_control(cx))
+            .children(self.pull_request_control(cx))
     }
 
-    fn pull_request_control(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn pull_request_control(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let thread = self.current.as_ref().unwrap();
         let busy = self.pull_request_action.contains(&thread.id);
-        let action = self
-            .pull_request
-            .as_ref()
-            .map_or(PrAction::Create, Status::action);
+        let action = match &self.pull_request {
+            Some(status) => status.action()?,
+            None => PrAction::Create,
+        };
         let tooltip = match &self.pull_request {
             _ if busy => "Updating pull request…".into(),
             None => "Checking pull request status…".into(),
-            Some(Status::Unavailable(reason)) => format!("Create PR on GitHub. {reason}"),
+            Some(Status::Unavailable(reason)) => format!("GitHub status is unavailable. {reason}"),
             _ => action.tooltip().into(),
         };
         let label = if busy {
@@ -133,7 +133,7 @@ impl Desktop {
                 }))
                 .into_any_element()
         };
-        control!(label, button)
+        Some(control!(label, button))
     }
 
     pub(super) fn watch_pull_request(&mut self, cx: &mut Context<Self>) {
@@ -148,7 +148,7 @@ impl Desktop {
                 let status = executor
                     .spawn(async move { read.status().await })
                     .await
-                    .unwrap_or_else(|err| Status::Unavailable(err.to_string()));
+                    .unwrap_or(Status::Hidden);
                 let still_selected = view.update(cx, |view, cx| {
                     if view.current.as_ref().is_none_or(|thread| thread.id != id) {
                         return false;
@@ -183,7 +183,7 @@ impl Desktop {
         let Some(status) = &self.pull_request else {
             return;
         };
-        if self.pull_request_action.contains(&thread.id) || status.action() != action {
+        if self.pull_request_action.contains(&thread.id) || status.action() != Some(action) {
             return;
         }
         match (status, action) {
@@ -194,7 +194,7 @@ impl Desktop {
                 cx.notify();
                 let job = self
                     .executor
-                    .spawn(async move { checkout.create_url().await });
+                    .spawn(async move { checkout.create_pull_request().await });
                 cx.spawn(async move |view, cx| {
                     let result = job
                         .await
@@ -203,6 +203,10 @@ impl Desktop {
                     let _ = view.update(cx, |view, cx| {
                         let result = result.map(|url| {
                             if view.current.as_ref().is_some_and(|thread| thread.id == id) {
+                                #[cfg(all(feature = "qualification", target_os = "macos"))]
+                                if crate::qualification::record_open_url(&url, cx) {
+                                    return;
+                                }
                                 cx.open_url(&url);
                             }
                         });
@@ -214,7 +218,7 @@ impl Desktop {
             (Status::Conflicts | Status::Found { .. }, PrAction::Resolve | PrAction::Fix) => {
                 self.handoff_pull_request(action, status.clone(), cx);
             }
-            (Status::Found { branch, pr }, PrAction::Update(update)) => {
+            (Status::Found { branch, pr, .. }, PrAction::Update(update)) => {
                 let branch = branch.clone();
                 let pr = pr.clone();
                 let target = format!(

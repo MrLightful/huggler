@@ -55,6 +55,9 @@ def write_notices(root, resources, target, features, *, manifest="desktop/Cargo.
         texts[(root / "desktop/assets/dm-sans/OFL.txt").read_text().strip()].add(
             "DM Sans / https://github.com/googlefonts/dm-fonts/tree/4412393b7d2de9fe7a92064c2dce9b5af5d7fd26/Sans"
         )
+        texts[(root / "desktop/assets/provider-logos/LICENSE").read_text().strip()].add(
+            "Provider marks from theSVG / https://github.com/GLINCKER/thesvg/tree/551229c188b4ab6e2d8b5763b9633ec91206d04c"
+        )
         for name in ("LICENSE.md", "NOTICE.md"):
             texts[(root / "desktop/assets/file-icons" / name).read_text().strip()].add(
                 f"File icons adapted from @pierre/trees 1.0.0-beta.6 / {name} / "

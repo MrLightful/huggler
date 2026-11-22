@@ -1,6 +1,6 @@
-use gpui::{AssetSource, Hsla, IntoElement, SharedString, Styled, img};
+use gpui::{Hsla, IntoElement, SharedString, Styled, img};
 use gpui_component::{Icon, IconName, Sizable};
-use std::{borrow::Cow, path::Path};
+use std::path::Path;
 
 macro_rules! file_icons {
     ($($icon:ident => $name:literal),+ $(,)?) => {
@@ -21,7 +21,7 @@ macro_rules! file_icons {
             }
         }
 
-        const ASSETS: &[(&str, &[u8])] = &[
+        pub(crate) const ASSETS: &[(&str, &[u8])] = &[
             $((concat!("file-icons/", $name, ".svg"), include_bytes!(concat!("../assets/file-icons/", $name, ".svg"))),)+
         ];
     };
@@ -52,28 +52,6 @@ file_icons! {
     Vue => "vue",
     Yaml => "yml",
     Zig => "zig",
-}
-
-pub(crate) struct DesktopAssets;
-
-impl AssetSource for DesktopAssets {
-    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, bytes)) = ASSETS.iter().find(|(name, _)| *name == path) {
-            return Ok(Some(Cow::Borrowed(bytes)));
-        }
-        gpui_component_assets::Assets.load(path)
-    }
-
-    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        let mut assets = gpui_component_assets::Assets.list(path)?;
-        assets.extend(
-            ASSETS
-                .iter()
-                .filter(|(name, _)| name.starts_with(path))
-                .map(|(name, _)| SharedString::from(*name)),
-        );
-        Ok(assets)
-    }
 }
 
 pub(crate) fn icon(path: &Path, muted: Hsla) -> gpui::AnyElement {
