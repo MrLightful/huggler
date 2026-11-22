@@ -19,6 +19,38 @@ const SCREENSHOT_TIMESTAMP_MS: i64 = 1_735_732_800_000; // January 1, 2025 at no
 #[cfg(all(feature = "qualification", target_os = "macos"))]
 const SCREENSHOT_DURATION_MS: i64 = 1_200;
 
+#[derive(IntoElement)]
+struct MessageText {
+    text: SharedString,
+    max_width: Pixels,
+}
+
+impl RenderOnce for MessageText {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        // Give GPUI the final width during measurement so wrapped lines count toward the height.
+        let width = window
+            .text_system()
+            .shape_text(
+                self.text.clone(),
+                font_size,
+                &[style.to_run(self.text.len())],
+                None,
+                None,
+            )
+            .map_or(self.max_width, |lines| {
+                lines
+                    .iter()
+                    .map(|line| line.width())
+                    .fold(px(0.), Pixels::max)
+                    .ceil()
+                    .min(self.max_width)
+            });
+        div().w(width).child(self.text)
+    }
+}
+
 pub(super) struct TurnClock {
     pub(super) run: RunId,
     opened: Instant,
@@ -403,6 +435,8 @@ impl Desktop {
         let id = &message.id;
         let bubble_width = (content_width * 0.88).min(px(620.));
         let message_padding = rems(1.);
+        let text_width =
+            (bubble_width - message_padding.to_pixels(window.rem_size()) * 2.).max(px(0.));
         let mut body = v_flex()
             .min_w_0()
             .gap_2()
@@ -419,7 +453,7 @@ impl Desktop {
             .when(!outgoing, |body| body.w_full());
         if let Some(files) = &item.files {
             let width = if outgoing {
-                (bubble_width - message_padding.to_pixels(window.rem_size()) * 2.).max(px(0.))
+                text_width
             } else {
                 content_width.min(MAX_RESPONSE_WIDTH)
             };
@@ -438,7 +472,14 @@ impl Desktop {
                     div()
                         .text_sm()
                         .line_height(MESSAGE_LINE_HEIGHT)
-                        .child(caption.to_owned())
+                        .child(MessageText {
+                            text: caption.to_owned().into(),
+                            max_width: if outgoing {
+                                text_width
+                            } else {
+                                content_width.min(MAX_RESPONSE_WIDTH)
+                            },
+                        })
                 } else {
                     prose(format!("message-{id}"), caption, window, cx)
                 }

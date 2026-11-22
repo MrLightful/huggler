@@ -43,21 +43,21 @@ fn setting(
     input: impl IntoElement,
     cx: &App,
 ) -> Div {
-    h_flex()
-        .gap_3()
-        .justify_between()
+    v_flex()
+        .gap_1()
         .border_b_1()
         .border_color(cx.theme().border)
         .py_3()
         .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_0p5()
+            h_flex()
+                .flex_wrap()
+                .gap_x_3()
+                .gap_y_1()
+                .justify_between()
                 .child(section_title(title))
-                .child(hint(description, cx)),
+                .child(div().flex_shrink_0().child(input)),
         )
-        .child(div().flex_shrink_0().child(input))
+        .child(hint(description, cx).w_full())
 }
 
 fn toggle(id: &'static str, title: &'static str, enabled: bool) -> Button {
