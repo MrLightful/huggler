@@ -52,6 +52,9 @@ def write_notices(root, resources, target, features, *, manifest="desktop/Cargo.
             if label in packages:
                 texts[notice["text"].strip()].add(f"{label} / {url}")
     if component == "desktop":
+        texts[(root / "desktop/vendor/ghostty-vt/LICENSE").read_text().strip()].add(
+            "libghostty-vt 1.0.1 / https://github.com/ghostty-org/ghostty/tree/vt-1.0.1"
+        )
         texts[(root / "desktop/assets/dm-sans/OFL.txt").read_text().strip()].add(
             "DM Sans / https://github.com/googlefonts/dm-fonts/tree/4412393b7d2de9fe7a92064c2dce9b5af5d7fd26/Sans"
         )

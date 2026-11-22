@@ -628,7 +628,7 @@ impl Desktop {
     }
 }
 
-fn tab_surface(active: bool, cx: &App) -> Div {
+pub(super) fn tab_surface(active: bool, cx: &App) -> Div {
     let theme = cx.theme();
     let hover = theme.muted;
     h_flex()

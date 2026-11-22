@@ -36,8 +36,13 @@ rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+portable-pty = "0.9"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibility", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+bindgen = "0.71.1"
+sha2 = "0.10"
 
 [features]
 qualification = ["objc2-app-kit/NSApplication", "objc2-app-kit/NSEvent", "objc2-app-kit/NSGraphicsContext", "objc2-app-kit/NSResponder", "objc2-app-kit/NSWindow", "dep:objc2-foundation"]
