@@ -920,7 +920,11 @@ impl DocumentTab {
                                             } else {
                                                 "Save"
                                             })
-                                            .tooltip("Save working file (⌘S)")
+                                            .tooltip_with_action(
+                                                "Save working file",
+                                                &crate::SaveDocument,
+                                                Some(DOCUMENT_CONTEXT),
+                                            )
                                             .disabled(!draft.dirty || draft.is_saving())
                                             .on_click(cx.listener(|view, _, window, cx| {
                                                 view.save_active_document(

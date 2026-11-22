@@ -1,6 +1,7 @@
 mod advanced;
 mod catalog;
 mod environment;
+mod general;
 mod models;
 mod providers;
 mod setup;
@@ -11,6 +12,7 @@ use crate::conversation::ProviderCatalog;
 use crate::ui::{choice, heading, hint, label, section_title};
 use advanced::{RuntimeFields, RuntimePreferences};
 use anyhow::{Context as _, Result, ensure};
+pub(crate) use general::{FollowUp, SendShortcut};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, Theme, ThemeMode,
@@ -57,6 +59,14 @@ impl Appearance {
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
     appearance: Appearance,
+    #[serde(skip_serializing_if = "SendShortcut::is_default")]
+    pub(crate) send_shortcut: SendShortcut,
+    #[serde(skip_serializing_if = "FollowUp::is_default")]
+    pub(crate) follow_up: FollowUp,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) agent_notifications: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) keep_awake: bool,
     pub codex_executable: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_agent_executable: Option<PathBuf>,
@@ -78,6 +88,10 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             appearance: Appearance::System,
+            send_shortcut: SendShortcut::default(),
+            follow_up: FollowUp::default(),
+            agent_notifications: false,
+            keep_awake: false,
             codex_executable: None,
             claude_agent_executable: None,
             provider_executables: BTreeMap::new(),
@@ -140,6 +154,7 @@ pub enum SettingsEvent {
 enum Page {
     #[default]
     Overview,
+    General,
     Appearance,
     Providers,
     Storage,
@@ -149,6 +164,7 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Self::Overview => "Settings",
+            Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Providers => "Providers",
             Self::Storage => "Storage",
@@ -158,7 +174,7 @@ impl Page {
     fn parent(self) -> Option<Self> {
         match self {
             Self::Overview => None,
-            Self::Appearance | Self::Providers | Self::Storage => Some(Self::Overview),
+            _ => Some(Self::Overview),
         }
     }
 }
@@ -184,6 +200,10 @@ pub struct Settings {
 impl EventEmitter<SettingsEvent> for Settings {}
 
 impl Settings {
+    pub(crate) fn preferences(&self) -> &Preferences {
+        &self.prefs
+    }
+
     pub fn new(
         prefs: Preferences,
         state: PathBuf,
@@ -535,6 +555,13 @@ impl Settings {
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
             .child(Self::section_link(
+                Page::General,
+                IconName::Settings2,
+                "Messaging, notifications, and sleep",
+                cx,
+            ))
+            .child(div().border_t_1().border_color(cx.theme().border))
+            .child(Self::section_link(
                 Page::Appearance,
                 IconName::Palette,
                 "Light, dark, or system theme",
@@ -702,6 +729,7 @@ impl Render for Settings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.page {
             Page::Overview => Self::overview(cx),
+            Page::General => self.general(cx),
             Page::Appearance => self.appearance(cx),
             Page::Providers => self.render_provider_panel(cx),
             Page::Storage => self.storage(cx),

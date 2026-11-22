@@ -1,3 +1,4 @@
+mod agent_activity;
 mod attachments;
 mod document_tabs;
 mod file_tree;
@@ -30,7 +31,7 @@ use crate::{
     git,
     paths::StoragePaths,
     questions::Questions,
-    settings::{Preferences, Settings, SettingsEvent},
+    settings::{FollowUp, Preferences, SendShortcut, Settings, SettingsEvent},
     ui::{field, hint, label},
 };
 use gpui::{prelude::*, *};
@@ -43,7 +44,7 @@ use gpui_component::{
 };
 use huggler::{
     Action, Command, CommandId, ConversationDetail, ConversationSummary, HistoryCursor, Huggler,
-    ModelOptions, Provider, ProviderInstanceId, RunId, ThreadId,
+    ModelOptions, Provider, ProviderInstanceId, RunId, SteerOutcome, ThreadId,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -117,6 +118,7 @@ pub struct Desktop {
     selection_file: PathBuf,
     scratch_root: PathBuf,
     threads: Vec<ConversationSummary>,
+    agent_activity: agent_activity::AgentActivity,
     expanded_sections: HashMap<sidebar::Section, bool>,
     current: Option<ConversationDetail>,
     pull_request: Option<crate::github::Status>,
@@ -191,7 +193,12 @@ impl Desktop {
             std::future::ready(())
         })
         .detach();
-        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
+        cx.observe(&settings, |view, settings, cx| {
+            view.agent_activity
+                .update_preferences(settings.read(cx).preferences(), &view.threads);
+            cx.notify();
+        })
+        .detach();
         settings.update(cx, |settings, cx| settings.refresh_provider_setup(cx));
         cx.subscribe_in(
             &settings,
@@ -232,6 +239,7 @@ impl Desktop {
             scratch_root: paths.scratch_dir(),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
+            agent_activity: agent_activity::AgentActivity::default(),
             expanded_sections: HashMap::new(),
             current: None,
             pull_request: None,
@@ -319,16 +327,24 @@ impl Desktop {
         })
         .detach();
         let restored = view.restore(window, cx);
+        view.agent_activity
+            .update_preferences(view.settings.read(cx).preferences(), &view.threads);
         if let Ok(mut revision) = restored {
             let runtime = view.runtime.clone();
-            view.thread_updates = Some(cx.spawn(async move |view, cx| {
+            view.thread_updates = Some(cx.spawn_in(window, async move |view, cx| {
                 loop {
                     let result = runtime.wait_for_conversation_list(revision).await;
                     let done = result.is_err();
                     if view
-                        .update(cx, |view, cx| match result {
+                        .update_in(cx, |view, window, cx| match result {
                             Ok(list) => {
                                 revision = list.revision;
+                                view.agent_activity.update_threads(
+                                    &view.threads,
+                                    &list.threads,
+                                    window,
+                                    cx,
+                                );
                                 view.threads = list.threads;
                                 cx.notify();
                             }
@@ -902,15 +918,79 @@ impl Desktop {
                 return Ok(());
             }
         }
-        self.runtime.dispatch(Command {
+        let steer = attachments.is_empty()
+            && self.settings.read(cx).preferences().follow_up == FollowUp::Steer;
+        let steering_text = steer.then(|| text.clone());
+        let action = if steer {
+            Action::SendAuto { text }
+        } else {
+            attachments.action(text)
+        };
+        let receipt = self.runtime.dispatch(Command {
             id: CommandId(Uuid::new_v4().to_string()),
             thread_id: thread.id.clone(),
-            action: attachments.action(text),
+            action,
         })?;
+        if let Some(text) = steering_text.filter(|_| receipt.message_id.is_none()) {
+            self.watch_steering(receipt, text, window, cx);
+        }
         self.workspaces.get_mut(&thread.id).unwrap().attachments = Attachments::default();
         self.prompt
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.refresh()
+    }
+
+    fn watch_steering(
+        &self,
+        receipt: huggler::Receipt,
+        text: String,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let runtime = self.runtime.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let mut cursor = receipt.event_sequences.last().copied().unwrap_or_default();
+            let thread = receipt.thread_id;
+            let command = receipt.command_id;
+            let result = loop {
+                match runtime.steer_outcome(&thread, &command) {
+                    Ok(SteerOutcome::Pending) => {
+                        match runtime.wait_for_change(&thread, cursor).await {
+                            Ok(sequence) => cursor = sequence,
+                            Err(error) => {
+                                break format!("Could not check follow-up delivery. {error}");
+                            }
+                        }
+                    }
+                    Ok(SteerOutcome::Accepted) => return,
+                    Ok(SteerOutcome::Rejected(reason)) => {
+                        break format!("Could not steer the turn. {reason}");
+                    }
+                    Ok(SteerOutcome::Uncertain) => {
+                        break "Could not confirm delivery of the follow-up.".into();
+                    }
+                    Err(error) => break format!("Could not check follow-up delivery. {error}"),
+                }
+            };
+            let _ = cx.update(|window, cx| {
+                use gpui_component::{WindowExt, notification::Notification};
+                window.push_notification(
+                    Notification::warning(result)
+                        .autohide(false)
+                        .action(move |_, _, _| {
+                            let text = text.clone();
+                            Button::new("copy-follow-up")
+                                .small()
+                                .label("Copy message")
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+                                })
+                        }),
+                    cx,
+                );
+            });
+        })
+        .detach();
     }
 
     fn choose_provider(&mut self, id: &ProviderInstanceId, cx: &mut Context<Self>) {
@@ -1061,7 +1141,7 @@ impl Desktop {
             .child(control!(_name, button.primary()))
     }
 
-    fn send_icon(id: &'static str, tooltip: &'static str) -> Button {
+    fn send_icon(id: &'static str, tooltip: impl Into<SharedString>) -> Button {
         Button::new(id)
             .large()
             .w_8()
@@ -1113,9 +1193,15 @@ impl Desktop {
                             self.send_controls(
                                 &self.starter_attachments,
                                 "Send first message",
-                                Self::send_icon("send-first", "Send (Enter)")
-                                    .disabled(empty_message || self.starter_attachments.loading)
-                                    .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
+                                Self::send_icon(
+                                    "send-first",
+                                    format!(
+                                        "Send ({})",
+                                        self.settings.read(cx).preferences().send_shortcut.label()
+                                    ),
+                                )
+                                .disabled(empty_message || self.starter_attachments.loading)
+                                .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
                                 cx,
                             ),
                         ),
@@ -1344,9 +1430,9 @@ impl Desktop {
             None => Some("Ready".to_owned()),
         };
         let workspace = &self.workspaces[&thread.id];
-        let (action_label, action_button) = if can_stop {
+        let stop = can_stop.then(|| {
             let id = thread.id.clone();
-            (
+            control!(
                 "Stop thread",
                 Button::new("stop-turn")
                     .large()
@@ -1367,22 +1453,25 @@ impl Desktop {
                         view.report(result, cx);
                     })),
             )
-        } else {
-            let (label, tooltip) = if busy {
-                ("Queue message", "Queue (Enter)")
+        });
+        let preferences = self.settings.read(cx).preferences();
+        let (_action_label, action) =
+            if busy && attachments.is_empty() && preferences.follow_up == FollowUp::Steer {
+                ("Send follow-up", "Send follow-up")
+            } else if busy {
+                ("Queue message", "Queue")
             } else {
-                ("Send", "Send (Enter)")
+                ("Send", "Send")
             };
-            (
-                label,
-                Self::send_icon("send", tooltip)
-                    .disabled(empty_draft)
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        let result = view.send(window, cx);
-                        view.report(result, cx);
-                    })),
-            )
-        };
+        let send = Self::send_icon(
+            "send",
+            format!("{action} ({})", preferences.send_shortcut.label()),
+        )
+        .disabled(empty_draft)
+        .on_click(cx.listener(|view, _, window, cx| {
+            let result = view.send(window, cx);
+            view.report(result, cx);
+        }));
         let pending = thread.permissions.len() + thread.questions.len();
         let fresh = last_run.is_none()
             && thread.history.messages.is_empty()
@@ -1555,7 +1644,12 @@ impl Desktop {
                             format!("status/{status}"), label(status).truncate()
                         ))))
                         .child(self.mcp_status_control(window, cx))
-                        .child(self.send_controls(attachments, action_label, action_button, cx)),
+                        .child(h_flex().gap_2().flex_shrink_0()
+                            .child(self.attach_button(attachments, cx))
+                            .children(stop)
+                            .when(!can_stop || !empty_draft, |row| {
+                                row.child(control!(_action_label, send.primary()))
+                            })),
                 ),
         )
         .child(div().mx_5().mb_2().text_xs().truncate().text_color(cx.theme().muted_foreground)
@@ -1888,6 +1982,7 @@ impl Render for Desktop {
                     cx.notify();
                 }),
             )
+            .children(gpui_component::Root::render_notification_layer(window, cx))
             .children(gpui_component::Root::render_dialog_layer(window, cx))
     }
 }
