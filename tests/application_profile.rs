@@ -1128,3 +1128,100 @@ async fn project_services_and_ordered_watch_delivery() -> Result<()> {
     server.abort();
     rt.close().await
 }
+
+#[tokio::test]
+async fn github_pull_request_updates_are_bound_and_revalidate_the_head() -> Result<()> {
+    use axum::{Json, Router, http::HeaderMap, routing::post};
+    use repository::{
+        Driver,
+        github::{MergeMethod, PullRequestUpdate},
+    };
+    use serde_json::{Value, json};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    let ready = json!({
+        "id": "pr-node", "number": 7, "url": "https://github.com/base/sdk/pull/7",
+        "state": "OPEN", "isDraft": false, "baseRefName": "main", "headRefOid": "a".repeat(40),
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "canBeRebased": true,
+        "viewerCanEnableAutoMerge": false, "isMergeQueueEnabled": false,
+        "isCrossRepository": true, "headRepository": {"nameWithOwner": "acme/sdk"},
+        "repository": {
+            "nameWithOwner": "base/sdk", "viewerPermission": "WRITE", "mergeCommitAllowed": false,
+            "squashMergeAllowed": true, "rebaseMergeAllowed": true,
+        },
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": null}}]},
+    });
+    let mut moved = ready.clone();
+    moved["headRefOid"] = json!("b".repeat(40));
+    let mut queue_enabled = ready.clone();
+    queue_enabled["isMergeQueueEnabled"] = json!(true);
+    let observations = Arc::new(Mutex::new(VecDeque::from([
+        ready.clone(),
+        moved,
+        queue_enabled,
+        ready,
+    ])));
+    let remaining = observations.clone();
+    let merges = Arc::new(Mutex::new(0));
+    let writes = merges.clone();
+    let router = Router::new().route("/graphql", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+        let observations = observations.clone();
+        let merges = merges.clone();
+        async move {
+            assert_eq!(headers["authorization"], "Bearer recorded");
+            let query = body["query"].as_str().unwrap();
+            if query.trim_start().starts_with("query BranchPullRequests") {
+                assert_eq!(body["variables"], json!({
+                    "owner": "acme", "repo": "sdk", "head": "review", "ref": "refs/heads/review",
+                }));
+                let pr = observations.lock().unwrap().pop_front().expect("unexpected PR read");
+                Json(json!({"data": {"repository": {
+                    "ref": {"associatedPullRequests": {"nodes": [pr]}, "recent": {"nodes": []}},
+                    "recent": {"nodes": []},
+                }}}))
+            } else {
+                assert!(query.contains("mergePullRequest(input:"));
+                assert!(query.contains("expectedHeadOid: $head"));
+                assert_eq!(body["variables"], json!({"id": "pr-node", "head": "a".repeat(40), "method": "SQUASH"}));
+                *merges.lock().unwrap() += 1;
+                Json(json!({"data": {"mergePullRequest": {"pullRequest": {"id": "pr-node"}}}}))
+            }
+        }
+    }));
+    let (endpoint, server) = serve_router(router).await;
+    let directory = tempfile::tempdir()?;
+    let rt = Huggler::open(options(&directory.path().join("state"))).await?;
+    let root = directory.path().join("repo");
+    checkout(&root);
+    let project = rt.open_project(&root)?;
+    let thread = launch(&rt, &project, "review", Provider::Codex);
+    let origin = format!("http://{endpoint}");
+    let binding = rt.bind_thread_repository(&thread, Driver::GitHub, &origin, "acme/sdk")?;
+    assert_eq!(binding.project, project.id);
+    let client = rt.repository_client(&binding.project, &binding.id, Some("Bearer recorded"))?;
+    let other = rt.bind_repository(&project.id, Driver::GitHub, &origin, "other/sdk")?;
+    let other_client = rt.repository_client(&other.project, &other.id, Some("Bearer recorded"))?;
+
+    let pr = client.github_pull_requests("review").await?.open.remove(0);
+    assert_eq!(pr.repository(), "base/sdk");
+    assert!(pr.can_merge_now());
+    let merge = PullRequestUpdate::Merge(MergeMethod::Squash);
+    assert!(matches!(
+        other_client.update_github_pull_request(&pr, merge).await,
+        Err(Error::Forbidden)
+    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            client.update_github_pull_request(&pr, merge).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    client.update_github_pull_request(&pr, merge).await?;
+    assert!(remaining.lock().unwrap().is_empty());
+    assert_eq!(*writes.lock().unwrap(), 1);
+    server.abort();
+    rt.close().await
+}

@@ -64,6 +64,7 @@ pub struct Desktop {
     focus: FocusHandle,
     workspaces: HashMap<ThreadId, Workspace>,
     runtime: Arc<Huggler>,
+    executor: tokio::runtime::Handle,
     selection_file: PathBuf,
     scratch_root: PathBuf,
     threads: Vec<ConversationSummary>,
@@ -110,6 +111,7 @@ struct CommandLog {
 impl Desktop {
     pub fn new(
         runtime: Arc<Huggler>,
+        executor: tokio::runtime::Handle,
         paths: StoragePaths,
         prefs: Preferences,
         load_error: Option<String>,
@@ -153,6 +155,7 @@ impl Desktop {
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
+            executor,
             scratch_root: paths.scratch_dir(),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),

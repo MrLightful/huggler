@@ -2,6 +2,15 @@ use super::*;
 use crate::repository::{Binding, Driver, LinkedItem};
 
 impl Database {
+    pub fn repository_thread_project(&self, thread: &ThreadId) -> Result<ProjectId> {
+        self.db
+            .query_row("SELECT project FROM thread WHERE id=?", [&thread.0], |r| {
+                r.get(0).map(ProjectId)
+            })
+            .optional()?
+            .ok_or(Error::Forbidden)
+    }
+
     pub fn bind_repository(
         &self,
         project: &ProjectId,
@@ -10,17 +19,15 @@ impl Database {
         repository: &str,
     ) -> Result<Binding> {
         self.project_root(project)?;
-        let id = self.db.query_row(
+        let driver_key = serde_json::to_string(&driver)?;
+        self.db.execute(
             "INSERT INTO repository_binding VALUES(?,?,?,?,?)
-             ON CONFLICT(project,driver,origin,repository) DO UPDATE
-             SET repository=excluded.repository RETURNING id",
-            params![
-                new_id(),
-                project.0,
-                serde_json::to_string(&driver)?,
-                origin,
-                repository
-            ],
+             ON CONFLICT(project,driver,origin,repository) DO NOTHING",
+            params![new_id(), project.0, driver_key, origin, repository],
+        )?;
+        let id = self.db.query_row(
+            "SELECT id FROM repository_binding WHERE project=? AND driver=? AND origin=? AND repository=?",
+            params![project.0, driver_key, origin, repository],
             |r| r.get(0).map(RepositoryBindingId),
         )?;
         Ok(Binding {
@@ -59,13 +66,7 @@ impl Database {
         binding: &RepositoryBindingId,
         item: &str,
     ) -> Result<RepositoryLinkId> {
-        let project = self
-            .db
-            .query_row("SELECT project FROM thread WHERE id=?", [&thread.0], |r| {
-                Ok(ProjectId(r.get(0)?))
-            })
-            .optional()?
-            .ok_or(Error::Forbidden)?;
+        let project = self.repository_thread_project(thread)?;
         let repo = self.repository_binding(&project, binding)?;
         let number = match repo.driver {
             Driver::Linear => item
