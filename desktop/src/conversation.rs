@@ -1005,8 +1005,8 @@ impl Desktop {
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted.opacity(0.55))
-                .children(self.attachment_list(&self.starter_attachments, cx))
                 .child(self.message_input("First message", &self.starter, window, cx))
+                .children(self.attachment_list(&self.starter_attachments, cx))
                 .child(
                     h_flex()
                         .justify_end()
@@ -1416,8 +1416,8 @@ impl Desktop {
                 .when_some(last_run.filter(|_| !self.checkout_unavailable).and_then(|r| r.error.clone()), |area, error| {
                     area.child(div().id("run-error").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(cx.theme().danger).child(error))
                 })
-                .children(self.attachment_list(attachments, cx))
                 .child(self.message_input("Message", &self.prompt, window, cx))
+                .children(self.attachment_list(attachments, cx))
                 .when(thread.queued_count > 0, |composer| {
                     let count = thread.queued_count;
                     let noun = if count == 1 { "message" } else { "messages" };

@@ -7,6 +7,7 @@ macro_rules! file_icons {
         enum FileIcon {
             $($icon,)+
             Generic(IconName),
+            Image,
         }
 
         impl FileIcon {
@@ -15,6 +16,9 @@ macro_rules! file_icons {
                     $(Self::$icon => concat!("file-icons/", $name, ".svg"),)+
                     Self::Generic(symbol) => {
                         return Icon::new(symbol).small().text_color(muted).into_any_element();
+                    }
+                    Self::Image => {
+                        return Icon::default().path("icons/image-attachment.svg").small().text_color(muted).into_any_element();
                     }
                 };
                 img(SharedString::from(asset)).size_3p5().flex_shrink_0().into_any_element()
@@ -114,7 +118,7 @@ fn resolve(path: &Path) -> FileIcon {
         "rst" | "adoc" | "pdf" | "doc" | "docx" | "odt" => Generic(IconName::BookOpen),
         "txt" | "log" | "otf" | "ttf" | "woff" | "woff2" => Generic(IconName::CaseSensitive),
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "heic" | "ico" | "svg"
-        | "tif" | "tiff" => Generic(IconName::Frame),
+        | "tif" | "tiff" => Image,
         "mp3" | "wav" | "ogg" | "flac" | "m4a" | "aac" | "mp4" | "mov" | "mkv" | "avi" | "webm" => {
             Generic(IconName::GalleryVerticalEnd)
         }
