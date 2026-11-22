@@ -510,15 +510,8 @@ fn intent_to_add_index<'a>(
     root: &Path,
     paths: impl IntoIterator<Item = &'a Path>,
 ) -> Result<tempfile::TempDir> {
-    let scratch = tempfile::tempdir()?;
+    let scratch = copy_index(root)?;
     let index = scratch.path().join("index");
-    let path = execute(git(root).args(["rev-parse", "--git-path", "index"]))?;
-    let original = root.join(file_path(path.strip_suffix(b"\n").unwrap_or(&path))?);
-    match fs::copy(original, &index) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
     let mut input = tempfile::tempfile()?;
     for path in paths {
         input.write_all(path.as_os_str().as_encoded_bytes())?;
@@ -542,6 +535,27 @@ fn intent_to_add_index<'a>(
             .stdin(input),
     )?;
     Ok(scratch)
+}
+
+fn copy_index(root: &Path) -> Result<tempfile::TempDir> {
+    let scratch = tempfile::tempdir()?;
+    copy_index_to(&index_path(root)?, &scratch.path().join("index"))?;
+    Ok(scratch)
+}
+
+fn index_path(root: &Path) -> Result<PathBuf> {
+    let path =
+        execute(git(root).args(["rev-parse", "--path-format=absolute", "--git-path", "index"]))?;
+    file_path(path.strip_suffix(b"\n").unwrap_or(&path))
+}
+
+fn copy_index_to(source: &Path, destination: &Path) -> Result<()> {
+    match fs::copy(source, destination) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 fn diff_stats(
@@ -958,6 +972,181 @@ pub fn has_conflicts(root: &Path) -> bool {
     execute(git(root).args(["ls-files", "--unmerged", "-z"])).is_ok_and(|output| !output.is_empty())
 }
 
+pub fn has_uncommitted_changes(root: &Path) -> Result<bool> {
+    let status = execute(git(root).args([
+        "--no-optional-locks",
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=normal",
+        "--ignore-submodules=dirty",
+    ]))?;
+    Ok(!status.is_empty())
+}
+
+pub struct PendingCommit {
+    head: String,
+    branch_ref: String,
+    tree: Vec<u8>,
+    index: tempfile::TempDir,
+}
+
+impl PendingCommit {
+    pub fn prepare(root: &Path, branch: &GitHubBranch) -> Result<Option<Self>> {
+        Self::snapshot(
+            root,
+            &branch.local_oid,
+            &format!("refs/heads/{}", branch.local_branch),
+        )
+    }
+
+    fn snapshot(root: &Path, head: &str, branch_ref: &str) -> Result<Option<Self>> {
+        ensure!(
+            !has_conflicts(root),
+            "Resolve the Git conflicts before creating a pull request."
+        );
+        let dir = execute(git(root).args(["rev-parse", "--absolute-git-dir"]))?;
+        let dir = file_path(dir.strip_suffix(b"\n").unwrap_or(&dir))?;
+        ensure!(
+            [
+                "MERGE_HEAD",
+                "CHERRY_PICK_HEAD",
+                "REVERT_HEAD",
+                "rebase-merge",
+                "rebase-apply",
+                "sequencer"
+            ]
+            .iter()
+            .all(|path| !dir.join(path).exists()),
+            "Finish the Git operation in progress before creating a pull request."
+        );
+        let index = copy_index(root)?;
+        let mut pending = Self {
+            head: head.to_owned(),
+            branch_ref: branch_ref.to_owned(),
+            tree: Vec::new(),
+            index,
+        };
+        execute(pending.git(root).args(["add", "-A", "--", "."]))
+            .context("Prepare changes for the pull request commit")?;
+        pending.tree = execute(pending.git(root).arg("write-tree"))?;
+        let base = execute(git(root).args(["rev-parse", &format!("{head}^{{tree}}")]))?;
+        Ok((pending.tree != base).then_some(pending))
+    }
+
+    fn git(&self, root: &Path) -> Command {
+        let mut command = git(root);
+        command
+            .env("GIT_INDEX_FILE", self.index.path().join("index"))
+            .args([
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "splitIndex.sharedIndexExpire=never",
+            ]);
+        command
+    }
+
+    pub fn message_prompt(&self, root: &Path) -> Result<String> {
+        let mut summary = self.git(root);
+        summary.args([
+            "diff",
+            "--cached",
+            "--name-status",
+            "--no-relative",
+            "--no-color",
+            &self.head,
+            "--",
+        ]);
+        let mut patch = self.git(root);
+        patch.args([
+            "diff",
+            "--cached",
+            "--patch",
+            "--no-relative",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            &self.head,
+            "--",
+        ]);
+        let mut subjects = git(root);
+        subjects.args(["log", "-8", "--format=%s", &self.head, "--"]);
+        let bounded = |command, limit| {
+            let mut bytes = Vec::new();
+            read_patch(command, false, limit, &mut bytes)?;
+            let mut result = String::from_utf8_lossy(&bytes).into_owned();
+            if bytes.len() == limit {
+                result.push_str("\n[truncated]");
+            }
+            Ok::<_, anyhow::Error>(result)
+        };
+        Ok(format!(
+            "Write one Git commit message for these changes. Use a concise, specific subject in imperative mood and follow the style of the recent subjects. Use an empty body unless it adds useful context.\n\nRecent commit subjects:\n{}\n\nChanged paths:\n{}\n\nPatch:\n{}",
+            bounded(subjects, 2000)?,
+            bounded(summary, 8000)?,
+            bounded(patch, 50_000)?,
+        ))
+    }
+
+    pub fn commit(&self, root: &Path, subject: &str, body: &str) -> Result<String> {
+        let index_path = index_path(root)?;
+        let mut lock_path = index_path.clone().into_os_string();
+        lock_path.push(".lock");
+        let lock_path = PathBuf::from(lock_path);
+        // A normal Git writer honours this lock while the commit and its hooks use the
+        // verified temporary index. Failed commits leave the original index in place.
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&lock_path)
+            .context("Lock the Git index for the pull request commit")?;
+        let index_lock = tempfile::TempPath::try_from_path(lock_path)?;
+        self.verify_head(root)?;
+        let prepared = Self::snapshot(root, &self.head, &self.branch_ref)?
+            .filter(|current| current.tree == self.tree)
+            .context("The working changes changed while writing the commit message. Review them and try again.")?;
+        let mut command = prepared.git(root);
+        command.args(["commit", "--cleanup=whitespace", "-m", subject]);
+        if !body.is_empty() {
+            command.args(["-m", body]);
+        }
+        self.verify_head(root)?;
+        execute(&mut command).context("Commit changes for the pull request")?;
+        fs::copy(prepared.index.path().join("index"), &index_lock)
+            .context("The commit was created. Could not copy its Git index")?;
+        index_lock
+            .persist(&index_path)
+            .context("The commit was created. Could not update the Git index")?;
+        let revision =
+            execute(git(root).args(["show", "-s", "--format=%H%n%T%n%P", "HEAD", "--"]))?;
+        let revision = std::str::from_utf8(&revision)?;
+        let mut lines = revision.lines();
+        let oid = lines
+            .next()
+            .context("Expected the new pull request commit.")?;
+        ensure!(
+            lines
+                .next()
+                .is_some_and(|tree| self.tree.strip_suffix(b"\n") == Some(tree.as_bytes()))
+                && lines.next() == Some(self.head.as_str()),
+            "The resulting commit differs from the prepared changes. Review it before publishing."
+        );
+        Ok(oid.to_owned())
+    }
+
+    fn verify_head(&self, root: &Path) -> Result<()> {
+        ensure!(
+            execute(git(root).args(["symbolic-ref", "--quiet", "HEAD"]))?
+                == format!("{}\n", self.branch_ref).as_bytes()
+                && execute(git(root).args(["rev-parse", "HEAD"]))?
+                    == format!("{}\n", self.head).as_bytes(),
+            "The branch changed while writing the commit message. Try again."
+        );
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitHubBranch {
     pub owner: String,
@@ -1068,26 +1257,25 @@ impl GitHubBranch {
             .map(str::to_owned)
     }
 
-    pub fn has_pr_commits(&self, root: &Path, default: &str, base: &str) -> bool {
-        if self.local_branch == default || self.head == default || self.head == base {
-            return false;
-        }
+    pub fn is_pr_head(&self, default: &str, base: &str) -> bool {
+        self.local_branch != default && self.head != default && self.head != base
+    }
+
+    pub fn pr_base_commit(&self, root: &Path, base: &str) -> Option<String> {
         let base_ref = format!("refs/remotes/{}/{base}", self.remote);
-        let base_commit =
-            execute(git(root).args(["rev-parse", "--verify", &base_ref])).or_else(|_| {
+        let commit = execute(git(root).args(["rev-parse", "--verify", &base_ref]))
+            .or_else(|_| {
                 execute(git(root).args(["rev-parse", "--verify", &format!("refs/heads/{base}")]))
-            });
-        let Ok(base_commit) = base_commit else {
-            return false;
-        };
+            })
+            .ok()?;
+        Some(String::from_utf8(commit).ok()?.trim_end().to_owned())
+    }
+
+    pub fn has_pr_commits(&self, root: &Path, base_commit: &str) -> bool {
         execute(git(root).args([
             "rev-list",
             "--max-count=1",
-            &format!(
-                "{}..{}",
-                String::from_utf8_lossy(&base_commit).trim_end(),
-                self.local_oid
-            ),
+            &format!("{base_commit}..{}", self.local_oid),
             "--",
         ]))
         .is_ok_and(|commits| !commits.is_empty())
@@ -1140,7 +1328,7 @@ impl GitHubBranch {
         Ok((title.to_owned(), body.trim().to_owned()))
     }
 
-    pub async fn push(&self, root: &Path) -> Result<()> {
+    pub fn verify_push_target(&self, root: &Path) -> Result<()> {
         let preferred_remote =
             match git_config(root, &format!("branch.{}.pushRemote", self.local_branch))? {
                 Some(remote) => Some(remote),
@@ -1162,7 +1350,11 @@ impl GitHubBranch {
                 }),
             "The push URL must point to the same GitHub repository as the selected remote."
         );
+        Ok(())
+    }
 
+    pub async fn push(&self, root: &Path) -> Result<()> {
+        self.verify_push_target(root)?;
         let refspec = format!("{}:refs/heads/{}", self.local_oid, self.head);
         let mut command = tokio::process::Command::from(git(root));
         command

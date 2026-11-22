@@ -38,16 +38,45 @@ for line in sys.stdin:
         assert frame["result"] == {"decision": "accept"}
         file.write_text("41\n")
         complete("Created the answer file.")
+    elif method == "config/read" and Path("..", "commit-message.json").is_file():
+        emit(id=frame["id"], result={"config": {"mcp_servers": {
+            "fixture.server": {"command": "/usr/bin/false"},
+        }}})
     elif method in ("thread/start", "thread/resume"):
         assert Path(params["cwd"]) == Path.cwd()
         assert Path(subprocess.check_output(
             ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")) == Path.cwd()
-        assert params["approvalPolicy"] == "on-request"
+        ephemeral = params.get("ephemeral", False)
+        if ephemeral:
+            assert params["approvalPolicy"] == "never"
+            assert params["sandbox"] == "read-only" and params["environments"] == []
+            assert params["config"]["mcp_servers"] == {"fixture.server": {"enabled": False}}
+            assert params["config"]["features.hooks"] is False
+            assert params["config"]["features.plugins"] is False
+        else:
+            assert params["approvalPolicy"] == "on-request"
         session = params["threadId"] if method == "thread/resume" else str(uuid4())
         sandbox = params["sandbox"]
         emit(id=frame["id"], result={"thread": {"id": session}, "model": "fixture-model"})
     elif method == "turn/start":
         prompt = params["input"][0]["text"]
+        if ephemeral:
+            assert params["outputSchema"]["required"] == ["subject", "body"]
+            for evidence in ("Base", "staged.txt", "unstaged.txt", "removed.txt", "new.txt",
+                             "+Staged content", "+Updated content", "-Remove this", "+New content"):
+                assert evidence in prompt, evidence
+            assert "ignored.log" not in prompt
+            scenario = json.loads((Path.cwd().parent / "commit-message.json").read_text())
+            turn = str(uuid4())
+            emit(id=frame["id"], result={"turn": {"id": turn}})
+            if scenario == "invalid":
+                complete("Invalid commit message")
+                continue
+            if scenario == "edit":
+                Path("new.txt").write_text("New content, edited during generation.\n")
+            complete(json.dumps({"subject": "Update review fixtures",
+                                 "body": "Cover staged, unstaged, new, and removed files."}))
+            continue
         if params["collaborationMode"]["mode"] == "plan":
             assert prompt == "Plan the answer file."
             assert sandbox == "read-only" and params["sandboxPolicy"] == {"type": "readOnly"}
