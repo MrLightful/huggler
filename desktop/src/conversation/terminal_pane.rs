@@ -1,6 +1,7 @@
 use super::{
     document_tabs::tab_surface,
     terminal::{StatusChanged, TerminalView},
+    terminal_actions::StagedAction,
     *,
 };
 use gpui_component::button::ButtonCustomVariant;
@@ -18,11 +19,19 @@ pub(super) struct TerminalPane {
     scroll: ScrollHandle,
     open: bool,
     height: Option<f32>,
+    pub(super) main_worktree: Option<PathBuf>,
+    pub(super) staged_action: Option<StagedAction>,
 }
 
 struct TerminalTab {
     id: usize,
     shell: Result<Entity<TerminalView>, String>,
+}
+
+pub(super) enum TerminalLaunch<'a> {
+    Shell,
+    Restart(usize),
+    Action(&'a str),
 }
 
 #[derive(Clone)]
@@ -39,16 +48,20 @@ impl TerminalPane {
     }
 
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
-        self.active_tab()
-            .and_then(|tab| tab.shell.as_ref().ok())
-            .is_some_and(|terminal| terminal.read(cx).is_focused(window))
+        self.staged_action
+            .as_ref()
+            .is_some_and(|action| action.is_focused(window, cx))
+            || self
+                .active_tab()
+                .and_then(|tab| tab.shell.as_ref().ok())
+                .is_some_and(|terminal| terminal.read(cx).is_focused(window))
     }
 
     fn active_tab(&self) -> Option<&TerminalTab> {
         self.active.and_then(|index| self.tabs.get(index))
     }
 
-    fn focus_active(&self, window: &mut Window, cx: &App) {
+    pub(super) fn focus_active(&self, window: &mut Window, cx: &App) {
         if let Some(terminal) = self.active_tab().and_then(|tab| tab.shell.as_ref().ok()) {
             terminal.read(cx).focus(window);
         }
@@ -65,16 +78,16 @@ impl TerminalPane {
 }
 
 impl Desktop {
-    fn start_terminal(
+    pub(super) fn open_terminal(
         &mut self,
         thread: &ThreadId,
-        restart: Option<usize>,
+        launch: TerminalLaunch<'_>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let workspace = self.workspaces.get_mut(thread).expect("terminal workspace");
         let pane = &mut workspace.terminal;
-        let replace = if let Some(id) = restart {
+        let replace = if let TerminalLaunch::Restart(id) = launch {
             let Some(index) = pane.index_of(id) else {
                 return;
             };
@@ -89,8 +102,12 @@ impl Desktop {
         } else {
             None
         };
-        let shell =
-            TerminalView::start(&workspace.root, window, cx).map_err(|error| format!("{error:#}"));
+        let command = match launch {
+            TerminalLaunch::Action(command) => Some(command),
+            _ => None,
+        };
+        let shell = TerminalView::start(&workspace.root, command, window, cx)
+            .map_err(|error| format!("{error:#}"));
         if let Ok(terminal) = &shell {
             cx.subscribe(terminal, |_, _, _: &StatusChanged, cx| cx.notify())
                 .detach();
@@ -107,6 +124,9 @@ impl Desktop {
             pane.tabs.len() - 1
         };
         pane.select(index);
+        if replace.is_none() {
+            pane.scroll.scroll_to_item(pane.tabs.len());
+        }
         pane.focus_active(window, cx);
         cx.notify();
     }
@@ -195,8 +215,10 @@ impl Desktop {
                             if pane.is_focused(window, cx) {
                                 view.focus_workspace(window, cx);
                             }
+                        } else if let Some(action) = &pane.staged_action {
+                            action.focus(window, cx);
                         } else if pane.next_id == 0 {
-                            view.start_terminal(&toggle_thread, None, window, cx);
+                            view.open_terminal(&toggle_thread, TerminalLaunch::Shell, window, cx);
                         } else if let Some(index) = pane.active {
                             pane.scroll.scroll_to_item(index);
                             pane.focus_active(window, cx);
@@ -217,21 +239,29 @@ impl Desktop {
                             .track_scroll(&pane.scroll)
                             .children(pane.tabs.iter().enumerate().map(|(index, tab)| {
                                 tab.selector(thread, pane.active == Some(index), cx)
-                            })),
-                    )
-                    .child(control!(
-                        "New terminal",
-                        Button::new("new-terminal")
-                            .ghost()
-                            .small()
-                            .compact()
-                            .flex_none()
-                            .icon(IconName::Plus)
-                            .tooltip("New terminal")
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.start_terminal(&new_thread, None, window, cx)
                             }))
-                    ))
+                            .child(
+                                control!(
+                                    "New terminal",
+                                    Button::new("new-terminal")
+                                        .ghost()
+                                        .small()
+                                        .compact()
+                                        .icon(IconName::Plus)
+                                        .tooltip("New terminal")
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.open_terminal(
+                                                &new_thread,
+                                                TerminalLaunch::Shell,
+                                                window,
+                                                cx,
+                                            )
+                                        }))
+                                )
+                                .flex_shrink_0(),
+                            ),
+                    )
+                    .children(self.terminal_action_picker(thread, cx))
             });
         let drag = ResizeTerminal(thread.clone());
         v_flex()
@@ -273,7 +303,12 @@ impl Desktop {
                         .min_h_0()
                         .overflow_hidden()
                         .bg(cx.theme().background)
-                        .child(contents),
+                        .children(
+                            pane.staged_action
+                                .as_ref()
+                                .map(|action| action.render(thread, cx)),
+                        )
+                        .child(contents.flex_1().min_h_0()),
                 )
             })
             .on_drag_move(cx.listener(
@@ -386,7 +421,12 @@ impl TerminalTab {
                                     .flex_none()
                                     .label("Restart")
                                     .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.start_terminal(&thread, Some(id), window, cx);
+                                        view.open_terminal(
+                                            &thread,
+                                            TerminalLaunch::Restart(id),
+                                            window,
+                                            cx,
+                                        );
                                     }))
                             ))
                         }),

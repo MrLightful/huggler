@@ -68,6 +68,53 @@ def check_storage(executable, state, env):
     assert json.loads((state / "preferences.json").read_text())["automaticWorktreeCleanup"] is True
 
 
+def check_projects(executable, root, env):
+    root.mkdir()
+    root = root.resolve()
+    state = root / "state"
+    first, second, local = (root / name for name in ("atlas", "beacon ", "local "))
+    for checkout in (first, second, local):
+        subprocess.run(["git", "init", "-qb", "main", checkout], check=True)
+    nested = first / "nested"
+    nested.mkdir()
+    env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
+    run_window(executable, state, [
+        {"click": "Choose project"}, {"next_file_selection": [str(nested)]}, {"click": "Add project"},
+        {"see": "Choose workspace"}, {"click": "Choose project"}, {"see": "project/atlas"},
+        {"next_file_selection": [str(first)]}, {"click": "Add project"},
+        {"see": "Choose workspace"}, {"click": "Choose project"},
+        {"next_file_selection": [str(second)]}, {"click": "Add project"},
+        {"click": "Choose project"}, {"see": "project/beacon "}, {"key": "escape"},
+        {"click": "Settings"}, {"click": "Projects"}, {"click": "Rename project/atlas"},
+        {"key": "cmd-a"}, {"type": "Atlas App"}, {"key": "enter"},
+        {"see": "Rename project/Atlas App"},
+    ], env)
+    projects = json.loads((state / "preferences.json").read_text())["projects"]
+    assert projects == [{"name": "Atlas App", "root": str(first)}, {"name": "beacon ", "root": str(second)}]
+
+    run_window(executable, state, [
+        {"resize": [640, 440]}, {"click": "Choose project"}, {"see": "project/Atlas App"},
+        {"type": "BEACON"}, {"absent": "project/Atlas App"}, {"see": "project/beacon "}, {"key": "enter"},
+        {"absent": "project/beacon "}, {"click": "First message"}, {"type": "Reuse Beacon"},
+        {"click": "Send first message"}, {"see": "Codex/reply Reuse Beacon"},
+        {"key": "cmd-shift-n"}, {"click": "Choose project"}, {"click": "project/Atlas App"},
+        {"click": "Conversation name"}, {"type": "Reuse Atlas"}, {"click": "Open conversation"},
+        {"see": "Ready/Reuse Atlas/New conversation"},
+        {"click": "Settings"}, {"click": "Projects"}, {"click": "Remove project/Atlas App"},
+        {"absent": "Rename project/Atlas App"}, {"click": "Done"},
+        {"key": "cmd-shift-n"}, {"next_file_selection": [str(local)]}, {"click": "Browse"},
+        {"see": "Choose workspace"}, {"click": "Conversation name"}, {"type": "One-time checkout"},
+        {"click": "Open conversation"}, {"see": "Ready/One-time checkout/New conversation"},
+    ], env)
+    with sqlite3.connect(state / "huggler.sqlite3") as db:
+        roots = dict(db.execute("SELECT thread.name, project.root FROM thread JOIN project ON thread.project = project.id"))
+        assert roots == {"Reuse Beacon": str(second), "Reuse Atlas": str(first), "One-time checkout": str(local)}
+    assert first.is_dir()
+    assert json.loads((state / "preferences.json").read_text())["projects"] == [
+        {"name": "beacon ", "root": str(second)},
+    ]
+
+
 def check_provider_setup(executable, root, env):
     state = root / "provider-setup"
     codex = root / "test-codex"
@@ -290,6 +337,7 @@ def check(executable):
         env = dict(isolated_env(root), HUGGLER_CLAUDE_ACP=str(root / "missing-claude-agent"))
         check_general(executable, root / "general", env)
         check_storage(executable, root / "storage", env)
+        check_projects(executable, root / "projects", env)
         check_provider_setup(executable, root, env)
         fixture = ROOT / "tests/fixtures/context-provider.py"
         check_model_refresh(executable, root, fixture, env)

@@ -7,10 +7,13 @@ mod markdown_view;
 mod mcp_status;
 mod models;
 mod project_actions;
+mod projects;
 mod sidebar;
 mod suggestions;
 #[cfg(target_os = "macos")]
 mod terminal;
+#[cfg(target_os = "macos")]
+mod terminal_actions;
 #[cfg(target_os = "macos")]
 mod terminal_pane;
 mod transcript;
@@ -23,6 +26,8 @@ use gpui_component::list::ListState;
 use launch_workspace::{LaunchWorkspace, WorkspaceMode};
 use models::Models;
 pub(crate) use models::ProviderCatalog;
+#[cfg(target_os = "macos")]
+pub(crate) use terminal_actions::bind_keys as bind_terminal_action_keys;
 use transcript::TurnClock;
 
 use self::launch_workspace::{LaunchProgress, WorktreeStage};
@@ -135,6 +140,9 @@ pub struct Desktop {
     thread_updates: Option<Task<()>>,
     history_scroll: ScrollHandle,
     checkout: Entity<InputState>,
+    picked_checkout: Option<PathBuf>,
+    project_picker: Option<Entity<ListState<projects::ProjectPicker>>>,
+    checkout_browse: Option<Task<()>>,
     launch_workspace: LaunchWorkspace,
     branch: Entity<InputState>,
     launching: Option<LaunchProgress>,
@@ -266,6 +274,9 @@ impl Desktop {
                     )
                     .placeholder("/path/to/project")
             }),
+            picked_checkout: None,
+            project_picker: None,
+            checkout_browse: None,
             branch: cx
                 .new(|cx| InputState::new(window, cx).placeholder("Generated from the title")),
             launch_workspace: LaunchWorkspace::default(),
@@ -291,8 +302,13 @@ impl Desktop {
             checkout_preload: None,
             error: None,
         };
-        cx.subscribe(&view.checkout, |view, _, event, cx| {
+        cx.subscribe(&view.checkout, |view, input, event, cx| {
             if matches!(event, InputEvent::Change) {
+                if view.picked_checkout.as_ref().is_some_and(|path| {
+                    path.as_os_str() != std::ffi::OsStr::new(input.read(cx).value().as_str())
+                }) {
+                    view.picked_checkout = None;
+                }
                 if view.current.is_none() {
                     view.suggestions = Default::default();
                 }
@@ -393,6 +409,8 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> huggler::Result<()> {
         self.launching = None;
+        self.project_picker = None;
+        self.checkout_browse = None;
         self.ensure_workspace(&id, window, cx)?;
         self.mcp_status = None;
         self.workspaces[&id].refresh_after_checkout_update(self.workspace_tab, cx);
@@ -555,6 +573,8 @@ impl Desktop {
                     terminal: terminal_pane::TerminalPane::default(),
                 },
             );
+            #[cfg(target_os = "macos")]
+            self.resolve_terminal_project(id.clone(), cx);
         }
         Ok(())
     }
@@ -608,49 +628,28 @@ impl Desktop {
         Ok(())
     }
 
-    fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(feature = "qualification", target_os = "macos"))]
-        if let Some(paths) = crate::qualification::take_file_selection(cx) {
-            if let Some(path) = paths.first() {
-                self.choose_checkout(path.clone(), window, cx);
-            }
-            return;
-        }
-        let choice = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open checkout".into()),
-        });
-        cx.spawn_in(window, async move |view, cx| {
-            let result = choice.await;
-            let _ = view.update_in(cx, |v, window, cx| {
-                match result {
-                    Ok(Ok(Some(paths))) => {
-                        if let Some(path) = paths.first() {
-                            v.choose_checkout(path.clone(), window, cx);
-                        }
-                    }
-                    Ok(Err(e)) => v.error = Some(e.to_string()),
-                    _ => (),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     fn choose_checkout(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.checkout.update(cx, |input, cx| {
-            input.set_value(path.to_string_lossy().into_owned(), window, cx)
-        });
+        let changed = self.launch_checkout(cx) != path;
+        self.picked_checkout = (!path.as_os_str().is_empty()).then(|| path.clone());
+        if changed || self.checkout.read(cx).value().as_str() != path.to_string_lossy().as_ref() {
+            self.checkout.update(cx, |input, cx| {
+                input.set_value(path.to_string_lossy().into_owned(), window, cx)
+            });
+            self.branch
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        self.project_picker = None;
+        self.error = None;
         self.focus_workspace(window, cx);
+        cx.notify();
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
         self.mcp_status = None;
+        self.project_picker = None;
+        self.checkout_browse = None;
         self.launch_workspace.close_picker();
         self.show_settings = true;
         self.settings
@@ -702,6 +701,7 @@ impl Desktop {
         };
         self.model_picker = None;
         self.mcp_status = None;
+        self.project_picker = None;
         self.launch_workspace.close_picker();
         input.focus_handle(cx).focus(window);
         cx.notify();
@@ -711,6 +711,8 @@ impl Desktop {
         self.suggestions = Default::default();
         self.model_picker = None;
         self.mcp_status = None;
+        self.project_picker = None;
+        self.checkout_browse = None;
         self.launch_workspace.close_picker();
         self.show_settings = false;
         self.launch_setup = setup;
@@ -740,7 +742,10 @@ impl Desktop {
     }
 
     fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.launching.is_some() || self.starter_attachments.loading {
+        if self.launching.is_some()
+            || self.checkout_browse.is_some()
+            || self.starter_attachments.loading
+        {
             return;
         }
         let message = self.starter.read(cx).value().to_string();
@@ -757,10 +762,16 @@ impl Desktop {
         } else {
             explicit_name.to_owned()
         };
-        let checkout = self.checkout.read(cx).value();
+        let checkout = self.launch_checkout(cx);
+        let saved_checkout = self
+            .settings
+            .read(cx)
+            .saved_projects()
+            .iter()
+            .any(|project| project.root == checkout);
         let scratch_root = self.scratch_root.clone();
         let branch = self.branch.read(cx).value();
-        let scratch = checkout.trim().is_empty();
+        let scratch = checkout.as_os_str().is_empty();
         let workspace_mode = if scratch {
             WorkspaceMode::Current
         } else {
@@ -781,6 +792,7 @@ impl Desktop {
             stage: (workspace_mode == WorkspaceMode::Worktree)
                 .then_some(WorktreeStage::ResolveBase),
         });
+        self.project_picker = None;
         self.launch_workspace.close_picker();
         self.suggestions = Default::default();
         self.focus.focus(window);
@@ -799,8 +811,14 @@ impl Desktop {
                 fs::create_dir_all(&scratch_root)?;
                 runtime.create_scratch(&scratch_root.join(&thread.0))?
             } else {
-                runtime.open_project(checkout.trim())?
+                let project = runtime.open_project(&checkout)?;
+                anyhow::ensure!(
+                    !saved_checkout || project.root == checkout,
+                    "The saved project checkout has moved. Choose a Git checkout for this conversation."
+                );
+                project
             };
+            let source_root = source.root.clone();
             let (project, allocated) = launch_workspace::prepare(
                 &runtime,
                 source,
@@ -833,6 +851,12 @@ impl Desktop {
                     error
                 });
             }
+            // A saved linked checkout can define its own actions. Git only reports
+            // the repository's main checkout from the newly allocated worktree.
+            let worktree_project = (allocated
+                && saved_checkout
+                && git::main_worktree(&project.root).is_ok_and(|main| main != source_root))
+            .then_some((project.root, source_root));
             let sent = if let Some(action) = first_message {
                 runtime
                     .dispatch(Command {
@@ -844,7 +868,7 @@ impl Desktop {
             } else {
                 Ok(())
             };
-            anyhow::Ok(sent)
+            anyhow::Ok((sent, worktree_project))
         });
         cx.spawn_in(window, async move |view, cx| {
             while let Some(stage) = stages.recv().await {
@@ -862,7 +886,12 @@ impl Desktop {
                     v.launching = None;
                 }
                 match result {
-                    Ok(sent) => {
+                    Ok((sent, worktree_project)) => {
+                        let saved = worktree_project.map(|(worktree, root)| {
+                            v.settings.update(cx, |settings, cx| {
+                                settings.save_worktree_project(worktree, root, cx)
+                            })
+                        });
                         let result = (|| {
                             if sent.is_err() {
                                 v.ensure_workspace(&id, w, cx)?;
@@ -877,6 +906,11 @@ impl Desktop {
                             sent
                         })();
                         v.report(result, cx);
+                        if v.error.is_none()
+                            && let Some(Err(error)) = saved
+                        {
+                            v.error = Some(format!("{error:#}"));
+                        }
                     }
                     Err(error) => {
                         if v.starter.read(cx).value().is_empty() && v.starter_attachments.is_empty()
@@ -1028,18 +1062,16 @@ impl Desktop {
     }
 
     fn workspace_header(&self, navigation_open: bool, right_open: bool, cx: &Context<Self>) -> Div {
-        let checkout = self.checkout.read(cx).value();
-        let (root, title) = match &self.current {
+        let (project, title) = match &self.current {
             Some(thread) => (
-                self.workspaces[&thread.id].root.as_path(),
+                self.workspaces[&thread.id]
+                    .root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
                 thread.name.as_str(),
             ),
-            None => (std::path::Path::new(checkout.as_str()), "Create"),
+            None => (self.launch_project_name(cx), "Create"),
         };
-        let project = root
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Workspace");
         let crumb = h_flex()
             .ml_2()
             .flex_1()
@@ -1052,7 +1084,7 @@ impl Desktop {
                     .max_w(relative(0.40))
                     .truncate()
                     .text_color(cx.theme().muted_foreground)
-                    .child(project.to_owned()),
+                    .child(project.unwrap_or_else(|| "Workspace".into())),
             )
             .child(div().text_color(cx.theme().muted_foreground).child("/"))
             .child(div().min_w_0().truncate().child(title.to_owned()));
@@ -1159,15 +1191,12 @@ impl Desktop {
             .model_catalogs
             .get(&self.model_source(cx))
             .map(|check| check.read(cx));
-        let checkout_empty = self.checkout.read(cx).value().trim().is_empty();
+        let checkout_empty = self.launch_checkout(cx).as_os_str().is_empty();
+        let browsing = self.checkout_browse.is_some();
         let empty_message =
             self.starter.read(cx).value().trim().is_empty() && self.starter_attachments.is_empty();
         if !self.launch_setup {
-            let checkout = self.checkout.read(cx).value();
-            let project = std::path::Path::new(checkout.trim())
-                .file_name()
-                .and_then(|name| name.to_str());
-            let heading = project.map_or_else(
+            let heading = self.launch_project_name(cx).map_or_else(
                 || "What should we build?".into(),
                 |name| format!("What should we build in {name}?"),
             );
@@ -1180,14 +1209,23 @@ impl Desktop {
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted.opacity(0.55))
+                .child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(self.project_control(window, cx))
+                        .when(!checkout_empty, |row| {
+                            row.child(self.launch_checkout_controls(cx))
+                        }),
+                )
                 .child(self.message_input("First message", &self.starter, window, cx))
                 .children(self.attachment_list(&self.starter_attachments, cx))
                 .child(
                     h_flex()
-                        .justify_end()
                         .flex_wrap()
                         .gap_2()
                         .child(self.model_control(cx))
+                        .child(div().flex_1().min_w_0())
                         .child(self.mcp_status_control(window, cx))
                         .child(
                             self.send_controls(
@@ -1200,7 +1238,9 @@ impl Desktop {
                                         self.settings.read(cx).preferences().send_shortcut.label()
                                     ),
                                 )
-                                .disabled(empty_message || self.starter_attachments.loading)
+                                .disabled(
+                                    empty_message || browsing || self.starter_attachments.loading,
+                                )
                                 .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
                                 cx,
                             ),
@@ -1220,45 +1260,7 @@ impl Desktop {
                         .font_weight(FontWeight::MEDIUM)
                         .child(heading),
                 )
-                .when(!checkout_empty, |body| {
-                    body.child(control!(
-                        "Start without a project",
-                        Button::new("projectless")
-                            .small()
-                            .ghost()
-                            .label("or start without a project")
-                            .on_click(cx.listener(|v, _, w, cx| {
-                                v.checkout.update(cx, |s, cx| s.set_value("", w, cx));
-                                v.branch.update(cx, |s, cx| s.set_value("", w, cx));
-                                v.focus_workspace(w, cx);
-                            }))
-                    ))
-                })
-                .child(composer)
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .justify_between()
-                        .flex_wrap()
-                        .child(control!(
-                            "Choose project",
-                            Button::new("project")
-                                .ghost()
-                                .small()
-                                .icon(IconName::FolderOpen)
-                                .child(
-                                    div()
-                                        .max_w(px(220.))
-                                        .truncate()
-                                        .child(project.unwrap_or("Choose project").to_owned())
-                                )
-                                .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
-                        ))
-                        .when(!checkout_empty, |row| {
-                            row.child(self.launch_checkout_controls(cx))
-                        }),
-                );
+                .child(composer);
             return v_flex()
                 .id("starter")
                 .flex_1()
@@ -1305,7 +1307,8 @@ impl Desktop {
                                 Self::send_icon("launch", "Send")
                             })
                             .disabled(
-                                self.starter_attachments.loading
+                                browsing
+                                    || self.starter_attachments.loading
                                     || (empty_message
                                         && self.name.read(cx).value().trim().is_empty()),
                             )
@@ -1340,7 +1343,10 @@ impl Desktop {
                                     .ghost()
                                     .icon(IconName::FolderOpen)
                                     .tooltip("Browse")
-                                    .on_click(cx.listener(|v, _, w, cx| v.browse(w, cx)))
+                                    .disabled(browsing)
+                                    .on_click(
+                                        cx.listener(|v, _, w, cx| v.browse_project(false, w, cx))
+                                    )
                             )),
                     ),
             )
@@ -1371,9 +1377,15 @@ impl Desktop {
             ))
             .child(launcher)
             .child(context)
-            .when(!checkout_empty, |body| {
-                body.child(self.launch_checkout_controls(cx))
-            })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(self.project_control(window, cx))
+                    .when(!checkout_empty, |row| {
+                        row.child(self.launch_checkout_controls(cx))
+                    }),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -1571,13 +1583,7 @@ impl Desktop {
                                 .label("Choose another checkout")
                                 .on_click(cx.listener(|view, _, window, cx| {
                                     view.new_conversation(false, window, cx);
-                                    let checkout = std::env::current_dir()
-                                        .ok()
-                                        .filter(|root| root.join(".git").exists())
-                                        .unwrap_or_default();
-                                    view.checkout.update(cx, |input, cx| {
-                                        input.set_value(checkout.to_string_lossy().into_owned(), window, cx)
-                                    });
+                                    view.open_project_picker(window, cx);
                                 }))
                         ))
                 })

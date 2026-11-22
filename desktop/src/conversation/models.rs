@@ -232,10 +232,7 @@ impl Desktop {
                 thread.provider_instance.clone(),
                 self.workspaces[&thread.id].root.clone(),
             ),
-            None => (
-                self.instance.clone(),
-                PathBuf::from(self.checkout.read(cx).value().trim()),
-            ),
+            None => (self.instance.clone(), self.launch_checkout(cx)),
         }
     }
 

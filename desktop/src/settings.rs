@@ -3,6 +3,8 @@ mod catalog;
 mod environment;
 mod general;
 mod models;
+mod project_actions;
+pub(crate) mod projects;
 mod providers;
 mod setup;
 
@@ -81,6 +83,10 @@ pub struct Preferences {
     runtime_overrides: BTreeMap<String, RuntimePreferences>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     provider_environment: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    projects: Vec<projects::SavedProject>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    worktree_projects: BTreeMap<PathBuf, PathBuf>,
     pub automatic_worktree_cleanup: bool,
 }
 
@@ -99,6 +105,8 @@ impl Default for Preferences {
             models: BTreeMap::new(),
             runtime_overrides: BTreeMap::new(),
             provider_environment: BTreeMap::new(),
+            projects: Vec::new(),
+            worktree_projects: BTreeMap::new(),
             automatic_worktree_cleanup: false,
         }
     }
@@ -157,6 +165,8 @@ enum Page {
     General,
     Appearance,
     Providers,
+    Projects,
+    ProjectActions,
     Storage,
 }
 
@@ -167,6 +177,8 @@ impl Page {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Providers => "Providers",
+            Self::Projects => "Projects",
+            Self::ProjectActions => "Project actions",
             Self::Storage => "Storage",
         }
     }
@@ -174,6 +186,7 @@ impl Page {
     fn parent(self) -> Option<Self> {
         match self {
             Self::Overview => None,
+            Self::ProjectActions => Some(Self::Projects),
             _ => Some(Self::Overview),
         }
     }
@@ -186,6 +199,10 @@ pub struct Settings {
     runtime: Arc<Huggler>,
     input: Entity<InputState>,
     providers: ProviderSettings,
+    project_editor: Option<(PathBuf, Entity<InputState>)>,
+    action_project: PathBuf,
+    action_editor: Option<project_actions::ActionEditor>,
+    adding_project: bool,
     model_catalog: Option<Entity<ProviderCatalog>>,
     catalog_subscription: Option<Subscription>,
     advanced: bool,
@@ -235,6 +252,10 @@ impl Settings {
             runtime,
             input,
             providers,
+            project_editor: None,
+            action_project: PathBuf::new(),
+            action_editor: None,
+            adding_project: false,
             model_catalog: None,
             catalog_subscription: None,
             advanced: false,
@@ -256,6 +277,8 @@ impl Settings {
             return;
         }
         self.page = page;
+        self.project_editor = None;
+        self.action_editor = None;
         if page == Page::Providers {
             self.open_providers(window, cx);
         }
@@ -576,6 +599,13 @@ impl Settings {
             ))
             .child(div().border_t_1().border_color(cx.theme().border))
             .child(Self::section_link(
+                Page::Projects,
+                IconName::Folder,
+                "Manage Git checkouts saved for new conversations",
+                cx,
+            ))
+            .child(div().border_t_1().border_color(cx.theme().border))
+            .child(Self::section_link(
                 Page::Storage,
                 IconName::Folder,
                 "Clean up unused worktrees",
@@ -732,6 +762,8 @@ impl Render for Settings {
             Page::General => self.general(cx),
             Page::Appearance => self.appearance(cx),
             Page::Providers => self.render_provider_panel(cx),
+            Page::Projects => self.projects_panel(cx),
+            Page::ProjectActions => self.project_actions_panel(cx),
             Page::Storage => self.storage(cx),
         };
         let scroll_id = match self.page {
@@ -771,13 +803,17 @@ impl Render for Settings {
                             .min_w_0()
                             .gap_2()
                             .when_some(self.page.parent(), |row, parent| {
+                                let back = match parent {
+                                    Page::Projects => "Back to Projects",
+                                    _ => "Back to Settings",
+                                };
                                 row.child(control!(
-                                    "Back to Settings",
+                                    back,
                                     Button::new("back-to-settings")
                                         .ghost()
                                         .small()
                                         .icon(IconName::ChevronLeft)
-                                        .tooltip("Back to Settings")
+                                        .tooltip(back)
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.show_page(parent, window, cx);
                                         }))
@@ -791,6 +827,8 @@ impl Render for Settings {
                             Button::new("done").label("Done").on_click(cx.listener(
                                 |v, _, _, cx| {
                                     if v.save_provider_edits(cx) {
+                                        v.project_editor = None;
+                                        v.action_editor = None;
                                         v.page = Page::Overview;
                                         cx.emit(SettingsEvent::Back);
                                     }
