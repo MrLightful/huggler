@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Drive the native PR actions with scripted GitHub CLI and Codex peers."""
+"""Drive the native PR actions with a local GitHub fixture and a scripted Codex peer."""
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 
 from desktop_check import ROOT, isolated_env, launch_thread, run_window
 
@@ -16,55 +19,91 @@ from pathlib import Path
 import sys
 import time
 
-args = sys.argv[1:]
-assert args[:4] == ["api", "graphql", "--hostname", "github.com"]
-fields = dict(arg.partition("=")[::2] for arg in args[5::2])
-query = fields.pop("query")
-fixture = Path(os.environ["PR_FIXTURE"])
-pr = json.loads(fixture.read_text())
-if pr == "timeout":
+assert sys.argv[1:] == ["auth", "token", "--hostname", "github.com"]
+if json.loads(Path(os.environ["PR_FIXTURE"]).read_text()) == "timeout":
     time.sleep(120)
     sys.exit(1)
-if isinstance(pr, dict) and "next" in pr:
-    fixture.write_text(json.dumps(pr["next"]))
-    pr = pr["current"]
-multiple = isinstance(pr, list)
-assert pr is not None or "mutation" not in query
-if "mutation" in query:
-    assert not multiple
-    assert fields["id"] == pr["id"] and fields["head"] == pr["headRefOid"]
-    assert "expectedHeadOid: $head" in query
-    if "enablePullRequestAutoMerge" in query:
-        operation = "enablePullRequestAutoMerge"
-        if pr["isMergeQueueEnabled"]:
-            assert "method" not in fields
-        else:
-            assert fields["method"] == "SQUASH"
-        pr["autoMergeRequest"] = {"mergeMethod": "SQUASH"}
-    elif "enqueuePullRequest" in query:
-        operation = "enqueuePullRequest"
-        assert "method" not in fields
-        pr["mergeQueueEntry"] = {"id": "queue-entry"}
-    else:
-        operation = "mergePullRequest"
-        assert fields["method"] == "SQUASH"
-        pr["state"] = "MERGED"
-    fixture.write_text(json.dumps(pr))
-    receipt = "mergeQueueEntry" if operation == "enqueuePullRequest" else "pullRequest"
-    print(json.dumps({"data": {operation: {receipt: {"id": pr["id"]}}}}))
-else:
-    assert fields == {"owner": "fixture", "repo": "project", "head": "review", "ref": "refs/heads/review"}
-    opened = pr if multiple else [pr] if pr and pr["state"] == "OPEN" else []
-    recent = [pr] if pr and not opened else []
-    print(json.dumps({"data": {"repository": {
-        "ref": {"associatedPullRequests": {"nodes": opened}, "recent": {"nodes": recent}},
-        "recent": {"nodes": []}
-    }}}))
+print("fixture-token")
 """
 
 
+def github_response(fixture, query, variables):
+    pr = json.loads(fixture.read_text())
+    if isinstance(pr, dict) and "next" in pr:
+        fixture.write_text(json.dumps(pr["next"]))
+        pr = pr["current"]
+    multiple = isinstance(pr, list)
+    assert pr is not None or "mutation" not in query
+    if "mutation" in query:
+        assert not multiple
+        assert variables["id"] == pr["id"] and variables["head"] == pr["headRefOid"]
+        assert "expectedHeadOid: $head" in query
+        if "enablePullRequestAutoMerge" in query:
+            operation = "enablePullRequestAutoMerge"
+            if pr["isMergeQueueEnabled"]:
+                assert "method" not in variables
+            else:
+                assert variables["method"] == "SQUASH"
+            pr["autoMergeRequest"] = {"mergeMethod": "SQUASH"}
+        elif "enqueuePullRequest" in query:
+            operation = "enqueuePullRequest"
+            assert "method" not in variables
+            pr["mergeQueueEntry"] = {"id": "queue-entry"}
+        else:
+            operation = "mergePullRequest"
+            assert variables["method"] == "SQUASH"
+            pr["state"] = "MERGED"
+        fixture.write_text(json.dumps(pr))
+        receipt = "mergeQueueEntry" if operation == "enqueuePullRequest" else "pullRequest"
+        return {"data": {operation: {receipt: {"id": pr["id"]}}}}
+    else:
+        assert variables == {"owner": "fixture", "repo": "project", "head": "review", "ref": "refs/heads/review"}
+        opened = pr if multiple else [pr] if pr and pr["state"] == "OPEN" else []
+        recent = [pr] if pr and not opened else []
+        return {"data": {"repository": {
+            "ref": {"associatedPullRequests": {"nodes": opened}, "recent": {"nodes": recent}},
+            "recent": {"nodes": []}
+        }}}
+
+
+class GitHubHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        assert self.path == "/graphql"
+        assert self.headers["Authorization"] == "Bearer fixture-token"
+        payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        with self.server.lock:
+            data = json.dumps(github_response(
+                self.server.fixture, payload["query"], payload["variables"]
+            )).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, format, *args):
+        pass
+
+
+@contextmanager
+def github_api(fixture):
+    with ThreadingHTTPServer(("127.0.0.1", 0), GitHubHandler) as server:
+        server.fixture = fixture
+        server.lock = threading.Lock()
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
 def check(binary):
-    with tempfile.TemporaryDirectory(prefix="huggler desktop PR ") as tmp:
+    with (
+        tempfile.TemporaryDirectory(prefix="huggler desktop PR ") as tmp,
+        github_api(Path(tmp) / "pr.json") as origin,
+    ):
         root = Path(tmp)
         checkout = root / "checkout"
         state = root / "state"
@@ -83,7 +122,8 @@ def check(binary):
         env = isolated_env(root)
         env.update(PATH=f"{root}:{env['PATH']}",
                    HUGGLER_CODEX=str(ROOT / "tests/fixtures/desktop-coding-peer.py"),
-                   PR_FIXTURE=str(root / "pr.json"))
+                   PR_FIXTURE=str(root / "pr.json"),
+                   HUGGLER_QUALIFICATION_GITHUB_API=origin)
         gh = root / "gh"
         gh.write_text(GH)
         gh.chmod(0o755)
@@ -107,7 +147,7 @@ def check(binary):
 
         show(None, *launch_thread(checkout, "Review", current=True), {"see": "Create PR"})
         show({"current": None, "next": pr}, {"click": "Create PR"},
-             {"contains": "error/The checkout or pull request status changed"})
+             {"contains": "The checkout or pull request status changed"})
         show("timeout", {"see": "Checking PR…"}, {"see": "Create PR"})
         show(dict(pr, isDraft=True), {"see": "View draft"})
         show(dict(pr, mergeStateStatus="BLOCKED"), {"see": "View PR"})
@@ -127,7 +167,7 @@ def check(binary):
         assert json.loads(fixture.read_text())["state"] == "OPEN"
         changed_head = dict(pr, headRefOid="0" * 40)
         show({"current": pr, "next": changed_head}, {"see": "Merge"}, {"next_prompt_answer": 1},
-             {"click": "Merge"}, {"contains": "error/The checkout or pull request status changed"})
+             {"click": "Merge"}, {"contains": "The checkout or pull request status changed"})
         assert json.loads(fixture.read_text()) == changed_head
         show(pr, {"see": "Merge"}, {"next_prompt_answer": 1}, {"click": "Merge"}, {"see": "Merged"})
         show(dict(pr, state="CLOSED"), {"see": "PR closed"})
@@ -150,7 +190,7 @@ def check(binary):
                        text=True, check=True)
         show(None, {"see": "Resolve"}, {"click": "Resolve"},
              {"contains": "You/Resolve the Git merge conflicts in this checkout."})
-    print("Native PR actions passed with scripted GitHub CLI and Codex peers")
+    print("Native PR actions passed with a local GitHub fixture and a scripted Codex peer")
 
 
 if __name__ == "__main__":

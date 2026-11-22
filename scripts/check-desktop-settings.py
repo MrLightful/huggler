@@ -287,13 +287,14 @@ exec /usr/bin/git "$@"
 """)
         git.chmod(0o755)
         run_window(executable, state, [
-            {"resize": [640, 440]}, {"key": "cmd-n"},
+            {"resize": [640, 440]}, {"see": "Hide conversations"}, {"key": "cmd-n"},
             {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"}, {"type": str(checkout)},
             {"click": "Conversation name"}, {"type": "After restart"},
-            {"click": "Open conversation"}, {"key": "cmd-,"}, {"click": "Appearance"}, {"click": "Light"},
+            {"click": "Open conversation"}, {"key": "cmd-,"}, {"see": "Show conversations"},
+            {"click": "Appearance"}, {"click": "Light"},
             {"resize": [1120, 740]},
             {"see": "thread/After restart"}, {"click": "Done"}, {"resize": [640, 440]}, {"see": "status/Ready"},
-            {"click": "Show conversations"},
+            {"see": "thread/After restart"},
             {"click": "Settings"}, {"resize": [1120, 740]}, {"click": "Appearance"}, {"click": "Dark"}, {"click": "Done"},
             {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Background"},
             {"click": "Open conversation"}, {"click": "thread/Original"},

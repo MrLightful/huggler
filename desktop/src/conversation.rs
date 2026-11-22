@@ -65,6 +65,7 @@ pub struct Desktop {
     focus: FocusHandle,
     workspaces: HashMap<ThreadId, Workspace>,
     runtime: Arc<Huggler>,
+    executor: tokio::runtime::Handle,
     selection_file: PathBuf,
     scratch_root: PathBuf,
     threads: Vec<ConversationSummary>,
@@ -111,6 +112,7 @@ struct CommandLog {
 impl Desktop {
     pub fn new(
         runtime: Arc<Huggler>,
+        executor: tokio::runtime::Handle,
         paths: StoragePaths,
         prefs: Preferences,
         load_error: Option<String>,
@@ -163,6 +165,7 @@ impl Desktop {
             focus: cx.focus_handle(),
             workspaces: HashMap::new(),
             runtime,
+            executor,
             scratch_root: paths.scratch_dir(),
             selection_file: state.join("selected-thread"),
             threads: Vec::new(),
@@ -1449,11 +1452,7 @@ impl Render for Desktop {
         let viewport = f32::from(window.viewport_size().width);
         let narrow = window.viewport_size().width < NARROW_VIEWPORT_WIDTH;
         let changes_open = self.changes_sidebar.is_open(!narrow);
-        let navigation_default = if self.show_settings {
-            !narrow
-        } else {
-            self.current.is_none()
-        };
+        let navigation_default = !self.show_settings || !narrow;
         let navigation_open = self.navigation.is_open(navigation_default);
         let left = self.navigation.fraction(navigation_default, window);
         let right = if self.current.is_some() && !self.show_settings {

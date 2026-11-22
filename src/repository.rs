@@ -1,4 +1,6 @@
 //! Project-bound SCM and issue tracker reads, comments, links and watch delivery.
+pub mod github;
+
 use crate::*;
 use reqwest::{Client, Method, Url, header::HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -76,6 +78,20 @@ impl Huggler {
                 repository,
             )
         })
+    }
+
+    /// Bind a repository to the conversation's project, including for managed worktrees.
+    pub fn bind_thread_repository(
+        &self,
+        thread: &ThreadId,
+        driver: Driver,
+        origin: &str,
+        repository: &str,
+    ) -> Result<Binding> {
+        let project = self
+            .shared
+            .access(|db| db.repository_thread_project(thread))?;
+        self.bind_repository(&project, driver, origin, repository)
     }
 
     /// Create a client for a trusted host. Pass the service's complete Authorization header.
