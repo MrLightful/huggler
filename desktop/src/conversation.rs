@@ -1439,9 +1439,8 @@ impl Render for Desktop {
         let viewport = f32::from(window.viewport_size().width);
         let narrow = window.viewport_size().width < NARROW_VIEWPORT_WIDTH;
         let changes_open = self.changes_sidebar.is_open(!narrow);
-        let navigation_default = self.current.is_none() || self.show_settings;
-        let navigation_open = self.navigation.is_open(navigation_default);
-        let left = self.navigation.fraction(navigation_default, window);
+        let navigation_open = self.navigation.is_open(true);
+        let left = self.navigation.fraction(true, window);
         let right = if self.current.is_some() && !self.show_settings {
             self.changes_sidebar.fraction(!narrow, window)
         } else {

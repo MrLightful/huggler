@@ -41,7 +41,8 @@ def check_turn_rail(executable, checkout, env):
     summary = "activity/70 tool calls · 1 message"
     run_window(executable, state, [
         {"see": "active-turn/4"}, {"absent": "Scroll to end"},
-        {"resize": [640, 640]}, {"see": "Show conversations"}, {"absent": "thread/Turn navigation"},
+        {"resize": [640, 640]}, {"see": "thread/Turn navigation"},
+        {"click": "Hide conversations"}, {"absent": "thread/Turn navigation"},
         {"absent": "turn/5"}, {"max_height": ["turn/1", 10]},
         {"hover": "Show conversations"}, {"absent": "wide-turn/4"},
         {"hover": "turn/1"}, {"see": "wide-turn/1"}, {"absent": "wide-turn/4"},
@@ -84,7 +85,7 @@ def main():
         ]
         run_window(executable, state, steps, os.environ)
         run_window(executable, state, [
-            {"resize": [640, 440]}, {"click": "Show conversations"},
+            {"resize": [640, 440]},
             {"center_x": ["Resize conversations", 240]}, {"click": "Create"},
             {"see": "First message"}, {"click": "thread/Long history"}, {"see": "active-turn/32"},
         ], os.environ)
@@ -115,14 +116,14 @@ def main():
             {"type": "Include the tests."}, {"key": "enter"}, {"contains": "Could not open"},
             {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"},
             {"type": str(checkout)}, {"click": "Back to message"}, {"click": "Send first message"},
-            {"click": "Show conversations"}, {"see": "thread/Review my changes"}, {"see": "Ready/Review my changes/Completed"},
+            {"see": "thread/Review my changes"}, {"see": "Ready/Review my changes/Completed"},
         ], env)
         with sqlite3.connect(starter_state / "huggler.sqlite3") as db:
             assert db.execute("SELECT text FROM message WHERE role='user' ORDER BY rowid").fetchall() == [
                 (first,), ("Review my changes\nInclude the tests.",),
             ]
         run_window(executable, starter_state, [
-            {"resize": [640, 440]}, {"click": "Show conversations"},
+            {"resize": [640, 440]},
             {"hover": "thread/" + first}, {"click": "Settle/" + first},
             {"in_lower_half": "section/Settled/1"}, {"absent": "thread/" + first},
             {"hover": "thread/Review my changes"}, {"click": "Settle/Review my changes"},
@@ -130,7 +131,7 @@ def main():
             {"hover": "thread/Review my changes"}, {"click": "Unsettle/Review my changes"},
         ], env)
         run_window(executable, starter_state, [
-            {"click": "Show conversations"}, {"click": "section/Settled/1"}, {"click": "thread/" + first},
+            {"click": "section/Settled/1"}, {"click": "thread/" + first},
             {"see": "Codex/reply " + first}, {"hover": "thread/" + first}, {"click": "Unsettle/" + first},
             {"see": "Ready/" + first + "/Completed"}, {"hover": "thread/" + first}, {"click": "Settle/" + first},
             {"see": "Settled/" + first + "/Settled"}, *send_message("Continue"),
@@ -147,7 +148,7 @@ def main():
         run_window(executable, attachment_state, [
             *select_file, {"click": "Remove notes.txt"}, {"absent": "Remove notes.txt"},
             *select_file, {"see": "Remove notes.txt"}, {"click": "Send first message"},
-            {"click": "Show conversations"}, {"see": "Ready/notes.txt/Completed"}, {"absent": "Remove notes.txt"},
+            {"see": "Ready/notes.txt/Completed"}, {"absent": "Remove notes.txt"},
             *select_file, {"see": "Remove notes.txt"}, {"click": "Create"},
             {"absent": "Remove notes.txt"}, {"click": "thread/notes.txt"}, {"see": "Remove notes.txt"},
             {"next_file_selection": [str(other)]}, {"click": "Attach files"},
@@ -187,7 +188,6 @@ def main():
             {"next_file_selection": [str(image), str(pdf), str(binary)]},
             {"click": "Attach files"}, {"see": "Remove diagram.png"}, {"see": "Remove report.pdf"},
             {"see": "Remove payload.bin"}, {"click": "Send first message"},
-            {"click": "Show conversations"},
             {"see": "Ready/diagram.png/Completed"},
         ], env)
         image.unlink()

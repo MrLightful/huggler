@@ -59,18 +59,17 @@ def check(previous_app):
             completed = [{"see": "status/Completed"}]
         else:
             launch = launch_thread(workspace, "Resume check")
-            # Settings exposes the conversation list in both current and previous bundles.
-            completed = [
-                {"key": "cmd-,"} if previous_app else {"click": "Show conversations"},
-                {"see": "Ready/Resume check/Completed"},
-            ]
+            completed = [{"see": "Ready/Resume check/Completed"}]
+            # Settings also exposes the conversation list in older bundles.
+            if previous_app:
+                completed.insert(0, {"key": "cmd-,"})
         workflows = [
             [*launch, *send_message(prompt), {"see": "Codex/" + first}, *completed],
-            [{"click": "Show conversations"}, {"see": "Codex/" + first}, *send_message(
+            [{"see": "Codex/" + first}, *send_message(
                 "Using the conversation history available in this resumed thread, first repeat the exact final "
                 "answer you gave in the previous turn. Then on a new line write exactly: " + second
              ), {"see": "Codex/" + resumed}, {"see": "Ready/Resume check/Completed"}],
-            [{"click": "Show conversations"}, {"see": "Codex/" + resumed}, {"click": "Create"},
+            [{"see": "Codex/" + resumed}, {"click": "Create"},
              *launch_thread(workspace, "Independent thread"), {"absent": "Codex/" + first},
              *send_message(prompt), {"see": "Codex/" + first}, {"see": "Ready/Independent thread/Completed"},
              {"click": "thread/Resume check"}, {"see": "Codex/" + resumed},
@@ -101,7 +100,7 @@ def check(previous_app):
             print(f"Launch {step} passed, {len(rows)} completed runs", flush=True)
         run_window(executable, state, [
             {"see": "Codex/" + first}, {"absent": "Codex/" + resumed},
-            {"click": "Show conversations"}, {"click": "thread/Resume check"}, {"see": "Codex/" + resumed},
+            {"click": "thread/Resume check"}, {"see": "Codex/" + resumed},
         ], env)
         print("Launch 4 restored the selected sibling", flush=True)
 

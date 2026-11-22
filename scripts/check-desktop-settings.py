@@ -53,7 +53,6 @@ exec /usr/bin/git "$@"
             {"click": "Conversation name"}, {"type": "After restart"},
             {"click": "Open conversation"}, {"key": "cmd-,"}, {"click": "Light"},
             {"see": "thread/After restart"}, {"click": "Done"}, {"see": "status/Ready"},
-            {"click": "Show conversations"},
             {"click": "Settings"}, {"click": "Dark"}, {"click": "Done"},
             {"key": "cmd-n"}, {"key": "cmd-shift-n"}, {"click": "Conversation name"}, {"type": "Background"},
             {"click": "Open conversation"}, {"click": "thread/Original"},
