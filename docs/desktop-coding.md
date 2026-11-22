@@ -59,6 +59,17 @@ In **First message** or **Message**, type `@` and part of a filename or path to 
 
 Use **↑** and **↓** to move through the suggestions, **Enter** or **Tab** to insert the highlighted result, and **Esc** to close the menu. You can also click a result. Continue editing your draft or send it with the up arrow.
 
+## Check MCP servers
+
+Click **MCP server status** beside the attachment and send buttons in **First message** or **Message**. The popover shows the provider's tool counts, authentication requirements and connection errors. Use **Refresh MCP status** to check again.
+
+| Harness and transport | Status coverage |
+| --- | --- |
+| Codex CLI 0.170.0, app-server over stdio | Native `mcpServerStatus/list` using a temporary session to check the servers configured for the checkout. |
+| Other harnesses | Status is unavailable and the popover shows an explanation. |
+
+Each refresh checks the checkout in a fresh Codex session. Servers that Huggler injects into individual runs use their own sessions. The desktop owns the popover and refresh controls. [T3 Code Codex adapter](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts#L7865-L7884) · [macOS provider check](../scripts/check-provider-desktop.py)
+
 ## Find a conversation by status
 
 The conversation sidebar is visible when Huggler opens. Use the left sidebar button in the workspace header to hide or show conversations independently of Changes. The sidebar updates even while you work in another conversation. Needs attention and Ready sit at the top. Working and Settled sit together at the bottom. Click a section heading to collapse or expand it. Each section shows its count and lists the most recently active conversations first.

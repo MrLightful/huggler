@@ -751,6 +751,20 @@ impl Huggler {
         .await
     }
 
+    /// Check configured MCP servers for a provider in the supplied working directory.
+    /// Returns None when the adapter or installation has no status operation.
+    /// This checkout check runs independently of active Huggler turns.
+    pub async fn list_mcp_server_status(
+        &self,
+        id: &str,
+        cwd: impl AsRef<Path>,
+    ) -> Result<Option<Vec<crate::McpServerStatus>>> {
+        self.discover_provider(id, cwd.as_ref(), async |instance, output, cwd| {
+            crate::providers::probe::list_mcp_server_status(&instance, &output, &cwd).await
+        })
+        .await
+    }
+
     async fn discover_provider<T: Send + 'static, F: Future<Output = Result<T>> + Send>(
         &self,
         id: &str,
@@ -775,7 +789,7 @@ impl Huggler {
             return Err(Error::CheckoutUnavailable(cwd));
         }
         let output = self.shared.output.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (mut tx, rx) = tokio::sync::oneshot::channel();
         {
             let mut gate = self.shared.workers.lock().unwrap();
             let workers = gate.as_mut().ok_or(Error::Closed)?;
@@ -786,6 +800,7 @@ impl Huggler {
                     let probe = discover(instance, output, cwd);
                     let deadline = std::time::Duration::from_secs(15);
                     let result = tokio::select! {
+                        _ = tx.closed() => return,
                         _ = stop.wait_for(|stopped| *stopped) => Err(Error::Closed),
                         result = tokio::time::timeout(deadline, probe) => result.unwrap_or_else(|_| {
                             Err(Error::Provider(format!(

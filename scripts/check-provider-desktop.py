@@ -70,7 +70,7 @@ def check_suggestions(executable, tmp, env):
         "🛠 Use $lint-guide please with [Setup.md](docs/Setup.md) and "
         f"[$shared-skill]({checkout / 'user' / 'SKILL.md'}) again"
     )
-    ready = f"Ready/{first}/Completed"
+    ready = "Ready/$build-guide Read Setup (local).md first/Completed"
     run_window(executable, state, [
         {"key": "cmd-shift-n"}, {"click": "Git checkout"}, {"key": "cmd-a"},
         {"type": str(checkout / "docs")}, {"click": "Back to message"},
@@ -97,6 +97,31 @@ def check_suggestions(executable, tmp, env):
     assert [frame["params"]["input"][0]["text"] for frame in frames if frame.get("method") == "turn/start"] == [first, followup]
 
 
+def check_mcp_status(executable, tmp, env):
+    state = tmp / "mcp-state"
+    state.mkdir()
+    (state / "mcp-status-delay").touch()
+    checkout = tmp.resolve() / "mcp-checkout"
+    subprocess.run(["git", "init", "--quiet", checkout], check=True)
+    env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
+    trigger = "MCP server status"
+    run_window(executable, state, [
+        {"see": "First message"}, {"click": trigger},
+        {"see": "MCP/Archive/0 tools"}, {"see": "MCP/Reference/1 tool"},
+        {"see": "MCP/Notes/Needs auth"}, {"see": "MCP/Calendar/Error"},
+        {"above": ["MCP servers", trigger]},
+        {"key": "tab"}, "release_enter", {"see": "Checking MCP servers…"},
+        {"key": "escape"}, {"absent": "MCP servers"},
+        *launch_thread(checkout, "MCP status"),
+        {"resize": [640, 440]}, {"click": trigger}, {"see": "MCP/Workspace Tools/3 tools"},
+        {"above": ["MCP servers", trigger]}, {"key": "escape"}, {"absent": "MCP servers"},
+    ], env)
+    for cwd in (state, checkout):
+        frames = [json.loads(line) for line in (cwd / "frames.ndjson").read_text().splitlines()]
+        assert any(frame.get("method") == "mcpServerStatus/list" for frame in frames)
+        assert all(frame.get("method") != "turn/start" for frame in frames)
+
+
 def main():
     executable = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="huggler discovery ") as directory:
@@ -121,6 +146,7 @@ def main():
         env = dict(isolated_env(tmp), HUGGLER_PROVIDERS=str(config), HUGGLER_CODEX=str(missing))
         check_models(executable, tmp, env)
         check_suggestions(executable, tmp, env)
+        check_mcp_status(executable, tmp, env)
         state = tmp / "state"
         run_window(executable, state, steps, env)
         checkout = tmp / "original"

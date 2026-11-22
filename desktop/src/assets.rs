@@ -13,6 +13,7 @@ const CUSTOM_ASSETS: &[(&str, &[u8])] = &[
         "provider-logos/claude.svg",
         include_bytes!("../assets/provider-logos/claude.svg"),
     ),
+    ("icons/mcp.svg", include_bytes!("../assets/icons/mcp.svg")),
     (
         "icons/provider-refresh.svg",
         include_bytes!("../assets/icons/provider-refresh.svg"),

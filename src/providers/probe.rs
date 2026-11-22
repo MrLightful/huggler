@@ -1,6 +1,6 @@
 //! On-demand protocol discovery. Probes never submit a prompt.
 use super::{
-    claude_agent, muse, opencode, pi,
+    claude_agent, codex, muse, opencode, pi,
     rpc::{Rpc, protocol},
 };
 use crate::{Error, Provider, ProviderInstance, Result};
@@ -26,6 +26,25 @@ pub struct ProviderSkill {
     pub path: PathBuf,
     pub description: Option<String>,
     pub scope: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub state: McpServerState,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerState {
+    Connected { tool_count: usize },
+    AuthenticationRequired,
+    Failed,
+    Starting,
+    NotStarted,
+    Cancelled,
+    Disabled,
+    Unknown,
 }
 
 impl ProviderReport {
@@ -166,7 +185,18 @@ pub(crate) async fn list_skills(
     Ok(result)
 }
 
-async fn open_codex_probe(
+pub(crate) async fn list_mcp_server_status(
+    instance: &ProviderInstance,
+    output: &crate::AgentOutput,
+    cwd: &Path,
+) -> Result<Option<Vec<McpServerStatus>>> {
+    match instance.driver {
+        Provider::Codex => codex::mcp_status::list(instance, output, cwd).await,
+        _ => Ok(None),
+    }
+}
+
+pub(super) async fn open_codex_probe(
     instance: &ProviderInstance,
     output: &crate::AgentOutput,
     cwd: &Path,
