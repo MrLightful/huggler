@@ -8,6 +8,10 @@ mod models;
 mod project_actions;
 mod sidebar;
 mod suggestions;
+#[cfg(target_os = "macos")]
+mod terminal;
+#[cfg(target_os = "macos")]
+mod terminal_pane;
 mod transcript;
 
 use attachments::Attachments;
@@ -65,6 +69,8 @@ struct Workspace {
     draft: Entity<InputState>,
     attachments: Attachments,
     questions: HashMap<huggler::RequestId, Entity<Questions>>,
+    #[cfg(target_os = "macos")]
+    terminal: terminal_pane::TerminalPane,
 }
 
 impl Workspace {
@@ -177,6 +183,14 @@ impl Desktop {
             )
         });
         let catalog_fallback = state.clone();
+        #[cfg(target_os = "macos")]
+        cx.on_app_quit(|view, cx| {
+            for workspace in view.workspaces.values_mut() {
+                workspace.terminal.release(cx);
+            }
+            std::future::ready(())
+        })
+        .detach();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
         settings.update(cx, |settings, cx| settings.refresh_provider_setup(cx));
         cx.subscribe_in(
@@ -521,6 +535,8 @@ impl Desktop {
                     draft,
                     attachments: Attachments::default(),
                     questions: HashMap::new(),
+                    #[cfg(target_os = "macos")]
+                    terminal: terminal_pane::TerminalPane::default(),
                 },
             );
         }
@@ -984,7 +1000,14 @@ impl Desktop {
                         .icon(IconName::PanelRight)
                         .selected(right_open)
                         .tooltip(action)
-                        .on_click(cx.listener(move |view, _, _, cx| {
+                        .on_click(cx.listener(move |view, _, _window, cx| {
+                            #[cfg(target_os = "macos")]
+                            if right_open
+                                && let Some(thread) = &view.current
+                                && view.workspaces[&thread.id].terminal.is_focused(_window, cx)
+                            {
+                                view.focus_workspace(_window, cx);
+                            }
                             view.right_sidebar.toggle(right_open);
                             if !right_open && let Some(thread) = &view.current {
                                 view.workspace_tab.refresh(&view.workspaces[&thread.id], cx);
@@ -1633,6 +1656,10 @@ impl Render for Desktop {
         let right_max = SidebarEdge::Right.max_width(viewport, narrow, self.navigation.width, left);
         let left_width = self.navigation.width.min(left_max);
         let right_width = self.right_sidebar.width.min(right_max);
+        #[cfg(target_os = "macos")]
+        let terminal_max_height =
+            (f32::from(window.viewport_size().height) - if narrow { 40. } else { 0. } - 144.)
+                .max(100.);
         let conversation_width =
             px(viewport - left_width * left - if narrow { 0. } else { right_width * right });
         div()
@@ -1825,7 +1852,16 @@ impl Render for Desktop {
                                     .border_color(cx.theme().sidebar_border)
                                     .bg(cx.theme().sidebar)
                                     .child(self.workspace_tabs(cx))
-                                    .child(div().flex_1().min_h_0().child(panel)),
+                                    .child(div().flex_1().min_h_0().overflow_hidden().child(panel))
+                                    .map(|panel| {
+                                        #[cfg(target_os = "macos")]
+                                        let panel = panel.child(self.terminal_pane(
+                                            thread,
+                                            terminal_max_height,
+                                            cx,
+                                        ));
+                                        panel
+                                    }),
                             ),
                     )
                 },

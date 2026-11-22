@@ -38,6 +38,9 @@ def install(destination, *, identifier="dev.huggler.stage2", qualification=False
         # before a concurrent qualification or production install can replace it.
         with (target / "installer.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            # License collection uses frozen Cargo metadata, which can require
+            # sources for dependencies Cargo did not build on this platform.
+            subprocess.run(["cargo", "fetch", "--locked", "--manifest-path", manifest], check=True)
             messages = subprocess.check_output([*args, *features, "--message-format=json-render-diagnostics"])
             artifacts = (json.loads(line) for line in messages.splitlines())
             binary, = (msg["executable"] for msg in artifacts if msg["reason"] == "compiler-artifact"

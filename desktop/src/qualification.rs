@@ -16,6 +16,7 @@ pub enum Step {
     Click(String),
     Hover(String),
     DragX(String, i16),
+    DragY(String, i16),
     CenterX(String, i16),
     NextFileSelection(Vec<std::path::PathBuf>),
     NextSavePath(std::path::PathBuf),
@@ -23,6 +24,9 @@ pub enum Step {
     OpenedUrl(String),
     FileSize(std::path::PathBuf, u64),
     ClipboardText(String),
+    ClipboardContains(String),
+    ClipboardWrite(String),
+    FileText(std::path::PathBuf, String),
     Resize([u16; 2]),
     Type(String),
     Key(String),
@@ -151,6 +155,15 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
                 .as_ref()
                 == Some(expected)
         }
+        Step::ClipboardContains(expected) => cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .is_some_and(|text| text.contains(expected)),
+        Step::ClipboardWrite(text) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            true
+        }
+        Step::FileText(path, expected) => fs::read_to_string(path).as_ref().ok() == Some(expected),
         Step::FileSize(path, size) => fs::metadata(path).is_ok_and(|file| file.len() == *size),
         Step::Resize([width, height]) => {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
@@ -159,7 +172,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
         Step::CenterX(key, x) => controls
             .get(key.as_str())
             .is_some_and(|bounds| (f32::from(bounds.center().x) - f32::from(*x)).abs() < 2.),
-        Step::Click(key) | Step::DragX(key, _) | Step::Hover(key) => {
+        Step::Click(key) | Step::DragX(key, _) | Step::DragY(key, _) | Step::Hover(key) => {
             let Some(bounds) = controls.get(key.as_str()) else {
                 return false;
             };
@@ -171,13 +184,13 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             };
             let events = match step {
                 Step::Hover(_) => vec![(NSEventType::MouseMoved, 0.)],
-                Step::DragX(_, delta) => {
-                    let dx = f64::from(*delta);
+                Step::DragX(_, delta) | Step::DragY(_, delta) => {
+                    let offset = f64::from(*delta);
                     vec![
                         (NSEventType::LeftMouseDown, 0.),
-                        (NSEventType::LeftMouseDragged, dx / 2.),
-                        (NSEventType::LeftMouseDragged, dx),
-                        (NSEventType::LeftMouseUp, dx),
+                        (NSEventType::LeftMouseDragged, offset / 2.),
+                        (NSEventType::LeftMouseDragged, offset),
+                        (NSEventType::LeftMouseUp, offset),
                     ]
                 }
                 _ => vec![
@@ -186,9 +199,14 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
                 ],
             };
             for (kind, offset) in events {
+                let (dx, dy) = if matches!(step, Step::DragY(..)) {
+                    (0., offset)
+                } else {
+                    (offset, 0.)
+                };
                 let location = NSPoint::new(
-                    f64::from(position.x) + offset,
-                    (window.viewport_size().height - position.y).into(),
+                    f64::from(position.x) + dx,
+                    f64::from(window.viewport_size().height - position.y) - dy,
                 );
 
                 let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
