@@ -1,4 +1,11 @@
 use anyhow::{Context as _, Result, ensure};
+#[cfg(all(feature = "qualification", target_os = "macos"))]
+use gpui::SharedString;
+use gpui::{App, Corner, Div, ParentElement, Styled, div};
+use gpui_component::{
+    button::Button,
+    menu::{DropdownMenu, PopupMenuItem},
+};
 use std::{
     fs,
     io::ErrorKind,
@@ -11,6 +18,38 @@ pub(crate) enum OpenIn {
     Finder,
     Terminal,
     VsCode,
+}
+
+pub(crate) fn file_menu(
+    trigger: Button,
+    _path: &Path,
+    on_open: impl Fn(OpenIn, &mut App) + Clone + 'static,
+) -> Div {
+    #[cfg(all(feature = "qualification", target_os = "macos"))]
+    let _path = _path.to_string_lossy().into_owned();
+    control!(
+        format!("Open in/{_path}"),
+        trigger.tooltip("Open in").dropdown_menu_with_anchor(
+            Corner::TopRight,
+            move |mut menu, _, _| {
+                menu = menu.label("Open in");
+                for destination in OpenIn::OPTIONS {
+                    let on_open = on_open.clone();
+                    #[cfg(all(feature = "qualification", target_os = "macos"))]
+                    let _path = _path.clone();
+                    let name = destination.label();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            control!(format!("Open {name}/{_path}"), div().child(name))
+                        })
+                        .on_click(move |_, _, cx| on_open(destination, cx)),
+                    );
+                }
+                menu
+            }
+        )
+    )
+    .flex_none()
 }
 
 impl OpenIn {
@@ -106,6 +145,12 @@ mod tests {
         );
         assert_eq!(
             OpenIn::Terminal.file_target(root, relative).unwrap(),
+            (folder.to_owned(), false)
+        );
+        assert_eq!(
+            OpenIn::Terminal
+                .file_target(root, Path::new("src/nested"))
+                .unwrap(),
             (folder.to_owned(), false)
         );
 

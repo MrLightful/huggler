@@ -67,7 +67,7 @@ impl SidebarEdge {
         opposite_width: f32,
         opposite_fraction: f32,
     ) -> f32 {
-        // The narrow Changes panel overlays the conversation. Wide windows share
+        // The narrow right sidebar overlays the conversation. Wide windows share
         // the remaining space equally when both preferred widths cannot fit.
         match (narrow, self) {
             (true, Self::Right) => viewport - 160.,
@@ -80,11 +80,13 @@ impl SidebarEdge {
         .max(160.)
     }
 
-    pub(super) fn handle(self, width: f32, narrow: bool, cx: &Context<Desktop>) -> Div {
-        let name = match self {
-            Self::Left => "Resize conversations",
-            Self::Right => "Resize changes",
-        };
+    pub(super) fn handle(
+        self,
+        name: &'static str,
+        width: f32,
+        narrow: bool,
+        cx: &Context<Desktop>,
+    ) -> Div {
         let handle = div()
             .id(name)
             .size_full()

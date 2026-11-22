@@ -325,6 +325,25 @@ impl Desktop {
         self.load_attachments(Task::ready(Ok(paths.paths().to_vec())), window, cx);
     }
 
+    pub(super) fn attach_workspace_file(
+        &mut self,
+        thread: &ThreadId,
+        path: Arc<Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.workspaces[thread].root.clone();
+        let choice = cx.background_spawn(async move {
+            let target = root.canonicalize()?.join(&path);
+            ensure!(
+                target.symlink_metadata()?.is_file() && target.canonicalize()? == target,
+                "The selected workspace file has moved."
+            );
+            Ok(vec![target])
+        });
+        self.load_attachments(choice, window, cx);
+    }
+
     fn load_attachments(
         &mut self,
         choice: Task<anyhow::Result<Vec<PathBuf>>>,

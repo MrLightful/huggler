@@ -12,6 +12,7 @@ macro_rules! control {
 
 mod assets;
 mod changes;
+mod file_icons;
 mod fonts;
 mod git;
 mod github;

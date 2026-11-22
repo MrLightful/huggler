@@ -58,6 +58,11 @@ def write_notices(root, resources, target, features, *, manifest="desktop/Cargo.
         texts[(root / "desktop/assets/provider-logos/LICENSE").read_text().strip()].add(
             "Provider marks from theSVG / https://github.com/GLINCKER/thesvg/tree/551229c188b4ab6e2d8b5763b9633ec91206d04c"
         )
+        for name in ("LICENSE.md", "NOTICE.md"):
+            texts[(root / "desktop/assets/file-icons" / name).read_text().strip()].add(
+                f"File icons adapted from @pierre/trees 1.0.0-beta.6 / {name} / "
+                "https://registry.npmjs.org/@pierre/trees/-/trees-1.0.0-beta.6.tgz"
+            )
     with (resources / "Third-party notices.txt").open("w", encoding="utf-8") as out:
         out.write(f"Locked {component} dependencies, including build tools\n\n"
                   "The following URLs provide the corresponding unmodified sources, including "

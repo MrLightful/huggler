@@ -339,7 +339,7 @@ impl Desktop {
         }
     }
 
-    fn run_project_action(
+    pub(super) fn run_project_action(
         &self,
         cx: &mut Context<Self>,
         action: impl FnOnce(PathBuf) -> anyhow::Result<()> + Send + 'static,

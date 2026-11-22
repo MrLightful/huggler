@@ -1,3 +1,4 @@
+use crate::file_icons;
 use gpui::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
 
@@ -20,7 +21,11 @@ const CUSTOM_ASSETS: &[(&str, &[u8])] = &[
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, bytes)) = CUSTOM_ASSETS.iter().find(|(name, _)| *name == path) {
+        if let Some((_, bytes)) = CUSTOM_ASSETS
+            .iter()
+            .chain(file_icons::ASSETS)
+            .find(|(name, _)| *name == path)
+        {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
         gpui_component_assets::Assets.load(path)
@@ -31,6 +36,7 @@ impl AssetSource for Assets {
         assets.extend(
             CUSTOM_ASSETS
                 .iter()
+                .chain(file_icons::ASSETS)
                 .filter(|(name, _)| name.starts_with(path))
                 .map(|(name, _)| SharedString::from(*name)),
         );
