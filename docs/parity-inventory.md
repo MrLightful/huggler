@@ -24,6 +24,24 @@ The desktop owns trigger detection, file search, selection, and draft edits. For
 
 The [provider fixture test](../tests/provider_instances.rs) verifies checkout scope, disabled skills, same-named skills, and independent model discovery. The [macOS qualification check](../scripts/check-provider-desktop.py) drives the composer with keyboard and mouse and inspects the resulting Codex `turn/start` input. The live protocol check used `skills/list` only.
 
+## Desktop provider setup
+
+Huggler’s macOS Settings shows cards for detected provider executables and configured servers, with details below. **Add provider** opens the setup choices for undetected providers. The desktop resolves the two built-in executables through its runtime options, which honor the saved paths and environment overrides. It downloads published standalone archives, verifies their size and SHA-256, then moves the complete package into the app’s state directory. Layout references are T3 Code’s [provider settings](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/settings/ProviderSettingsPanel.tsx) and [provider picker](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/settings/AddProviderInstanceDialog.tsx).
+
+| Provider | Setup operation | Support |
+| --- | --- | --- |
+| [Codex 0.170.0](https://github.com/openai/codex/releases/tag/rust-v0.170.0), app-server over stdio | Install the native macOS package, check credentials with `login status`, and offer a Terminal sign-in command using the configured executable. | Desktop installation and native CLI status. The CLI owns authentication and credentials for the selected instance. |
+| [Claude Agent ACP 0.109.0](https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.109.0) with Claude Code 2.1.328, ACP v1 over stdio | Install the native macOS package. Check configured credentials using the companion CLI and link to Claude’s API credential setup. | Desktop installation and native CLI status. Credential setup follows the provider guide. |
+| Additional configured providers | Show the configured executable or server. | Installation and sign-in use each provider’s own setup. |
+
+The provider header probes the executable with `--version`. For Codex and Claude Agent ACP in Huggler's managed location, it offers the app's pinned, checksum-verified release when it is newer. The desktop swaps the complete package atomically. Reset restores the selected provider's desktop preferences. Custom executables are updated by their own installer.
+
+Desktop Environment settings apply to subprocesses for the selected provider instance after restart. The native check verifies delivery to a recorded Codex app-server fixture over stdio after saving from the UI. Separately managed server processes receive their environment from their own host.
+
+The [desktop settings check](../scripts/check-desktop-settings.py) exercises detection, the add-provider flow, CLI status refresh, and preference persistence with fixtures. The Apple silicon install check downloaded both published archives into isolated state and verified that Settings found them immediately and after restarting.
+
+The desktop reuses the checkout-scoped [`probe_provider`](../src/runtime.rs) catalog in Settings and the conversation picker. Codex 0.170.0 discovers models over app-server stdio with `model/list`. Claude Agent ACP 0.109.0 reads model information from ACP session setup over stdio. Other configured instances use their adapter’s native discovery. If a provider returns no model list, Settings shows that state. The desktop owns visibility and order preferences per provider instance, and applies them when rendering the picker. The native fixture covers hiding, restoring, reordering, and relaunch. The layout reference is T3 Code’s [provider models section](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/settings/ProviderModelsSection.tsx).
+
 ## Desktop conversation checkout
 
 Desktop owns the workspace mode and the searchable branch picker. It follows T3 Code's rule that a default worktree base must resolve to a commit. Desktop reads Git's cached remote default at launch, prefers `origin` when present, and falls back to `main`, `master`, the current commit, or another available branch. The worktree picker includes local and remote-tracking refs. **Current checkout** uses the chosen directory and can switch to a selected local branch at launch. Git refuses switches that would overwrite local files or use a branch checked out in another worktree. A repository without a base commit falls back to **Current checkout**. Remote-tracking refs reflect the last Git fetch. [T3 Code default branch regression](https://github.com/pingdotgg/t3code/commit/bc7fe11002aaa29a98d7429eb765765bc366b59d) · [Desktop workflow](../scripts/check-desktop-coding.py)

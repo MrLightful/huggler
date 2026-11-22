@@ -1,19 +1,32 @@
+mod advanced;
+mod environment;
+mod models;
+mod providers;
+mod setup;
+
+pub(crate) use setup::default_executable;
+
+use crate::conversation::ProviderCatalog;
 use crate::ui::{choice, heading, hint, label, section_title};
+use advanced::{RuntimeFields, RuntimePreferences};
 use anyhow::{Context as _, Result, ensure};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Theme, ThemeMode,
-    button::Button,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, Theme, ThemeMode,
+    button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
 };
 use huggler::{
-    Huggler, ProviderInstanceId,
+    Huggler, Provider, ProviderInstanceId,
     workspace::{OrphanedWorktreeOutcome, OrphanedWorktreeReport},
 };
+pub(crate) use models::ModelPreferences;
+use providers::ProviderSettings;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -42,18 +55,28 @@ impl Appearance {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
-    pub provider: ProviderInstanceId,
     appearance: Appearance,
     pub codex_executable: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_agent_executable: Option<PathBuf>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    models: BTreeMap<String, ModelPreferences>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    runtime_overrides: BTreeMap<String, RuntimePreferences>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    provider_environment: BTreeMap<String, BTreeMap<String, String>>,
     pub automatic_worktree_cleanup: bool,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            provider: "codex".into(),
             appearance: Appearance::System,
             codex_executable: None,
+            claude_agent_executable: None,
+            models: BTreeMap::new(),
+            runtime_overrides: BTreeMap::new(),
+            provider_environment: BTreeMap::new(),
             automatic_worktree_cleanup: false,
         }
     }
@@ -69,28 +92,57 @@ impl Preferences {
     }
 
     fn save(&self, state: &Path) -> Result<()> {
-        let temp = state.join(format!("preferences-{}.tmp", uuid::Uuid::new_v4()));
-        fs::write(&temp, serde_json::to_vec_pretty(self)?)?;
-        if let Err(error) = fs::rename(&temp, state.join("preferences.json")) {
-            let _ = fs::remove_file(temp);
-            return Err(error.into());
-        }
+        let temp = tempfile::NamedTempFile::new_in(state)?;
+        serde_json::to_writer_pretty(temp.as_file(), self)?;
+        temp.persist(state.join("preferences.json"))?;
         Ok(())
     }
 }
 
 pub enum SettingsEvent {
     Back,
-    DefaultProvider(ProviderInstanceId),
+    ProviderModels(ProviderInstanceId, bool),
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Page {
+    #[default]
+    Overview,
+    Appearance,
+    Providers,
+    Storage,
+}
+
+impl Page {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Overview => "Settings",
+            Self::Appearance => "Appearance",
+            Self::Providers => "Providers",
+            Self::Storage => "Storage",
+        }
+    }
+
+    fn parent(self) -> Option<Self> {
+        match self {
+            Self::Overview => None,
+            Self::Appearance | Self::Providers | Self::Storage => Some(Self::Overview),
+        }
+    }
 }
 
 pub struct Settings {
+    page: Page,
     prefs: Preferences,
     state: PathBuf,
     runtime: Arc<Huggler>,
     input: Entity<InputState>,
-    env_override: bool,
-    active_executable: PathBuf,
+    providers: ProviderSettings,
+    model_catalog: Option<Entity<ProviderCatalog>>,
+    catalog_subscription: Option<Subscription>,
+    advanced: bool,
+    runtime_fields: RuntimeFields,
+    environment_rows: Option<Vec<environment::EnvironmentRow>>,
     pub focus: FocusHandle,
     error: Option<String>,
     cleanup_running: bool,
@@ -101,33 +153,14 @@ impl EventEmitter<SettingsEvent> for Settings {}
 
 impl Settings {
     pub fn new(
-        mut prefs: Preferences,
+        prefs: Preferences,
         state: PathBuf,
         runtime: Arc<Huggler>,
         load_error: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        if !runtime.provider_instances().any(|p| p.id == prefs.provider) {
-            prefs.provider = "codex".into();
-        }
-        let active_executable = runtime
-            .provider_instances()
-            .find(|p| p.id.as_str() == "codex")
-            .expect("built-in Codex instance")
-            .executable
-            .clone();
-        let env_override = std::env::var_os("HUGGLER_CODEX").map(PathBuf::from);
-        let value = env_override
-            .as_ref()
-            .or(prefs.codex_executable.as_ref())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Use codex from PATH")
-                .default_value(value)
-        });
+        let input = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe(&input, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -141,13 +174,20 @@ impl Settings {
             }
         })
         .detach();
+        let providers = ProviderSettings::new(Provider::Codex.key().into());
+        let runtime_fields = RuntimeFields::new(window, cx);
         Self {
+            page: Page::default(),
             prefs,
             state,
             runtime,
             input,
-            env_override: env_override.is_some(),
-            active_executable,
+            providers,
+            model_catalog: None,
+            catalog_subscription: None,
+            advanced: false,
+            runtime_fields,
+            environment_rows: None,
             focus: cx.focus_handle(),
             error: load_error,
             cleanup_running: false,
@@ -155,8 +195,51 @@ impl Settings {
         }
     }
 
-    pub fn default_provider(&self) -> ProviderInstanceId {
-        self.prefs.provider.clone()
+    pub fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_page(Page::Overview, window, cx);
+    }
+
+    fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page == page || !self.save_provider_edits(cx) {
+            return;
+        }
+        self.page = page;
+        if page == Page::Providers {
+            self.open_providers(window, cx);
+        }
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    fn save_provider_edits(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.provider_details_open() {
+            return true;
+        }
+        let mut prefs = self.prefs.clone();
+        let edits = (|| {
+            let path = self.apply_path_edit(&mut prefs, cx)?;
+            let runtime = self.apply_runtime_edit(&mut prefs, cx)?;
+            let environment = self.apply_environment_edits(&mut prefs, cx)?;
+            Ok(path || runtime || environment)
+        })();
+        self.persist_provider_edits(prefs, edits, cx)
+    }
+
+    fn persist_provider_edits(
+        &mut self,
+        prefs: Preferences,
+        edits: Result<bool>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match edits {
+            Ok(true) => self.persist(prefs, cx),
+            Ok(false) => true,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                false
+            }
+        }
     }
 
     fn persist(&mut self, prefs: Preferences, cx: &mut Context<Self>) -> bool {
@@ -180,22 +263,77 @@ impl Settings {
         (!text.is_empty()).then(|| PathBuf::from(text))
     }
 
-    fn save_path(&mut self, cx: &mut Context<Self>) -> bool {
-        let path = self.entered_path(cx);
-        if let Some(path) = &path
-            && let Err(e) = validate_program(path)
-        {
-            self.error = Some(e.to_string());
-            cx.notify();
-            return false;
+    fn path_edited(&self, cx: &App) -> bool {
+        self.executable_preference()
+            .is_some_and(|(saved, variable)| {
+                std::env::var_os(variable).is_none() && self.entered_path(cx) != *saved
+            })
+    }
+
+    fn executable_preference(&self) -> Option<(&Option<PathBuf>, &'static str)> {
+        match self.providers.selected.as_str() {
+            "codex" => Some((&self.prefs.codex_executable, "HUGGLER_CODEX")),
+            "claudeAgent" => Some((&self.prefs.claude_agent_executable, "HUGGLER_CLAUDE_ACP")),
+            _ => None,
         }
-        self.persist(
-            Preferences {
-                codex_executable: path,
-                ..self.prefs.clone()
-            },
-            cx,
-        )
+    }
+
+    fn load_executable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((saved, variable)) = self.executable_preference() {
+            let value = std::env::var_os(variable)
+                .map(PathBuf::from)
+                .or_else(|| saved.clone())
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let automatic = self.automatic_executable();
+            let path = if automatic.is_absolute() {
+                Some(automatic)
+            } else {
+                setup::on_path(&automatic).filter(|path| path.is_absolute())
+            };
+            let placeholder = path.map_or_else(
+                || "Find automatically".into(),
+                |path| path.to_string_lossy().into_owned(),
+            );
+            self.input.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx);
+                input.set_value(value, window, cx);
+            });
+        }
+    }
+
+    fn automatic_executable(&self) -> PathBuf {
+        let driver = self.selected_provider().driver;
+        let name = match driver {
+            Provider::Codex => huggler::providers::codex::CodexOptions::default().executable,
+            Provider::ClaudeAgent => {
+                huggler::providers::claude_agent::ClaudeAgentOptions::default().executable
+            }
+            _ => unreachable!("only built-in providers have executable preferences"),
+        };
+        default_executable(&self.state, driver, &name)
+    }
+
+    fn save_path(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut prefs = self.prefs.clone();
+        let edit = self.apply_path_edit(&mut prefs, cx);
+        self.persist_provider_edits(prefs, edit, cx)
+    }
+
+    fn apply_path_edit(&self, prefs: &mut Preferences, cx: &App) -> Result<bool> {
+        if !self.path_edited(cx) {
+            return Ok(false);
+        }
+        let path = self.entered_path(cx);
+        if let Some(path) = &path {
+            validate_program(path)?;
+        }
+        match self.providers.selected.as_str() {
+            "codex" => prefs.codex_executable = path,
+            "claudeAgent" => prefs.claude_agent_executable = path,
+            _ => unreachable!("only built-in providers have editable paths"),
+        }
+        Ok(true)
     }
 
     fn cleanup_worktrees(&mut self, cx: &mut Context<Self>) {
@@ -256,13 +394,10 @@ fn cleanup_summary(report: &OrphanedWorktreeReport) -> String {
 }
 
 fn validate_program(path: &Path) -> Result<()> {
-    ensure!(
-        path.is_absolute(),
-        "Enter the full path to the Codex executable."
-    );
+    ensure!(path.is_absolute(), "Enter the full path to the executable.");
     let metadata = fs::metadata(path)
         .with_context(|| format!("Could not open {}. Check the file path.", path.display()))?;
-    ensure!(metadata.is_file(), "Choose the Codex executable file.");
+    ensure!(metadata.is_file(), "Choose an executable file.");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -274,8 +409,107 @@ fn validate_program(path: &Path) -> Result<()> {
     Ok(())
 }
 
-impl Render for Settings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Settings {
+    fn section_link(
+        page: Page,
+        icon: IconName,
+        description: &'static str,
+        cx: &Context<Self>,
+    ) -> Div {
+        let title = page.title();
+        let summary = control!(
+            format!("settings-summary/{title}"),
+            h_flex()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .size_8()
+                        .flex_shrink_0()
+                        .justify_center()
+                        .rounded_md()
+                        .bg(cx.theme().secondary)
+                        .child(Icon::new(icon).small()),
+                )
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .items_start()
+                        .gap_0p5()
+                        .child(label(title))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate()
+                                .child(description),
+                        ),
+                )
+        );
+        div()
+            .relative()
+            .child(control!(
+                title,
+                Button::new(title)
+                    .ghost()
+                    .w_full()
+                    .h(px(64.))
+                    .pl_4()
+                    .pr_12()
+                    .justify_start()
+                    .rounded_none()
+                    .cursor_pointer()
+                    .overflow_hidden()
+                    .child(summary)
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.show_page(page, window, cx);
+                    }))
+            ))
+            .child(
+                div()
+                    .absolute()
+                    .right_4()
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(control!(
+                        format!("settings-chevron/{title}"),
+                        Icon::new(IconName::ChevronRight).small()
+                    )),
+            )
+    }
+
+    fn overview(cx: &Context<Self>) -> Div {
+        v_flex()
+            .rounded_lg()
+            .overflow_hidden()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
+            .child(Self::section_link(
+                Page::Appearance,
+                IconName::Palette,
+                "Light, dark, or system theme",
+                cx,
+            ))
+            .child(div().border_t_1().border_color(cx.theme().border))
+            .child(Self::section_link(
+                Page::Providers,
+                IconName::SquareTerminal,
+                "Connections, models, and setup",
+                cx,
+            ))
+            .child(div().border_t_1().border_color(cx.theme().border))
+            .child(Self::section_link(
+                Page::Storage,
+                IconName::Folder,
+                "Clean up unused worktrees",
+                cx,
+            ))
+    }
+
+    fn appearance(&self, cx: &Context<Self>) -> Div {
         let appearance = [
             (Appearance::System, "System"),
             (Appearance::Light, "Light"),
@@ -299,57 +533,53 @@ impl Render for Settings {
                 ))
             )
         });
-        let providers = self.runtime.provider_instances().map(|instance| {
-            let id = instance.id.clone();
-            let name =
-                SharedString::from(self.runtime.output().provider_label(id.as_str()).to_owned());
-            control!(
-                format!("default/{id}"),
-                choice(
-                    SharedString::from(format!("default-{id}")),
-                    name,
-                    self.prefs.provider == id
-                )
-                .on_click(cx.listener(move |v, _, _, cx| {
-                    if v.persist(
-                        Preferences {
-                            provider: id.clone(),
-                            ..v.prefs.clone()
-                        },
-                        cx,
-                    ) {
-                        cx.emit(SettingsEvent::DefaultProvider(id.clone()));
-                    }
-                }))
-            )
-        });
-        let managed = self.env_override;
-        let edited = !managed && self.entered_path(cx) != self.prefs.codex_executable;
-        let saved = self
-            .prefs
-            .codex_executable
-            .as_deref()
-            .unwrap_or(Path::new("codex"));
+        v_flex()
+            .gap_2()
+            .child(section_title("Color theme"))
+            .child(h_flex().gap_1().flex_wrap().children(theme_choices))
+    }
+
+    fn executable_field(&self, installed: bool, cx: &Context<Self>) -> Div {
+        let instance = self.selected_provider();
+        if let Some(url) = &instance.server_url {
+            return v_flex()
+                .gap_1()
+                .child(label("Server address"))
+                .child(hint(url.clone(), cx));
+        }
+        let Some((saved, variable)) = self.executable_preference() else {
+            return v_flex()
+                .gap_1()
+                .child(label("CLI executable"))
+                .child(hint(instance.executable.display().to_string(), cx));
+        };
+        let managed = std::env::var_os(variable).is_some();
+        let edited = self.path_edited(cx);
+        let executable = &instance.executable;
         let path_hint = if managed {
-            "HUGGLER_CODEX sets this path when the app starts.".into()
+            format!("{variable} sets this path at startup.")
         } else if edited {
             "Save the path to use it the next time Huggler starts.".into()
-        } else if saved != self.active_executable {
+        } else if saved.clone().unwrap_or_else(|| self.automatic_executable()) != *executable {
             format!(
                 "Saved. Restart Huggler to apply. Currently using {}.",
-                self.active_executable.display()
+                executable.display()
             )
+        } else if saved.is_none() && installed {
+            "The executable is found automatically.".into()
+        } else if saved.is_none() {
+            "To use an installation of your own, enter the full path.".into()
         } else {
-            "Leave blank to find codex on PATH. Path changes apply after restart.".into()
+            "Clear the path to let Huggler find the executable automatically.".into()
         };
-        let path_field = v_flex()
+        v_flex()
             .gap_1()
-            .child(label("Codex executable"))
+            .child(label("CLI executable"))
             .child(
                 h_flex()
                     .gap_2()
                     .child(div().flex_1().min_w_0().child(control!(
-                        "Codex executable",
+                        "CLI executable",
                         Input::new(&self.input).disabled(managed)
                     )))
                     .when(!managed, |row| {
@@ -364,11 +594,14 @@ impl Render for Settings {
                         ))
                     }),
             )
-            .child(hint(path_hint, cx));
+            .child(hint(path_hint, cx))
+    }
+
+    fn storage(&self, cx: &Context<Self>) -> Div {
         let automatic_cleanup = self.prefs.automatic_worktree_cleanup;
-        let cleanup_controls = v_flex()
+        v_flex()
             .gap_2()
-            .child(label("Automatic cleanup"))
+            .child(section_title("Automatic cleanup"))
             .child(
                 h_flex()
                     .gap_1()
@@ -408,46 +641,34 @@ impl Render for Settings {
                     .on_click(cx.listener(|view, _, _, cx| view.cleanup_worktrees(cx)))
             ))
             .when_some(self.cleanup_status.clone(), |controls, status| {
-                controls.child(hint(status, cx))
-            });
+                controls.child(control!(status.clone(), hint(status, cx)))
+            })
+    }
+}
+
+impl Render for Settings {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = match self.page {
+            Page::Overview => Self::overview(cx),
+            Page::Appearance => self.appearance(cx),
+            Page::Providers => self.render_provider_panel(cx),
+            Page::Storage => self.storage(cx),
+        };
+        let scroll_id = match self.page {
+            Page::Providers => self.provider_scroll_id(),
+            _ => SharedString::from(self.page.title()),
+        };
         let body = v_flex()
             .w_full()
             .max_w(px(720.))
             .p_5()
-            .gap_5()
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(section_title("Appearance"))
-                    .child(label("Color theme"))
-                    .child(h_flex().gap_1().flex_wrap().children(theme_choices)),
-            )
-            .child(
-                v_flex()
-                    .gap_3()
-                    .pt_4()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(section_title("Coding providers"))
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(label("Default for new conversations"))
-                            .child(h_flex().gap_1().flex_wrap().children(providers)),
-                    )
-                    .child(path_field),
-            )
-            .child(
-                v_flex()
-                    .gap_3()
-                    .pt_4()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(section_title("Storage"))
-                    .child(cleanup_controls),
-            )
-            .when_some(self.error.clone(), |body, error| {
-                body.child(control!(
+            .when(self.page == Page::Overview, |body| {
+                body.max_w(px(600.)).mx_auto().pt_7()
+            })
+            .gap_3()
+            .child(content)
+            .when_some(self.error.clone(), |panel, error| {
+                panel.child(control!(
                     format!("settings-error/{error}"),
                     div().text_sm().text_color(cx.theme().danger).child(error)
                 ))
@@ -461,23 +682,50 @@ impl Render for Settings {
                     .py_3()
                     .flex_shrink_0()
                     .justify_between()
+                    .gap_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(heading("Settings"))
-                    .child(control!(
-                        "Done",
-                        Button::new("done").label("Done").on_click(cx.listener(
-                            move |v, _, _, cx| {
-                                if !edited || v.save_path(cx) {
-                                    cx.emit(SettingsEvent::Back);
+                    .child(
+                        h_flex()
+                            .pl_8()
+                            .min_w_0()
+                            .gap_2()
+                            .when_some(self.page.parent(), |row, parent| {
+                                row.child(control!(
+                                    "Back to Settings",
+                                    Button::new("back-to-settings")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::ChevronLeft)
+                                        .tooltip("Back to Settings")
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.show_page(parent, window, cx);
+                                        }))
+                                ))
+                            })
+                            .child(heading(self.page.title()).truncate()),
+                    )
+                    .child(
+                        control!(
+                            "Done",
+                            Button::new("done").label("Done").on_click(cx.listener(
+                                |v, _, _, cx| {
+                                    if v.save_provider_edits(cx) {
+                                        v.page = Page::Overview;
+                                        cx.emit(SettingsEvent::Back);
+                                    }
                                 }
-                            }
-                        ))
-                    )),
+                            ))
+                        )
+                        .flex_shrink_0(),
+                    ),
             )
+            .when(self.page == Page::Providers, |page| {
+                page.child(self.provider_selector(cx))
+            })
             .child(
                 div()
-                    .id("settings-body")
+                    .id(scroll_id)
                     .min_h_0()
                     .flex_1()
                     .overflow_y_scroll()

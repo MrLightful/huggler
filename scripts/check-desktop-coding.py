@@ -48,7 +48,7 @@ def check(binary):
         env["HUGGLER_PROMPT_SUGGESTIONS"] = "1"
         run_window(binary, state, [
             {"see": "First message"}, {"right_of": ["Send first message", "Attach files"]}, {"absent": "Conversation options"},
-            *launch_thread(checkout, "Implementation", current=True), {"click": "Show conversations"},
+            *launch_thread(checkout, "Implementation", current=True),
             {"see": "Ready/Implementation/New conversation"},
             {"resize": [1120, 740]},
             {"center_x": ["Resize conversations", 288]}, {"center_x": ["Resize changes", 784]},
@@ -82,6 +82,7 @@ def check(binary):
             {"center_x": ["Resize conversations", 328]}, {"center_x": ["Resize changes", 824]},
             {"right_of": [f"Changed/{name}", "Message"]}, {"absent": "Publish"}, {"absent": "Checks"},
             *send_message("Use a single line."), {"see": "Codex/Corrected the answer."},
+            {"click": "Hide conversations"}, {"absent": "thread/Implementation"},
         ], env)
         assert (checkout / name).read_text() == "42\n"
         (checkout / committed_name).write_text("committed on topic\n")
@@ -93,7 +94,7 @@ def check(binary):
         other = root / "other"
         subprocess.run(["git", "init", "-q", other], check=True)
         run_window(binary, state, [
-            {"resize": [640, 440]}, {"click": "Show conversations"}, {"see": "Codex/Corrected the answer."},
+            {"see": "thread/Implementation"}, {"see": "Codex/Corrected the answer."}, {"resize": [640, 440]},
             {"absent": "Checking PR…"}, {"absent": "Create PR"}, {"right_of": ["Show changes", "Open in"]},
             {"absent": f"Changed/{name}"}, {"click": "Show changes"}, {"see": f"Changed/{name}"},
             {"click": f"Open in/{name}"}, {"see": f"Open Finder/{name}"},
@@ -118,7 +119,7 @@ def check(binary):
         other_name = "draft.txt"
         (checkout / other_name).write_text("keep this\n")
         run_window(binary, state, [
-            {"click": "Show conversations"}, {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
+            {"click": "Resume queue"}, {"see": "Codex/Reviewed the staged result."},
             {"click": "Create"}, {"next_file_selection": [str(checkout)]}, {"click": "Choose project"},
             {"see": "From main (remote)"}, {"click": "First message"}, {"type": "Start from default @base-only"},
             {"see": "suggestion/base-only.txt"}, {"absent": "suggestion/base-only-link.txt"}, {"key": "enter"},
@@ -290,11 +291,13 @@ def check_transcript(binary):
             {"absent": "commentary/I’ll start with the conversation layout."},
             {"absent": "Command 1 output"},
             {"max_height": ["elapsed-time", 24]},
+            {"absent": "message-duration/Duration unavailable"},
             {"click": "activity/2 tool calls · 2 messages"},
             {"see": "commentary/I’ll start with the conversation layout."}, {"see": "Command 1 output"},
             {"see": "Context compacted"}, {"contains": "Codex/## Review summary"},
             {"see": "activity/2 tool calls · 2 messages"}, {"see": "activity/1 tool call"},
             {"absent": "elapsed-time"},
+            {"contains": "message-duration/"},
             {"absent": "activity-item/docs / lookup"},
             {"click": "activity/2 tool calls · 2 messages"}, {"see": "activity-item/docs / lookup"},
             {"click": "activity/1 tool call"}, {"see": "activity-item/desktop/src/conversation.rs"},
