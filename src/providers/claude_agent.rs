@@ -58,6 +58,15 @@ impl Session<'_> {
             .await
     }
 
+    async fn select_permission(&mut self, wire_id: &Value, option: &str) -> Result<()> {
+        self.rpc
+            .write(json!({
+                "jsonrpc": "2.0", "id": wire_id,
+                "result": {"outcome": {"outcome": "selected", "optionId": option}}
+            }))
+            .await
+    }
+
     async fn close_permissions(
         &mut self,
         pending: &mut HashMap<RequestId, PendingPermission>,
@@ -269,6 +278,7 @@ pub(crate) async fn execute(
         return Err(Error::Closed);
     }
     let mut rpc = Rpc::spawn(options, &[], &turn)?;
+    let full_access = options.full_access && !turn.plan_mode;
     let conversation = async {
         let mut client = Session {
             rpc: &mut rpc,
@@ -309,7 +319,7 @@ pub(crate) async fn execute(
                     let Some(request) = pending.remove(&request) else {
                         continue;
                     };
-                    client.rpc.write(json!({"jsonrpc":"2.0","id":request.wire_id,"result":{"outcome":{"outcome":"selected","optionId":option}}})).await?;
+                    client.select_permission(&request.wire_id, &option).await?;
                     continue;
                 }
             };
@@ -327,6 +337,19 @@ pub(crate) async fn execute(
                     };
                     let options: Vec<PermissionOption> =
                         serde_json::from_value(params["options"].clone())?;
+                    if full_access {
+                        // A persistent provider rule could outlive Full access.
+                        if let Some(option) =
+                            options.iter().find(|option| option.kind == "allow_once")
+                        {
+                            client
+                                .select_permission(&f["id"], &option.option_id)
+                                .await?;
+                        } else {
+                            client.cancel_permission(f["id"].clone()).await?;
+                        }
+                        continue;
+                    }
                     let id = RequestId(uuid::Uuid::new_v4().to_string());
                     pending.insert(
                         id.clone(),

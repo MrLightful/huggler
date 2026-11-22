@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Drive a complete local coding cycle in the native macOS qualification window."""
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -55,6 +56,22 @@ def check(binary):
                    GIT_COMMON_DIR=str(root / ".git"), GIT_INDEX_FILE=str(root / ".git/index"))
         env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/desktop-coding-peer.py")
         env["HUGGLER_PROMPT_SUGGESTIONS"] = "1"
+        default_state = root / "default-state"
+        run_window(binary, default_state, [
+            *launch_thread(checkout, "Full access", current=True),
+            *send_message("Check the default permissions."),
+            {"see": "Codex/Full access confirmed."},
+            {"key": "cmd-,"}, {"click": "General"}, {"click": "Ask for approval"},
+        ], env)
+        prefs = json.loads((default_state / "preferences.json").read_text())
+        assert prefs["askForAgentApproval"] is True
+        run_window(binary, default_state, [
+            {"see": "Codex/Full access confirmed."},
+            *send_message("Check the saved permissions."),
+            {"see": "Codex/Approval mode confirmed."},
+        ], env)
+        state.mkdir()
+        (state / "preferences.json").write_text(json.dumps({"askForAgentApproval": True}))
         run_window(binary, state, [
             {"see": "First message"}, {"right_of": ["Send first message", "Attach files"]}, {"absent": "Conversation options"},
             *launch_thread(checkout, "Implementation", current=True),
@@ -177,7 +194,7 @@ def check(binary):
             {"click": "thread/Implementation"}, {"see": f"Workspace file/{name}"},
             {"see": f"Diff tab/All changes/{name}"}, {"see": "Message"},
             {"click": "Changes tab"}, {"see": f"Changed/{name}"}, {"click": "Send"},
-            {"see": "status/Running"}, {"see": "Stop thread"}, {"absent": "Queue message"},
+            {"see": "Working/Implementation/Running"}, {"see": "Stop thread"}, {"absent": "Queue message"},
             {"click": "Message"}, {"type": "Review the staged result."}, {"see": "Queue message"},
             {"key": "enter"}, {"see": "1 queued message"},
             {"in_lower_half": "section/Working/1"}, {"see": "Working/Implementation/Running"},

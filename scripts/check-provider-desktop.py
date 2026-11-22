@@ -42,6 +42,7 @@ def check_provider_presets(executable, tmp, env):
         {"click": "Save path"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
         {"click": "model-automatic"}, {"absent": "provider/Cursor"},
         {"absent": "provider/Antigravity"}, {"see": "provider/fx"},
+        {"key": "escape"}, {"key": "cmd-,"}, {"click": "General"}, {"click": "Ask for approval"},
     ], env)
     assert json.loads((state / "preferences.json").read_text())["providerExecutables"] == {
         "cursor": str(cursor)

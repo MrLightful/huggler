@@ -295,11 +295,28 @@ impl Client {
                 "required": true
             });
         }
+        let full_access = options.full_access && !turn.plan_mode;
         let writable = options.workspace_write && !turn.plan_mode;
-        if options.request_approvals {
-            session["approvalPolicy"] = json!("on-request");
+        let request_approvals = options.request_approvals && !options.full_access;
+        let approval_policy = if request_approvals {
+            json!("on-request")
+        } else if full_access && turn.agent_tools.is_some() {
+            json!({"granular": {
+                "mcp_elicitations": true,
+                "request_permissions": false,
+                "rules": false,
+                "sandbox_approval": false,
+                "skill_approval": false
+            }})
+        } else {
+            json!("never")
+        };
+        if options.full_access || request_approvals {
+            session["approvalPolicy"] = approval_policy.clone();
         }
-        if options.request_approvals || options.workspace_write {
+        if full_access {
+            session["sandbox"] = json!("danger-full-access");
+        } else if options.full_access || request_approvals || options.workspace_write {
             session["sandbox"] = json!(if writable {
                 "workspace-write"
             } else {
@@ -363,12 +380,11 @@ impl Client {
                 .map(|file| json!({"type":"localImage","path":file.path})),
         );
         let mut params = json!({"threadId":thread, "cwd":turn.cwd, "input":input,
-            "approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly"},"summary":"auto"});
-        if writable {
+            "approvalPolicy":approval_policy,"approvalsReviewer":"user","sandboxPolicy":{"type":"readOnly"},"summary":"auto"});
+        if full_access {
+            params["sandboxPolicy"] = json!({"type":"dangerFullAccess"});
+        } else if writable {
             params["sandboxPolicy"] = json!({"type":"workspaceWrite", "networkAccess":false});
-        }
-        if options.request_approvals {
-            params["approvalPolicy"] = json!("on-request");
         }
         if let Some(model) = model.or_else(|| response["model"].as_str()) {
             params["model"] = json!(model);
@@ -557,7 +573,18 @@ impl Client {
                     }))?;
                     continue;
                 }
-                if !options.request_approvals || (!root_request && child.is_none()) {
+                let agent_tool_approval = frame["method"] == "mcpServer/elicitation/request"
+                    && turn.agent_tools.is_some()
+                    && p["serverName"] == turn.output.name
+                    && p["mode"] == "form"
+                    && p["_meta"]["codex_approval_kind"] == "mcp_tool_call";
+                if (root_request || child.is_some()) && full_access && agent_tool_approval {
+                    self.rpc
+                        .write(json!({"id":wire_id,"result":{"action":"accept","content":{}}}))
+                        .await?;
+                    continue;
+                }
+                if !request_approvals || (!root_request && child.is_none()) {
                     self.rpc.write(json!({"id":wire_id,"error":self.rpc.error(-32602, "No matching interactive run")})).await?;
                     continue;
                 }
@@ -566,21 +593,14 @@ impl Client {
                         Approval::Permissions(p["permissions"].clone()),
                         turn.output.text.label("Grant permissions for this turn"),
                     ),
-                    Some("mcpServer/elicitation/request")
-                        if turn.agent_tools.is_some()
-                            && p["serverName"] == turn.output.name
-                            && p["mode"] == "form"
-                            && p["_meta"]["codex_approval_kind"] == "mcp_tool_call" =>
-                    {
-                        (
-                            Approval::Mcp,
-                            p["message"].as_str().map(str::to_owned).unwrap_or_else(|| {
-                                turn.output
-                                    .text
-                                    .label(&format!("Use {} agent tool", turn.output.title))
-                            }),
-                        )
-                    }
+                    Some("mcpServer/elicitation/request") if agent_tool_approval => (
+                        Approval::Mcp,
+                        p["message"].as_str().map(str::to_owned).unwrap_or_else(|| {
+                            turn.output
+                                .text
+                                .label(&format!("Use {} agent tool", turn.output.title))
+                        }),
+                    ),
                     Some("item/fileChange/requestApproval") => (
                         Approval::Command,
                         turn.output.text.label("Allow file changes"),

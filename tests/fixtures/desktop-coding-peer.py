@@ -8,6 +8,10 @@ import time
 from uuid import uuid4
 
 file = Path("answer [v1].txt")
+full_access_policy = {"granular": {
+    "mcp_elicitations": True, "request_permissions": False, "rules": False,
+    "sandbox_approval": False, "skill_approval": False,
+}}
 
 
 def emit(**frame):
@@ -30,7 +34,10 @@ for line in sys.stdin:
     method = frame.get("method")
     if "id" not in frame:
         continue
-    if frame["id"] == "confirm":
+    if frame["id"] == "tool-approval":
+        assert frame["result"] == {"action": "accept", "content": {}}
+        complete("Full access confirmed.")
+    elif frame["id"] == "confirm":
         assert frame["result"] == {"answers": {"filename": {"answers": [file.name]}}}
         emit(id="write", method="item/fileChange/requestApproval",
              params={"threadId": session, "turnId": turn, "itemId": "edit", "reason": "Create the answer file"})
@@ -54,7 +61,13 @@ for line in sys.stdin:
             assert params["config"]["features.hooks"] is False
             assert params["config"]["features.plugins"] is False
         else:
-            assert params["approvalPolicy"] == "on-request"
+            approval_policy = params["approvalPolicy"]
+            assert approval_policy in ("on-request", "never", full_access_policy)
+            if approval_policy == full_access_policy:
+                server_name, = [
+                    key.removeprefix("mcp_servers.") for key in params["config"]
+                    if key.startswith("mcp_servers.")
+                ]
         session = params["threadId"] if method == "thread/resume" else str(uuid4())
         sandbox = params["sandbox"]
         emit(id=frame["id"], result={"thread": {"id": session}, "model": "fixture-model"})
@@ -84,8 +97,26 @@ for line in sys.stdin:
             emit(id=frame["id"], result={"turn": {"id": turn}})
             complete("Create the answer file and check its value.", "plan")
             continue
-        assert sandbox == "workspace-write"
-        assert params["sandboxPolicy"] == {"type": "workspaceWrite", "networkAccess": False}
+        assert params["approvalPolicy"] == approval_policy
+        if approval_policy == full_access_policy:
+            assert sandbox == "danger-full-access"
+            assert params["sandboxPolicy"] == {"type": "dangerFullAccess"}
+        else:
+            assert sandbox == "workspace-write"
+            assert params["sandboxPolicy"] == {"type": "workspaceWrite", "networkAccess": False}
+        if prompt in ("Check the default permissions.", "Check the saved permissions."):
+            is_default = prompt == "Check the default permissions."
+            assert approval_policy == (full_access_policy if is_default else "on-request")
+            turn = str(uuid4())
+            emit(id=frame["id"], result={"turn": {"id": turn}})
+            if is_default:
+                emit(id="tool-approval", method="mcpServer/elicitation/request", params={
+                    "threadId": session, "turnId": turn, "serverName": server_name, "mode": "form",
+                    "_meta": {"codex_approval_kind": "mcp_tool_call"},
+                })
+            else:
+                complete("Approval mode confirmed.")
+            continue
         if prompt.startswith(("Fix the failed checks", "Resolve the")):
             if prompt.startswith("Fix"):
                 assert "fixture/project #12 (https://github.com/fixture/project/pull/12)" in prompt
@@ -97,6 +128,7 @@ for line in sys.stdin:
         emit(id=frame["id"], result={"turn": {"id": turn}})
         if prompt == ("Create the answer file. [fixture-tree](fixture-tree) "
                       "[linked-entry](fixture-tree/linked-entry) "):
+            assert approval_policy == "on-request"
             text = ("Checking the requested filename. I will confirm the path with you before "
                     "creating the answer file in this checkout.")
             for character in text:

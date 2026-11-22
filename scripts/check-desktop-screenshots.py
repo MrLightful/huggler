@@ -139,7 +139,8 @@ def capture(executable, output, appearance, case, baseline):
     ], check=True, env=env)
     source.write_text("pub fn answer() -> u32 {\n    42\n}\n")
     (state / "preferences.json").write_text(json.dumps({
-        "appearance": appearance, "projects": [{"name": checkout.name, "root": str(checkout)}],
+        "appearance": appearance, "askForAgentApproval": True,
+        "projects": [{"name": checkout.name, "root": str(checkout)}],
     }))
     codex = case / "codex"
     codex.write_text("""#!/bin/sh
