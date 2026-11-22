@@ -13,6 +13,42 @@ const CUSTOM_ASSETS: &[(&str, &[u8])] = &[
         "provider-logos/claude.svg",
         include_bytes!("../assets/provider-logos/claude.svg"),
     ),
+    (
+        "provider-logos/cursor.svg",
+        include_bytes!("../assets/provider-logos/cursor.svg"),
+    ),
+    (
+        "provider-logos/grok.svg",
+        include_bytes!("../assets/provider-logos/grok.svg"),
+    ),
+    (
+        "provider-logos/vercel.svg",
+        include_bytes!("../assets/provider-logos/vercel.svg"),
+    ),
+    (
+        "provider-logos/kiro.svg",
+        include_bytes!("../assets/provider-logos/kiro.svg"),
+    ),
+    (
+        "provider-logos/antigravity.svg",
+        include_bytes!("../assets/provider-logos/antigravity.svg"),
+    ),
+    (
+        "provider-logos/agent-handshake.svg",
+        include_bytes!("../assets/provider-logos/agent-handshake.svg"),
+    ),
+    (
+        "provider-logos/opencode.svg",
+        include_bytes!("../assets/provider-logos/opencode.svg"),
+    ),
+    (
+        "provider-logos/pi.svg",
+        include_bytes!("../assets/provider-logos/pi.svg"),
+    ),
+    (
+        "provider-logos/meta.svg",
+        include_bytes!("../assets/provider-logos/meta.svg"),
+    ),
     ("icons/mcp.svg", include_bytes!("../assets/icons/mcp.svg")),
     (
         "icons/provider-refresh.svg",
