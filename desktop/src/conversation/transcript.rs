@@ -481,6 +481,7 @@ impl Desktop {
             &group,
             message.origin.is_some().then_some(author),
             item.timestamp_ms,
+            !outgoing,
             item.turn_duration_ms,
             copy_button,
             cx,
@@ -904,6 +905,7 @@ fn message_footer(
     group: &str,
     author: Option<&str>,
     timestamp_ms: Option<i64>,
+    show_duration: bool,
     duration_ms: Option<i64>,
     copy: Button,
     cx: &App,
@@ -921,17 +923,6 @@ fn message_footer(
             let date = date.format("%b %-d, %Y · %H:%M").to_string();
             time.tooltip(move |window, cx| Tooltip::new(date.clone()).build(window, cx))
         });
-    let duration = duration_ms.map_or_else(
-        || "Duration unavailable".into(),
-        |ms| {
-            let seconds = ms / 1_000;
-            if seconds >= 60 {
-                format!("{}m, {}s", seconds / 60, seconds % 60)
-            } else {
-                format!("{seconds}s")
-            }
-        },
-    );
     h_flex()
         .mt_1()
         .gap_2()
@@ -947,11 +938,23 @@ fn message_footer(
                 .child("·")
         })
         .child(time)
-        .child("·")
-        .child(control!(
-            format!("message-duration/{duration}"),
-            div().child(duration)
-        ))
+        .when(show_duration, |footer| {
+            let duration = duration_ms.map_or_else(
+                || "Duration unavailable".into(),
+                |ms| {
+                    let seconds = ms / 1_000;
+                    if seconds >= 60 {
+                        format!("{}m, {}s", seconds / 60, seconds % 60)
+                    } else {
+                        format!("{seconds}s")
+                    }
+                },
+            );
+            footer.child("·").child(control!(
+                format!("message-duration/{duration}"),
+                div().child(duration)
+            ))
+        })
         .child(copy.flex_shrink_0())
 }
 
