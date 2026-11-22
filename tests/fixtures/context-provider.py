@@ -72,7 +72,32 @@ for line in sys.stdin:
         result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
         if Path("acp-vision").exists():
             result["agentCapabilities"]["promptCapabilities"] = {"image": True}
+    elif method == "mcpServerStatus/list" and not acp:
+        assert ephemeral and params["threadId"] == session
+        assert params["detail"] == "toolsAndAuthOnly"
+        if Path("mcp-status-unavailable").exists():
+            emit(id=frame["id"], error={"code": -32601, "message": "unsupported"})
+            continue
+        if params.get("cursor") is None:
+            if Path("mcp-status-delay").exists():
+                time.sleep(2)
+            result = {"nextCursor": "second-page", "data": [
+                {"name": "Workspace Tools", "runtimeStatus": "connected",
+                 "tools": {"search": {}, "read": {}, "summarize": {}}},
+                {"name": "Notes", "runtimeStatus": "failed", "authStatus": "notLoggedIn", "tools": {}},
+                {"name": "Reports", "runtimeStatus": "disabled", "tools": {}},
+            ]}
+        else:
+            assert params["cursor"] == "second-page"
+            result = {"data": [
+                {"name": "Calendar", "toolsError": "MCP startup failed", "tools": {}},
+                {"name": "Archive", "serverInfo": {"name": "Archive", "version": "1"}, "tools": {}},
+                {"name": "Reference", "authStatus": "notLoggedIn", "tools": {"find": {}}},
+            ]}
     elif method in ("thread/start", "session/new", "thread/resume", "session/load", "thread/fork"):
+        ephemeral = params.get("ephemeral", False)
+        if ephemeral:
+            assert params["cwd"] == str(Path.cwd())
         session = str(uuid4()) if method in ("thread/fork", "thread/start", "session/new") else params.get("threadId", params.get("sessionId"))
         result = {"sessionId": session} if acp else {"thread": {"id": session}}
         if method == "session/load" and session == "archived":

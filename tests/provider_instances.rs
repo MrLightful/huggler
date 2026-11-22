@@ -173,6 +173,71 @@ async fn codex_discovery_lists_enabled_skills_for_the_requested_checkout() {
 }
 
 #[tokio::test]
+async fn codex_discovers_mcp_status_across_pages_without_a_turn() {
+    use McpServerState::*;
+    let (temp, root) = checkout();
+    let mut options = HugglerOptions::new(temp.path().join("state"));
+    options.codex.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-provider.py");
+    let rt = Huggler::open(options).await.unwrap();
+    let servers = rt
+        .list_mcp_server_status("codex", &root)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        servers
+            .iter()
+            .map(|server| (server.name.as_str(), server.state))
+            .collect::<Vec<_>>(),
+        [
+            ("Archive", Connected { tool_count: 0 }),
+            ("Calendar", Failed),
+            ("Notes", AuthenticationRequired),
+            ("Reference", Connected { tool_count: 1 }),
+            ("Reports", Disabled),
+            ("Workspace Tools", Connected { tool_count: 3 }),
+        ]
+    );
+    assert!(
+        rt.list_mcp_server_status("claudeAgent", &root)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let calls = fs::read_to_string(root.join("frames.ndjson")).unwrap();
+    let methods = calls
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["method"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "initialize",
+            "initialized",
+            "thread/start",
+            "mcpServerStatus/list",
+            "mcpServerStatus/list"
+        ]
+    );
+    assert!(rt.threads().unwrap().is_empty());
+
+    fs::write(root.join("mcp-status-unavailable"), "").unwrap();
+    assert!(
+        rt.list_mcp_server_status("codex", &root)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
 #[ignore = "uses the signed-in cloud Codex subscription"]
 async fn cloud_codex_with_missing_acp() {
     let (temp, root) = checkout();

@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use gpui::*;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
-use objc2_foundation::{MainThreadMarker, NSPoint};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSString};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -25,6 +25,7 @@ pub enum Step {
     Resize([u16; 2]),
     Type(String),
     Key(String),
+    ReleaseEnter,
     See(String),
     RightOf([String; 2]),
     Above([String; 2]),
@@ -106,6 +107,13 @@ pub(crate) fn observe_bounds(key: SharedString, bounds: Bounds<Pixels>, cx: &mut
     cx.global_mut::<Controls>().0.insert(key, bounds);
 }
 
+fn huggler_window_number(app: &NSApplication) -> Option<isize> {
+    app.windows()
+        .iter()
+        .find(|window| window.title().to_string() == "Huggler")
+        .map(|window| window.windowNumber())
+}
+
 fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
     // AppKit can suspend display-link callbacks for a background window.
     // Lay out a fresh frame before hit-testing or dispatching to the focused editor.
@@ -140,11 +148,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             let position = bounds.center();
             let app =
                 NSApplication::sharedApplication(MainThreadMarker::new().expect("GPUI thread"));
-            let Some(native) = app
-                .windows()
-                .iter()
-                .find(|candidate| candidate.title().to_string() == "Huggler")
-            else {
+            let Some(number) = huggler_window_number(&app) else {
                 return false;
             };
             let events = match step {
@@ -170,7 +174,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
                 );
 
                 let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                    kind, location, NSEventModifierFlags::empty(), 0., native.windowNumber(), None, 0, 1, 1.
+                    kind, location, NSEventModifierFlags::empty(), 0., number, None, 0, 1, 1.
                 ).expect("create click event");
                 app.postEvent_atStart(&event, false);
             }
@@ -180,6 +184,21 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             Keystroke::parse(key).expect("valid qualification keystroke"),
             cx,
         ),
+        Step::ReleaseEnter => {
+            // GPUI buttons activate on key release. dispatch_keystroke only sends key down.
+            let app =
+                NSApplication::sharedApplication(MainThreadMarker::new().expect("GPUI thread"));
+            let Some(number) = huggler_window_number(&app) else {
+                return false;
+            };
+            let enter = NSString::from_str("\r");
+            let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                NSEventType::KeyUp, NSPoint::new(0., 0.), NSEventModifierFlags::empty(),
+                0., number, None, &enter, &enter, false, 36,
+            ).expect("create Return release event");
+            app.postEvent_atStart(&event, false);
+            true
+        }
         Step::Type(value) => window.dispatch_keystroke(
             Keystroke {
                 key: "text".into(),

@@ -798,10 +798,10 @@ impl Render for Changes {
                     .px_3()
                     .py_2()
                     .into_any_element(),
-                Some(Err(error)) => hint(format!("Could not read changes. {error:#}"), cx)
-                    .px_3()
-                    .py_2()
-                    .into_any_element(),
+                Some(Err(error)) => {
+                    let message = format!("Could not read changes. {error:#}");
+                    control!(&message, hint(message.clone(), cx).px_3().py_2()).into_any_element()
+                }
                 Some(Ok(rows)) if rows.is_empty() => {
                     let message = match self.filter {
                         Filter::All if self.approvals.is_empty() => "No changes",

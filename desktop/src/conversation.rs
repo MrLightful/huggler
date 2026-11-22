@@ -1,6 +1,7 @@
 mod attachments;
 mod file_tree;
 mod launch_workspace;
+mod mcp_status;
 mod models;
 mod project_actions;
 mod sidebar;
@@ -133,6 +134,8 @@ pub struct Desktop {
     instance: ProviderInstanceId,
     launch_model: Option<String>,
     model_picker: Option<Entity<ListState<Models>>>,
+    mcp_status: Option<mcp_status::McpStatus>,
+    mcp_status_focus: FocusHandle,
     model_catalogs: HashMap<(ProviderInstanceId, PathBuf), Entity<ProviderCatalog>>,
     checkout_preload: Option<Task<()>>,
     error: Option<String>,
@@ -249,6 +252,8 @@ impl Desktop {
             instance: Provider::Codex.key().into(),
             launch_model: None,
             model_picker: None,
+            mcp_status: None,
+            mcp_status_focus: cx.focus_handle(),
             model_catalogs: HashMap::new(),
             checkout_preload: None,
             error: None,
@@ -260,6 +265,7 @@ impl Desktop {
                 }
                 view.launch_model = None;
                 view.model_picker = None;
+                view.mcp_status = None;
                 view.launch_workspace = LaunchWorkspace::default();
                 view.load_launch_branches(true, cx);
                 let delay = cx
@@ -346,6 +352,7 @@ impl Desktop {
     ) -> huggler::Result<()> {
         self.launching = None;
         self.ensure_workspace(&id, window, cx)?;
+        self.mcp_status = None;
         self.workspaces[&id].refresh_after_checkout_update(self.workspace_tab, cx);
         if self.current.as_ref().is_some_and(|thread| thread.id == id) {
             self.focus_workspace(window, cx);
@@ -564,6 +571,7 @@ impl Desktop {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
+        self.mcp_status = None;
         self.launch_workspace.close_picker();
         self.show_settings = true;
         self.settings
@@ -604,6 +612,7 @@ impl Desktop {
             None => return,
         };
         self.model_picker = None;
+        self.mcp_status = None;
         self.launch_workspace.close_picker();
         input.focus_handle(cx).focus(window);
         cx.notify();
@@ -612,6 +621,7 @@ impl Desktop {
     fn new_conversation(&mut self, setup: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.suggestions = Default::default();
         self.model_picker = None;
+        self.mcp_status = None;
         self.launch_workspace.close_picker();
         self.show_settings = false;
         self.launch_setup = setup;
@@ -831,6 +841,7 @@ impl Desktop {
         if self.instance != *id {
             self.instance.clone_from(id);
             self.launch_model = None;
+            self.mcp_status = None;
             if self.current.is_none() {
                 self.suggestions = Default::default();
             }
@@ -1010,8 +1021,10 @@ impl Desktop {
                 .child(
                     h_flex()
                         .justify_end()
+                        .flex_wrap()
                         .gap_2()
                         .child(self.model_control(cx))
+                        .child(self.mcp_status_control(window, cx))
                         .child(
                             self.send_controls(
                                 &self.starter_attachments,
@@ -1455,8 +1468,9 @@ impl Desktop {
                         .flex_wrap().gap_2()
                         .child(self.model_control(cx))
                         .child(div().flex_1().min_w_0().when_some(status, |slot, status| slot.child(control!(
-                            format!("status/{status}"), label(status)
+                            format!("status/{status}"), label(status).truncate()
                         ))))
+                        .child(self.mcp_status_control(window, cx))
                         .child(self.send_controls(attachments, action_label, action_button, cx)),
                 ),
         )
