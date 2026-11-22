@@ -57,6 +57,13 @@ fn main() -> Result<()> {
     let interactive = driver.is_none();
     #[cfg(not(all(feature = "qualification", target_os = "macos")))]
     let interactive = true;
+    #[cfg(all(feature = "qualification", target_os = "macos"))]
+    let focus_window = interactive
+        || driver
+            .as_ref()
+            .is_some_and(|steps| steps.iter().any(qualification::Step::captures_window));
+    #[cfg(not(all(feature = "qualification", target_os = "macos")))]
+    let focus_window = interactive;
 
     let (mut prefs, load_error) = match settings::Preferences::load(&paths.state_dir()) {
         Ok(prefs) => (prefs, None),
@@ -204,7 +211,7 @@ fn main() -> Result<()> {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(640.), px(440.))),
-                    focus: interactive,
+                    focus: focus_window,
                     app_id: Some(APP_ID.into()),
                     ..Default::default()
                 },
@@ -250,7 +257,7 @@ fn main() -> Result<()> {
                 });
             });
         });
-        if interactive {
+        if focus_window {
             cx.activate(true);
         }
         #[cfg(all(feature = "qualification", target_os = "macos"))]

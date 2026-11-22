@@ -74,3 +74,4 @@ def run_window(executable, state, steps, env):
             raise subprocess.CalledProcessError(app.returncode, app.args, output=stdout)
     if "GPUI workflow passed" not in stdout.splitlines():
         raise RuntimeError("The window closed before the workflow finished")
+    return stdout

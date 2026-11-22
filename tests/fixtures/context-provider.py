@@ -29,6 +29,9 @@ for line in sys.stdin:
     if method == "initialize" and Path("fail-before-prompt").exists():
         sys.exit(1)
     if not method:
+        if frame["id"] == "approve":
+            assert frame["result"]["decision"] in ("accept", "decline")
+            continue
         assert frame["id"] == "ask"
         if prompt == "command output":
             emit(method="item/completed", params={"threadId": session, "turnId": turn, "item": {
@@ -166,7 +169,8 @@ for line in sys.stdin:
     if method == "turn/start":
         if prompt == "callbacks":
             emit(id="approve", method="item/commandExecution/requestApproval", params={
-                "threadId": session, "turnId": turn, "availableDecisions": ["accept", "decline"]})
+                "threadId": session, "turnId": turn, "command": "make check",
+                "availableDecisions": ["accept", "decline"]})
         if prompt.startswith("quota "):
             window = prompt.split()[1]
             if window != "unknown":

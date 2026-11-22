@@ -1,4 +1,6 @@
 //! Qualification builds drive the installed window using its painted layout and native input handlers.
+mod screenshot;
+
 use anyhow::{Result, ensure};
 use gpui::*;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
@@ -28,6 +30,7 @@ pub enum Step {
     ClipboardWrite(String),
     FileText(std::path::PathBuf, String),
     Resize([u16; 2]),
+    Screenshot(screenshot::Screenshot),
     Type(String),
     Key(String),
     ReleaseEnter,
@@ -47,6 +50,12 @@ pub enum Step {
     PermissionFrom(String),
 }
 
+impl Step {
+    pub fn captures_window(&self) -> bool {
+        matches!(self, Self::Screenshot(shot) if shot.path.is_some())
+    }
+}
+
 pub fn load() -> Result<Option<Vec<Step>>> {
     let Some(path) = std::env::var_os("HUGGLER_UI_SCRIPT") else {
         return Ok(None);
@@ -61,6 +70,13 @@ pub fn load() -> Result<Option<Vec<Step>>> {
 #[derive(Default)]
 struct Controls(HashMap<SharedString, Bounds<Pixels>>);
 impl Global for Controls {}
+
+struct ScreenshotMode;
+impl Global for ScreenshotMode {}
+
+pub(crate) fn capturing_screenshots(cx: &App) -> bool {
+    cx.has_global::<ScreenshotMode>()
+}
 
 #[derive(Default)]
 struct RememberedX(Option<Pixels>);
@@ -169,6 +185,7 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             window.resize(size(px(f32::from(*width)), px(f32::from(*height))));
             true
         }
+        Step::Screenshot(_) => unreachable!("screenshots run after presenting the frame"),
         Step::CenterX(key, x) => controls
             .get(key.as_str())
             .is_some_and(|bounds| (f32::from(bounds.center().x) - f32::from(*x)).abs() < 2.),
@@ -294,9 +311,21 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
     }
 }
 
-pub fn run(steps: Vec<Step>, window: AnyWindowHandle, cx: &App) {
+pub fn run(steps: Vec<Step>, window: AnyWindowHandle, cx: &mut App) {
+    if steps.iter().any(Step::captures_window) {
+        cx.set_global(ScreenshotMode);
+    }
     cx.spawn(async move |cx| {
         for step in steps {
+            if let Step::Screenshot(screenshot) = step {
+                let mut cx = cx.clone();
+                if let Err(error) = screenshot.run(window, &mut cx).await {
+                    eprintln!("Screenshot {} failed: {error:#}", screenshot.name);
+                    cx.update(|cx| cx.quit())?;
+                    return Ok(());
+                }
+                continue;
+            }
             let deadline = Instant::now() + Duration::from_secs(100);
             loop {
                 cx.background_executor()

@@ -14,6 +14,11 @@ use turn_rail::TurnPreview;
 const GUTTER: Pixels = px(20.);
 // Markdown must measure at the final width so wrapped lines clear the footer.
 const MAX_RESPONSE_WIDTH: Pixels = px(700.);
+#[cfg(all(feature = "qualification", target_os = "macos"))]
+const SCREENSHOT_TIMESTAMP_MS: i64 = 1_735_732_800_000; // January 1, 2025 at noon UTC.
+#[cfg(all(feature = "qualification", target_os = "macos"))]
+const SCREENSHOT_DURATION_MS: i64 = 1_200;
+
 pub(super) struct TurnClock {
     pub(super) run: RunId,
     opened: Instant,
@@ -44,9 +49,14 @@ impl TurnClock {
 
 impl Render for TurnClock {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let time =
-            format_duration(self.elapsed_at_open_ms + self.opened.elapsed().as_millis() as i64);
-        control!("elapsed-time", div().child(time))
+        let elapsed_ms = self.elapsed_at_open_ms + self.opened.elapsed().as_millis() as i64;
+        #[cfg(all(feature = "qualification", target_os = "macos"))]
+        let elapsed_ms = if crate::qualification::capturing_screenshots(cx) {
+            SCREENSHOT_DURATION_MS
+        } else {
+            elapsed_ms
+        };
+        control!("elapsed-time", div().child(format_duration(elapsed_ms)))
             .font_family(cx.theme().mono_font_family.clone())
             .text_sm()
             .text_color(transcript_muted(cx))
@@ -918,6 +928,15 @@ fn message_footer(
     copy: Button,
     cx: &App,
 ) -> Div {
+    #[cfg(all(feature = "qualification", target_os = "macos"))]
+    let (timestamp_ms, duration_ms) = if crate::qualification::capturing_screenshots(cx) {
+        (
+            timestamp_ms.map(|_| SCREENSHOT_TIMESTAMP_MS),
+            duration_ms.map(|_| SCREENSHOT_DURATION_MS),
+        )
+    } else {
+        (timestamp_ms, duration_ms)
+    };
     let local = timestamp_ms
         .and_then(chrono::DateTime::from_timestamp_millis)
         .map(|time| time.with_timezone(&chrono::Local));
