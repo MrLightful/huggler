@@ -1753,8 +1753,7 @@ impl Desktop {
                             })),
                 ),
         )
-        .child(div().mx_5().mb_2().text_xs().truncate().text_color(cx.theme().muted_foreground)
-            .child(workspace.root.display().to_string()));
+        .pb_2();
         page.child(column)
     }
 
