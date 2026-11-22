@@ -30,6 +30,7 @@ def check(executable):
         ], env)
         assert json.loads(prefs.read_text()) == {
             "appearance": "dark", "provider": "claudeAgent", "codexExecutable": str(fixture),
+            "automaticWorktreeCleanup": False,
         }
         # Hold checkout discovery until Settings saves a new appearance. This
         # makes navigation during launch deterministic even on fast filesystems.
@@ -83,6 +84,7 @@ exec /usr/bin/git "$@"
         ], env)
         assert json.loads(prefs.read_text()) == {
             "appearance": "system", "provider": "claudeAgent", "codexExecutable": None,
+            "automaticWorktreeCleanup": False,
         }
     print("Native settings, shortcuts, drafts and provider persistence passed")
 
