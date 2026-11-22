@@ -2,26 +2,6 @@ use super::{terminal_pane::TerminalLaunch, *};
 use crate::settings::projects::ProjectAction;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 
-actions!(huggler_desktop, [RunTerminalCommand, CancelTerminalCommand]);
-
-pub(crate) fn bind_keys(cx: &mut App) {
-    let input = Some("HugglerTerminalCommand > Input");
-    cx.bind_keys([
-        KeyBinding::new("enter", RunTerminalCommand, input),
-        KeyBinding::new("escape", CancelTerminalCommand, input),
-        KeyBinding::new(
-            "shift-enter",
-            gpui_component::input::Enter { secondary: true },
-            input,
-        ),
-    ]);
-}
-
-pub(super) struct StagedAction {
-    name: String,
-    command: Entity<InputState>,
-}
-
 fn play_icon() -> Icon {
     Icon::default().path("icons/play.svg")
 }
@@ -51,7 +31,7 @@ fn action_menu(
                 let (view, thread, action) = (view.clone(), thread.clone(), action.clone());
                 window.defer(cx, move |window, cx| {
                     let _ = view.update(cx, |view, cx| {
-                        view.stage_project_action(&thread, &action, window, cx);
+                        view.launch_project_action(&thread, &action, window, cx);
                     });
                 });
             }),
@@ -119,7 +99,7 @@ impl Desktop {
         let primary = actions.first().cloned();
         let label = primary.as_ref().map_or_else(
             || "No default project action".into(),
-            |action| format!("Prefill {}", action.name),
+            |action| format!("Run {}", action.name),
         );
         let root = root.clone();
         let primary_thread = thread.clone();
@@ -145,7 +125,7 @@ impl Desktop {
                         .disabled(primary.is_none())
                         .on_click(cx.listener(move |view, _, window, cx| {
                             if let Some(action) = &primary {
-                                view.stage_project_action(&primary_thread, action, window, cx);
+                                view.launch_project_action(&primary_thread, action, window, cx);
                             }
                         }))
                 ))
@@ -169,7 +149,7 @@ impl Desktop {
         )
     }
 
-    fn stage_project_action(
+    fn launch_project_action(
         &mut self,
         thread: &ThreadId,
         action: &ProjectAction,
@@ -183,131 +163,8 @@ impl Desktop {
         {
             return;
         }
-        let command = cx.new(|cx| {
-            InputState::new(window, cx)
-                .auto_grow(1, 2)
-                .default_value(action.command.clone())
-        });
-        cx.subscribe(&command, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })
-        .detach();
-        command.focus_handle(cx).focus(window);
-        self.workspaces
-            .get_mut(thread)
-            .unwrap()
-            .terminal
-            .staged_action = Some(StagedAction {
-            name: action.name.clone(),
-            command,
-        });
-        cx.notify();
-    }
-
-    fn launch_staged_action(
-        &mut self,
-        thread: &ThreadId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let pane = &mut self.workspaces.get_mut(thread).unwrap().terminal;
-        let Some(action) = &pane.staged_action else {
-            return;
-        };
-        let command = action.command.read(cx).value();
-        if !command.trim().is_empty() && !command.contains('\0') {
-            pane.staged_action = None;
-            self.open_terminal(thread, TerminalLaunch::Action(&command), window, cx);
+        if !action.command.trim().is_empty() && !action.command.contains('\0') {
+            self.open_terminal(thread, TerminalLaunch::Action(&action.command), window, cx);
         }
-    }
-
-    fn cancel_staged_action(
-        &mut self,
-        thread: &ThreadId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let pane = &mut self.workspaces.get_mut(thread).unwrap().terminal;
-        pane.staged_action = None;
-        pane.focus_active(window, cx);
-        cx.notify();
-    }
-}
-
-impl StagedAction {
-    pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
-        self.command.focus_handle(cx).is_focused(window)
-    }
-
-    pub(super) fn focus(&self, window: &mut Window, cx: &App) {
-        self.command.focus_handle(cx).focus(window);
-    }
-
-    pub(super) fn render(&self, thread: &ThreadId, cx: &Context<Desktop>) -> impl IntoElement {
-        let command = self.command.read(cx).value();
-        let run_thread = thread.clone();
-        let cancel_thread = thread.clone();
-        let run_key_thread = thread.clone();
-        let cancel_key_thread = thread.clone();
-        v_flex()
-            .id("staged-terminal-command")
-            .key_context("HugglerTerminalCommand")
-            .flex_shrink_0()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .bg(cx.theme().sidebar)
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(hint(self.name.clone(), cx).truncate())
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        control!(
-                            "Prefilled terminal command",
-                            Input::new(&self.command).small()
-                        )
-                        .min_w_0()
-                        .flex_1(),
-                    )
-                    .child(control!(
-                        "Run terminal command",
-                        Button::new("run-command")
-                            .small()
-                            .compact()
-                            .primary()
-                            .icon(play_icon())
-                            .tooltip("Run command in a new terminal")
-                            .disabled(command.trim().is_empty() || command.contains('\0'))
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.launch_staged_action(&run_thread, window, cx)
-                            }))
-                    ))
-                    .child(control!(
-                        "Cancel terminal command",
-                        Button::new("cancel-command")
-                            .small()
-                            .compact()
-                            .ghost()
-                            .icon(IconName::Close)
-                            .tooltip("Cancel command")
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.cancel_staged_action(&cancel_thread, window, cx)
-                            }))
-                    )),
-            )
-            .on_action(
-                cx.listener(move |view, _: &RunTerminalCommand, window, cx| {
-                    view.launch_staged_action(&run_key_thread, window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(move |view, _: &CancelTerminalCommand, window, cx| {
-                    view.cancel_staged_action(&cancel_key_thread, window, cx);
-                }),
-            )
     }
 }

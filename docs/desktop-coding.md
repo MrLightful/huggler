@@ -51,7 +51,7 @@ If a conversation's checkout was moved or deleted, Huggler shows its saved path.
 
 Expand **Terminal** in the right sidebar. Click **+** beside the tabs to open another shell. Open the menu beside the play button and choose **Configure** to add or edit named shell commands. You can also manage them under **Settings → Projects → Actions**. The first action is the default. Use **Make default** to move another action onto the play button.
 
-Click play or choose an action from the menu to prefill its command. Edit the command for this run if needed, then press **Enter** to start it in a new terminal tab in the conversation’s checkout. Use **Shift+Enter** to insert a line or **Esc** to cancel. A new worktree uses the actions from the saved project you selected. Other linked worktrees can use the main checkout’s actions.
+Click play or choose an action from the menu to run its command immediately in a new terminal tab in the conversation’s checkout. A new worktree uses the actions from the saved project you selected. Other linked worktrees can use the main checkout’s actions.
 
 ## Read the transcript
 
@@ -74,6 +74,8 @@ Use **↑** and **↓** to move through the suggestions, **Enter** or **Tab** to
 ## Check MCP servers
 
 Click **MCP server status** beside the attachment and send buttons in **First message** or **Message**. The popover shows the provider's tool counts, authentication requirements and connection errors. Use **Refresh MCP status** to check again.
+
+On macOS, in the MCP status popover, click a Codex server marked **Needs auth** to run `codex mcp login` for that server immediately. Huggler uses the selected provider instance’s executable, arguments, and environment. Login opens in the conversation’s terminal, or a separate terminal window before a conversation is open. Refresh MCP status after completing authentication.
 
 | Harness and transport | Status coverage |
 | --- | --- |

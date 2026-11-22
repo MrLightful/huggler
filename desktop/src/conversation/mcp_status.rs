@@ -44,6 +44,41 @@ impl Desktop {
         cx.notify();
     }
 
+    #[cfg(target_os = "macos")]
+    fn open_mcp_login(
+        &mut self,
+        source: &Source,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.mcp_status = None;
+        if let Some(thread) = self.current.as_ref().map(|thread| thread.id.clone()) {
+            self.open_terminal(
+                &thread,
+                super::terminal_pane::TerminalLaunch::Action(command),
+                window,
+                cx,
+            );
+        } else {
+            let root = source.1.clone();
+            let command = command.to_owned();
+            if let Err(error) = cx.open_window(WindowOptions::default(), move |window, cx| {
+                window.set_window_title("MCP authentication");
+                let shell = super::terminal::TerminalView::start(&root, Some(&command), window, cx)
+                    .map_err(|error| format!("{error:#}"));
+                if let Ok(shell) = &shell {
+                    shell.read(cx).focus(window);
+                }
+                let view = cx.new(|_| AuthTerminal { shell });
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            }) {
+                self.error = Some(error.to_string());
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn mcp_status_control(&self, window: &Window, cx: &Context<Self>) -> Div {
         let mut source = self.model_source(cx);
         if source.1.as_os_str().is_empty() {
@@ -88,6 +123,7 @@ impl Desktop {
                 .output()
                 .provider_label(source.0.as_str())
                 .to_owned();
+            let refresh_source = source.clone();
             let header = h_flex()
                 .justify_between()
                 .gap_3()
@@ -101,7 +137,7 @@ impl Desktop {
                         .tooltip("Refresh MCP status")
                         .loading(status.result.is_none())
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.load_mcp_status(source.clone(), cx);
+                            view.load_mcp_status(refresh_source.clone(), cx);
                         }))
                 ));
             let body = match &status.result {
@@ -121,7 +157,33 @@ impl Desktop {
                         .id("mcp-status-list")
                         .max_h((window.viewport_size().height * 0.5).min(px(360.)))
                         .overflow_y_scroll()
-                        .children(servers.iter().map(|server| server_row(server, cx))),
+                        .children(servers.iter().map(|server| {
+                            let row = server_row(server, cx);
+                            #[cfg(target_os = "macos")]
+                            if let Some(command) = self
+                                .runtime
+                                .provider_instances()
+                                .find(|instance| instance.id == source.0)
+                                .and_then(|instance| login_command(instance, server))
+                            {
+                                let source = source.clone();
+                                return control!(
+                                    format!("Authenticate MCP/{}", server.name),
+                                    Button::new(SharedString::from(format!(
+                                        "mcp-auth-{}",
+                                        server.name
+                                    )))
+                                    .ghost()
+                                    .w_full()
+                                    .child(row)
+                                    .tooltip("Authenticate in terminal")
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.open_mcp_login(&source, &command, window, cx);
+                                    }))
+                                );
+                            }
+                            row
+                        })),
                 ),
                 Some(Err(_)) => control!(
                     "Couldn’t check MCP servers",
@@ -180,4 +242,99 @@ fn server_row(server: &McpServerStatus, cx: &App) -> Div {
             .child(div().flex_shrink_0().text_color(muted).child(label))
             .child(Icon::new(icon).with_size(px(14.)).text_color(color))
     )
+}
+
+#[cfg(target_os = "macos")]
+struct AuthTerminal {
+    shell: Result<Entity<super::terminal::TerminalView>, String>,
+}
+
+#[cfg(target_os = "macos")]
+impl Render for AuthTerminal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .bg(cx.theme().background)
+            .child(match &self.shell {
+                Ok(shell) => shell.clone().into_any_element(),
+                Err(error) => div().p_3().child(error.clone()).into_any_element(),
+            })
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn login_command(instance: &huggler::ProviderInstance, server: &McpServerStatus) -> Option<String> {
+    if instance.driver != huggler::Provider::Codex
+        || !matches!(server.state, McpServerState::AuthenticationRequired)
+    {
+        return None;
+    }
+    fn quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+    let mut parts = vec!["env".to_owned()];
+    parts.extend(
+        instance
+            .environment()
+            .iter()
+            .map(|(key, value)| quote(&format!("{key}={value}"))),
+    );
+    if let Some(home) = &instance.home {
+        parts.push(quote(&format!("CODEX_HOME={}", home.to_string_lossy())));
+    }
+    parts.push(quote(&instance.executable.to_string_lossy()));
+    parts.extend(instance.args.iter().map(|arg| quote(arg)));
+    parts.extend(["mcp".into(), "login".into(), quote(&server.name)]);
+    Some(parts.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{McpServerState, McpServerStatus, login_command};
+
+    #[test]
+    fn login_preserves_instance_configuration_and_quotes_server_names() {
+        let mut instance = huggler::ProviderInstance::new(
+            "custom",
+            huggler::Provider::Codex,
+            "/path with spaces/codex",
+        );
+        instance.args = vec!["--config".into(), "value='quoted'".into()];
+        instance.home = Some("/private home".into());
+        instance
+            .set_environment(std::collections::BTreeMap::from([(
+                "CODEX_HOME".into(),
+                "/other home".into(),
+            )]))
+            .unwrap();
+        let server = McpServerStatus {
+            name: "docs'; touch /tmp/unwanted; '".into(),
+            state: McpServerState::AuthenticationRequired,
+        };
+        let command = login_command(&instance, &server).unwrap();
+        assert_eq!(
+            shlex::split(&command).unwrap(),
+            vec![
+                "env",
+                "CODEX_HOME=/other home",
+                "CODEX_HOME=/private home",
+                "/path with spaces/codex",
+                "--config",
+                "value='quoted'",
+                "mcp",
+                "login",
+                &server.name
+            ]
+        );
+        assert!(
+            login_command(
+                &instance,
+                &McpServerStatus {
+                    state: McpServerState::Disabled,
+                    ..server
+                }
+            )
+            .is_none()
+        );
+    }
 }

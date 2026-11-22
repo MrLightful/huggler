@@ -1,7 +1,6 @@
 use super::{
     document_tabs::tab_surface,
     terminal::{StatusChanged, TerminalView},
-    terminal_actions::StagedAction,
     *,
 };
 use gpui_component::button::ButtonCustomVariant;
@@ -20,7 +19,6 @@ pub(super) struct TerminalPane {
     open: bool,
     height: Option<f32>,
     pub(super) main_worktree: Option<PathBuf>,
-    pub(super) staged_action: Option<StagedAction>,
 }
 
 struct TerminalTab {
@@ -48,13 +46,9 @@ impl TerminalPane {
     }
 
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
-        self.staged_action
-            .as_ref()
-            .is_some_and(|action| action.is_focused(window, cx))
-            || self
-                .active_tab()
-                .and_then(|tab| tab.shell.as_ref().ok())
-                .is_some_and(|terminal| terminal.read(cx).is_focused(window))
+        self.active_tab()
+            .and_then(|tab| tab.shell.as_ref().ok())
+            .is_some_and(|terminal| terminal.read(cx).is_focused(window))
     }
 
     fn active_tab(&self) -> Option<&TerminalTab> {
@@ -85,6 +79,12 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self
+            .right_sidebar
+            .is_open(window.viewport_size().width >= NARROW_VIEWPORT_WIDTH)
+        {
+            self.right_sidebar.toggle(false);
+        }
         let workspace = self.workspaces.get_mut(thread).expect("terminal workspace");
         let pane = &mut workspace.terminal;
         let replace = if let TerminalLaunch::Restart(id) = launch {
@@ -123,6 +123,7 @@ impl Desktop {
             });
             pane.tabs.len() - 1
         };
+        pane.open = true;
         pane.select(index);
         if replace.is_none() {
             pane.scroll.scroll_to_item(pane.tabs.len());
@@ -216,8 +217,6 @@ impl Desktop {
                             if pane.is_focused(window, cx) {
                                 view.focus_workspace(window, cx);
                             }
-                        } else if let Some(action) = &pane.staged_action {
-                            action.focus(window, cx);
                         } else if pane.next_id == 0 {
                             view.open_terminal(&toggle_thread, TerminalLaunch::Shell, window, cx);
                         } else if let Some(index) = pane.active {
@@ -304,11 +303,6 @@ impl Desktop {
                         .min_h_0()
                         .overflow_hidden()
                         .bg(cx.theme().background)
-                        .children(
-                            pane.staged_action
-                                .as_ref()
-                                .map(|action| action.render(thread, cx)),
-                        )
                         .child(contents.flex_1().min_h_0()),
                 )
             })

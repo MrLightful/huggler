@@ -7,6 +7,12 @@ import time
 from uuid import uuid4
 
 
+if sys.argv[1:3] == ["mcp", "login"]:
+    Path("mcp-login.json").write_text(json.dumps(sys.argv[1:]))
+    print("Fixture MCP login completed", flush=True)
+    sys.exit(0)
+
+
 def emit(**frame):
     if acp:
         frame["jsonrpc"] = "2.0"
