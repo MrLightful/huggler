@@ -234,25 +234,36 @@ impl Desktop {
         let picker = if let Some(list) = &self.model_picker {
             let mut content = v_flex().w(px(288.)).gap_2();
             if self.current.is_none() {
-                let providers = self.runtime.provider_instances().map(|instance| {
-                    let id = instance.id.clone();
-                    let name = self.runtime.output().provider_label(id.as_str()).to_owned();
-                    control!(
-                        format!("provider/{name}"),
-                        Button::new(SharedString::from(format!("provider-{id}")))
-                            .small()
-                            .ghost()
-                            .selected(id == self.instance)
-                            .label(name)
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                if id != view.instance {
-                                    view.choose_provider(&id, cx);
-                                    view.open_models(window, cx);
-                                }
-                            }))
-                    )
-                });
-                content = content.child(h_flex().gap_1().flex_wrap().children(providers));
+                let settings = self.settings.read(cx);
+                let providers = self
+                    .runtime
+                    .provider_instances()
+                    .filter(|instance| settings.show_in_draft_provider_picker(instance))
+                    .map(|instance| {
+                        let id = instance.id.clone();
+                        let name = self.runtime.output().provider_label(id.as_str()).to_owned();
+                        control!(
+                            format!("provider/{name}"),
+                            Button::new(SharedString::from(format!("provider-{id}")))
+                                .small()
+                                .ghost()
+                                .selected(id == self.instance)
+                                .label(name)
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    if id != view.instance {
+                                        view.choose_provider(&id, cx);
+                                        view.open_models(window, cx);
+                                    }
+                                }))
+                        )
+                    });
+                content = content.child(
+                    div()
+                        .id("model-picker-providers")
+                        .max_h(px(96.))
+                        .overflow_y_scroll()
+                        .child(h_flex().gap_1().flex_wrap().children(providers)),
+                );
             } else {
                 content = content.child(label(provider));
             }

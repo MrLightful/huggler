@@ -51,15 +51,25 @@ fn is_executable(path: &Path) -> bool {
 }
 
 fn desktop_path(name: &Path) -> Option<PathBuf> {
+    // Scripted checks supply their own HOME and PATH with recorded fixtures.
+    let system_bins: &[&str] = if scripted_qualification() {
+        &[]
+    } else {
+        &["/opt/homebrew/bin", "/usr/local/bin"]
+    };
     dirs::home_dir()
         .into_iter()
         .map(|home| home.join(".local/bin"))
-        .chain([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-        ])
+        .chain(system_bins.iter().map(PathBuf::from))
         .map(|dir| dir.join(name))
         .find(|path| is_executable(path))
+}
+
+fn scripted_qualification() -> bool {
+    #[cfg(all(feature = "qualification", target_os = "macos"))]
+    return crate::qualification::scripted();
+    #[cfg(not(all(feature = "qualification", target_os = "macos")))]
+    false
 }
 
 pub fn default_executable(state: &Path, provider: Provider, name: &Path) -> PathBuf {
@@ -73,6 +83,15 @@ pub fn default_executable(state: &Path, provider: Provider, name: &Path) -> Path
         return name.to_owned();
     }
     desktop_path(name)
+        .or_else(|| {
+            let directory = match provider {
+                Provider::Grok => ".grok/bin",
+                Provider::OpenCode => ".opencode/bin",
+                _ => return None,
+            };
+            let path = dirs::home_dir()?.join(directory).join(name);
+            is_executable(&path).then_some(path)
+        })
         .or_else(|| managed.map(|release| release.executable(state)))
         .unwrap_or_else(|| name.to_owned())
 }

@@ -86,12 +86,16 @@ pub fn take_prompt_answer(cx: &mut App) -> Option<usize> {
     cx.default_global::<PromptAnswer>().0.take()
 }
 
+pub(crate) fn scripted() -> bool {
+    std::env::var_os("HUGGLER_UI_SCRIPT").is_some()
+}
+
 #[derive(Default)]
 struct OpenedUrl(Option<String>);
 impl Global for OpenedUrl {}
 
 pub fn record_open_url(url: &str, cx: &mut App) -> bool {
-    if std::env::var_os("HUGGLER_UI_SCRIPT").is_none() {
+    if !scripted() {
         return false;
     }
     cx.default_global::<OpenedUrl>().0 = Some(url.to_owned());

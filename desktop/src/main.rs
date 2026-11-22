@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     #[cfg(not(all(feature = "qualification", target_os = "macos")))]
     let interactive = true;
 
-    let (prefs, load_error) = match settings::Preferences::load(&paths.state_dir()) {
+    let (mut prefs, load_error) = match settings::Preferences::load(&paths.state_dir()) {
         Ok(prefs) => (prefs, None),
         Err(error) => (
             settings::Preferences::default(),
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
             "HUGGLER_PROVIDERS must use unique IDs distinct from codex and claudeAgent"
         );
     }
-    prefs.apply_runtime_overrides(&mut options)?;
+    prefs.configure_providers(&mut options, &state)?;
     let executor = tokio::runtime::Runtime::new()?;
     let runtime = Arc::new(executor.block_on(Huggler::open(options))?);
     let cleanup_runtime = runtime.clone();
