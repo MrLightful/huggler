@@ -496,6 +496,22 @@ impl Desktop {
         true
     }
 
+    fn submit_composer(
+        &mut self,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if *input == self.starter {
+            if !input.read(cx).value().trim().is_empty() || !self.starter_attachments.is_empty() {
+                self.launch(window, cx);
+            }
+        } else {
+            let result = self.send(window, cx);
+            self.report(result, cx);
+        }
+    }
+
     pub(super) fn message_input(
         &self,
         _name: &'static str,
@@ -503,8 +519,13 @@ impl Desktop {
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
+        let shortcut = self.settings.read(cx).preferences().send_shortcut;
+        let mut key_context = KeyContext::parse(COMPOSER_CONTEXT).expect("composer key context");
+        if shortcut == SendShortcut::CommandEnter {
+            key_context.add("command_to_send");
+        }
         let mut field = div()
-            .key_context(COMPOSER_CONTEXT)
+            .key_context(key_context)
             .relative()
             .capture_action({
                 let input = input.clone();
@@ -515,16 +536,26 @@ impl Desktop {
                     {
                         return;
                     }
-                    cx.stop_propagation();
-                    if input == view.starter {
-                        if !input.read(cx).value().trim().is_empty()
-                            || !view.starter_attachments.is_empty()
-                        {
-                            view.launch(window, cx);
-                        }
-                    } else {
-                        let result = view.send(window, cx);
-                        view.report(result, cx);
+                    if shortcut == SendShortcut::Enter
+                        && input.update(cx, |input, cx| {
+                            input.marked_text_range(window, cx).is_none()
+                        })
+                    {
+                        cx.stop_propagation();
+                        view.submit_composer(&input, window, cx);
+                    }
+                })
+            })
+            .capture_action({
+                let input = input.clone();
+                cx.listener(move |view, _: &crate::SendMessage, window, cx| {
+                    if input.focus_handle(cx).is_focused(window)
+                        && input.update(cx, |input, cx| {
+                            input.marked_text_range(window, cx).is_none()
+                        })
+                    {
+                        cx.stop_propagation();
+                        view.submit_composer(&input, window, cx);
                     }
                 })
             })

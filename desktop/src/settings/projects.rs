@@ -71,6 +71,26 @@ impl Settings {
         &self.prefs.projects
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn worktree_project(&self, worktree: &Path) -> Option<&SavedProject> {
+        let root = self.prefs.worktree_projects.get(worktree)?;
+        self.prefs
+            .projects
+            .iter()
+            .find(|project| project.root == *root)
+    }
+
+    pub(crate) fn save_worktree_project(
+        &mut self,
+        worktree: PathBuf,
+        root: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let mut prefs = self.prefs.clone();
+        prefs.worktree_projects.insert(worktree, root);
+        self.persist_projects(prefs, cx)
+    }
+
     pub(crate) fn save_project(&mut self, root: PathBuf, cx: &mut Context<Self>) -> Result<()> {
         if self
             .prefs

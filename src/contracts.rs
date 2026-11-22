@@ -644,6 +644,8 @@ pub struct ConversationSummary {
     pub name: String,
     /// Foreground run, otherwise queued work, otherwise the most recent delivered run.
     pub status: Option<RunStatus>,
+    /// The latest run when the conversation is complete and has no active children.
+    pub completed_run: Option<RunId>,
     pub needs_approval: bool,
     pub needs_answer: bool,
     pub queue_held: bool,

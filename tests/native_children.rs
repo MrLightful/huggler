@@ -180,6 +180,9 @@ async fn background_child_can_finish_or_be_interrupted_after_root_completion() {
             let (options, rt, thread, run) = start(dir.path(), &records).await;
             let root = rt.wait(&thread, &run).await.unwrap();
             assert_eq!(root.status, RunStatus::Completed, "{:?}", root.error);
+            let list = rt.conversation_list().unwrap();
+            assert!(list.threads[0].active_children);
+            assert_eq!(list.threads[0].completed_run, None);
             let (snapshot, mut events) = rt.subscribe(&thread, None).unwrap();
             let child = &snapshot.native_children[0];
             assert_eq!(child.status, NativeChildStatus::Running);
@@ -215,6 +218,9 @@ async fn background_child_can_finish_or_be_interrupted_after_root_completion() {
                     break;
                 }
             }
+            let list = rt.conversation_list().unwrap();
+            assert!(!list.threads[0].active_children);
+            assert_eq!(list.threads[0].completed_run.as_ref(), Some(&run));
             rt.close().await.unwrap();
             let rt = Huggler::open(options).await.unwrap();
             let state = rt.read(&thread).unwrap();

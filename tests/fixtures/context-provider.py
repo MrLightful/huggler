@@ -175,9 +175,12 @@ for line in sys.stdin:
                      "primary": {"usedPercent": 100, "resetsAt": reset}}})
             emit(method="turn/completed", params={"threadId": session, "turn": {"id": turn, "status": "failed",
                  "error": {"message": "Quota exhausted", "codexErrorInfo": "usageLimitExceeded"}}})
-        elif prompt in ("ask", "callbacks", "command output"):
+        elif prompt in ("ask", "ask one question", "callbacks", "command output"):
+            questions = [{"id": "one"}]
+            if prompt != "ask one question":
+                questions.append({"id": "two"})
             emit(id="ask", method="item/tool/requestUserInput", params={"threadId": session, "turnId": turn,
-                 "questions": [{"id": "one"}, {"id": "two"}]})
+                 "questions": questions})
         else:
             completed()
 

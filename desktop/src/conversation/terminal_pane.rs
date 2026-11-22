@@ -28,6 +28,12 @@ struct TerminalTab {
     shell: Result<Entity<TerminalView>, String>,
 }
 
+pub(super) enum TerminalLaunch<'a> {
+    Shell,
+    Restart(usize),
+    Action(&'a str),
+}
+
 #[derive(Clone)]
 struct ResizeTerminal(ThreadId);
 
@@ -42,9 +48,13 @@ impl TerminalPane {
     }
 
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
-        self.active_tab()
-            .and_then(|tab| tab.shell.as_ref().ok())
-            .is_some_and(|terminal| terminal.read(cx).is_focused(window))
+        self.staged_action
+            .as_ref()
+            .is_some_and(|action| action.is_focused(window, cx))
+            || self
+                .active_tab()
+                .and_then(|tab| tab.shell.as_ref().ok())
+                .is_some_and(|terminal| terminal.read(cx).is_focused(window))
     }
 
     fn active_tab(&self) -> Option<&TerminalTab> {
@@ -68,27 +78,16 @@ impl TerminalPane {
 }
 
 impl Desktop {
-    fn start_terminal(
-        &mut self,
-        thread: &ThreadId,
-        restart: Option<usize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_terminal(thread, restart, None, window, cx);
-    }
-
     pub(super) fn open_terminal(
         &mut self,
         thread: &ThreadId,
-        restart: Option<usize>,
-        command: Option<&str>,
+        launch: TerminalLaunch<'_>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let workspace = self.workspaces.get_mut(thread).expect("terminal workspace");
         let pane = &mut workspace.terminal;
-        let replace = if let Some(id) = restart {
+        let replace = if let TerminalLaunch::Restart(id) = launch {
             let Some(index) = pane.index_of(id) else {
                 return;
             };
@@ -102,6 +101,10 @@ impl Desktop {
             Some(index)
         } else {
             None
+        };
+        let command = match launch {
+            TerminalLaunch::Action(command) => Some(command),
+            _ => None,
         };
         let shell = TerminalView::start(&workspace.root, command, window, cx)
             .map_err(|error| format!("{error:#}"));
@@ -121,7 +124,7 @@ impl Desktop {
             pane.tabs.len() - 1
         };
         pane.select(index);
-        if restart.is_none() {
+        if replace.is_none() {
             pane.scroll.scroll_to_item(pane.tabs.len());
         }
         pane.focus_active(window, cx);
@@ -212,8 +215,10 @@ impl Desktop {
                             if pane.is_focused(window, cx) {
                                 view.focus_workspace(window, cx);
                             }
+                        } else if let Some(action) = &pane.staged_action {
+                            action.focus(window, cx);
                         } else if pane.next_id == 0 {
-                            view.start_terminal(&toggle_thread, None, window, cx);
+                            view.open_terminal(&toggle_thread, TerminalLaunch::Shell, window, cx);
                         } else if let Some(index) = pane.active {
                             pane.scroll.scroll_to_item(index);
                             pane.focus_active(window, cx);
@@ -245,7 +250,12 @@ impl Desktop {
                                         .icon(IconName::Plus)
                                         .tooltip("New terminal")
                                         .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.start_terminal(&new_thread, None, window, cx)
+                                            view.open_terminal(
+                                                &new_thread,
+                                                TerminalLaunch::Shell,
+                                                window,
+                                                cx,
+                                            )
                                         }))
                                 )
                                 .flex_shrink_0(),
@@ -411,7 +421,12 @@ impl TerminalTab {
                                     .flex_none()
                                     .label("Restart")
                                     .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.start_terminal(&thread, Some(id), window, cx);
+                                        view.open_terminal(
+                                            &thread,
+                                            TerminalLaunch::Restart(id),
+                                            window,
+                                            cx,
+                                        );
                                     }))
                             ))
                         }),

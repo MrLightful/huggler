@@ -11,6 +11,50 @@ import tempfile
 from desktop_check import ROOT, isolated_env, launch_thread, run_window
 
 
+def check_general(executable, state, env):
+    env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
+    general = [{"key": "cmd-,"}, {"click": "General"}]
+    notification = "conversation-completed/Shortcut check"
+    question_prompt = "ask one question"
+    run_window(executable, state, [
+        {"resize": [640, 440]}, *general,
+        {"click": "⌘Enter"}, {"click": "Keep awake while agents run"}, {"click": "Done"},
+        {"click": "First message"}, {"type": "Shortcut check"}, {"key": "enter"},
+        {"type": "Second line"}, {"see": "First message"}, {"key": "cmd-enter"},
+        {"contains": "Codex/reply"}, {"absent": notification},
+        {"resize": [1120, 740]},
+        {"click": "Message"}, {"type": question_prompt}, {"key": "cmd-enter"}, {"see": "Dismiss questions"},
+        {"click": "Message"}, {"type": "Queued follow-up"}, {"click": "Queue message"},
+        {"see": "1 queued message"}, {"click": "Dismiss questions"},
+        {"see": "Codex/reply Queued follow-up"}, {"absent": notification},
+        *general, {"click": "Steer"}, {"click": "Agent notifications"}, {"click": "Done"},
+        {"click": "Message"}, {"type": question_prompt}, {"key": "cmd-enter"}, {"see": "Dismiss questions"},
+        {"click": "Message"}, {"type": "Steered follow-up"}, {"click": "Send follow-up"},
+        {"see": "You/Steered follow-up"}, {"absent": "1 queued message"},
+        {"click": "Message"}, {"type": "Steered by shortcut"}, {"key": "cmd-enter"},
+        {"see": "You/Steered by shortcut"}, {"absent": "1 queued message"},
+        {"click": "Dismiss questions"}, {"see": notification},
+    ], env)
+    prefs = state / "preferences.json"
+    saved = json.loads(prefs.read_text())
+    assert {key: saved[key] for key in ("sendShortcut", "followUp", "agentNotifications", "keepAwake")} == {
+        "sendShortcut": "commandEnter", "followUp": "steer", "agentNotifications": True, "keepAwake": True,
+    }
+    with sqlite3.connect(state / "huggler.sqlite3") as db:
+        messages = db.execute("SELECT text, run_id FROM message WHERE role='user' ORDER BY rowid").fetchall()
+        assert [text for text, _ in messages] == [
+            "Shortcut check\nSecond line", question_prompt, "Queued follow-up", question_prompt,
+            "Steered follow-up", "Steered by shortcut",
+        ]
+        assert messages[1][1] != messages[2][1]
+        assert messages[3][1] == messages[4][1] == messages[5][1]
+    run_window(executable, state, [
+        {"absent": notification},
+        {"click": "Message"}, {"type": "After relaunch"}, {"key": "enter"}, {"type": "Second line"},
+        {"key": "cmd-enter"}, {"see": "You/After relaunch\nSecond line"}, {"see": notification},
+    ], env)
+
+
 def check_storage(executable, state, env):
     run_window(executable, state, [
         {"resize": [640, 440]}, {"key": "cmd-,"}, {"center_x": ["Appearance", 320]},
@@ -22,6 +66,53 @@ def check_storage(executable, state, env):
         {"click": "Back to Settings"}, {"see": "Providers"}, {"click": "Done"},
     ], env)
     assert json.loads((state / "preferences.json").read_text())["automaticWorktreeCleanup"] is True
+
+
+def check_projects(executable, root, env):
+    root.mkdir()
+    root = root.resolve()
+    state = root / "state"
+    first, second, local = (root / name for name in ("atlas", "beacon ", "local "))
+    for checkout in (first, second, local):
+        subprocess.run(["git", "init", "-qb", "main", checkout], check=True)
+    nested = first / "nested"
+    nested.mkdir()
+    env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
+    run_window(executable, state, [
+        {"click": "Choose project"}, {"next_file_selection": [str(nested)]}, {"click": "Add project"},
+        {"see": "Choose workspace"}, {"click": "Choose project"}, {"see": "project/atlas"},
+        {"next_file_selection": [str(first)]}, {"click": "Add project"},
+        {"see": "Choose workspace"}, {"click": "Choose project"},
+        {"next_file_selection": [str(second)]}, {"click": "Add project"},
+        {"click": "Choose project"}, {"see": "project/beacon "}, {"key": "escape"},
+        {"click": "Settings"}, {"click": "Projects"}, {"click": "Rename project/atlas"},
+        {"key": "cmd-a"}, {"type": "Atlas App"}, {"key": "enter"},
+        {"see": "Rename project/Atlas App"},
+    ], env)
+    projects = json.loads((state / "preferences.json").read_text())["projects"]
+    assert projects == [{"name": "Atlas App", "root": str(first)}, {"name": "beacon ", "root": str(second)}]
+
+    run_window(executable, state, [
+        {"resize": [640, 440]}, {"click": "Choose project"}, {"see": "project/Atlas App"},
+        {"type": "BEACON"}, {"absent": "project/Atlas App"}, {"see": "project/beacon "}, {"key": "enter"},
+        {"absent": "project/beacon "}, {"click": "First message"}, {"type": "Reuse Beacon"},
+        {"click": "Send first message"}, {"see": "Codex/reply Reuse Beacon"},
+        {"key": "cmd-shift-n"}, {"click": "Choose project"}, {"click": "project/Atlas App"},
+        {"click": "Conversation name"}, {"type": "Reuse Atlas"}, {"click": "Open conversation"},
+        {"see": "Ready/Reuse Atlas/New conversation"},
+        {"click": "Settings"}, {"click": "Projects"}, {"click": "Remove project/Atlas App"},
+        {"absent": "Rename project/Atlas App"}, {"click": "Done"},
+        {"key": "cmd-shift-n"}, {"next_file_selection": [str(local)]}, {"click": "Browse"},
+        {"see": "Choose workspace"}, {"click": "Conversation name"}, {"type": "One-time checkout"},
+        {"click": "Open conversation"}, {"see": "Ready/One-time checkout/New conversation"},
+    ], env)
+    with sqlite3.connect(state / "huggler.sqlite3") as db:
+        roots = dict(db.execute("SELECT thread.name, project.root FROM thread JOIN project ON thread.project = project.id"))
+        assert roots == {"Reuse Beacon": str(second), "Reuse Atlas": str(first), "One-time checkout": str(local)}
+    assert first.is_dir()
+    assert json.loads((state / "preferences.json").read_text())["projects"] == [
+        {"name": "beacon ", "root": str(second)},
+    ]
 
 
 def check_provider_setup(executable, root, env):
@@ -244,7 +335,9 @@ def check(executable):
         with (checkout / ".git/info/exclude").open("a") as exclude:
             exclude.write("\n/frames.ndjson\n")
         env = dict(isolated_env(root), HUGGLER_CLAUDE_ACP=str(root / "missing-claude-agent"))
+        check_general(executable, root / "general", env)
         check_storage(executable, root / "storage", env)
+        check_projects(executable, root / "projects", env)
         check_provider_setup(executable, root, env)
         fixture = ROOT / "tests/fixtures/context-provider.py"
         check_model_refresh(executable, root, fixture, env)

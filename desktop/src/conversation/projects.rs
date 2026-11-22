@@ -131,6 +131,9 @@ impl ListDelegate for ProjectPicker {
 
 impl Desktop {
     pub(super) fn launch_checkout(&self, cx: &App) -> PathBuf {
+        if let Some(path) = &self.picked_checkout {
+            return path.clone();
+        }
         let checkout = self.checkout.read(cx).value();
         let path = Path::new(checkout.as_str());
         if self

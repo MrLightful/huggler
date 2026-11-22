@@ -1,4 +1,4 @@
-use super::*;
+use super::{terminal_pane::TerminalLaunch, *};
 use crate::settings::projects::ProjectAction;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 
@@ -108,14 +108,15 @@ impl Desktop {
         let workspace = &self.workspaces[thread];
         let settings = self.settings.read(cx);
         let projects = settings.saved_projects();
-        let root = projects
+        let project = projects
             .iter()
             .find(|project| project.root == workspace.root)
+            .or_else(|| settings.worktree_project(&workspace.root));
+        let root = project
             .map(|project| &project.root)
             .or(workspace.terminal.main_worktree.as_ref())?;
-        let actions = projects
-            .iter()
-            .find(|project| project.root == *root)
+        let actions = project
+            .or_else(|| projects.iter().find(|project| project.root == *root))
             .map(|project| project.actions.clone())
             .unwrap_or_default();
         let primary = actions.first().cloned();
@@ -221,7 +222,7 @@ impl Desktop {
         let command = action.command.read(cx).value();
         if !command.trim().is_empty() && !command.contains('\0') {
             pane.staged_action = None;
-            self.open_terminal(thread, None, Some(&command), window, cx);
+            self.open_terminal(thread, TerminalLaunch::Action(&command), window, cx);
         }
     }
 
@@ -239,6 +240,14 @@ impl Desktop {
 }
 
 impl StagedAction {
+    pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
+        self.command.focus_handle(cx).is_focused(window)
+    }
+
+    pub(super) fn focus(&self, window: &mut Window, cx: &App) {
+        self.command.focus_handle(cx).focus(window);
+    }
+
     pub(super) fn render(&self, thread: &ThreadId, cx: &Context<Desktop>) -> impl IntoElement {
         let command = self.command.read(cx).value();
         let run_thread = thread.clone();

@@ -130,7 +130,6 @@ pub fn checkout_root(path: &Path) -> Result<PathBuf> {
     file_path(output.strip_suffix(b"\n").unwrap_or(&output))
 }
 
-#[cfg(target_os = "macos")]
 pub fn main_worktree(root: &Path) -> Result<PathBuf> {
     let output = execute(git(root).args(["worktree", "list", "--porcelain", "-z"]))?;
     let entry = output.split(|byte| *byte == 0).next().unwrap_or_default();

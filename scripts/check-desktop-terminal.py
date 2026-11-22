@@ -156,6 +156,8 @@ def check_project_actions(binary, root):
         *add_action("Check", multiline),
         {"click": "Done"},
         {"click": "Prefill Run"}, {"see": "Prefilled terminal command"},
+        {"click": "Collapse terminal"}, {"absent": "Prefilled terminal command"},
+        {"click": "Expand terminal"}, {"see": "Prefilled terminal command"},
         {"key": "cmd-a"}, {"key": "cmd-c"}, {"clipboard_text": original},
         {"type": "echo edited > edited.txt"}, {"key": "enter"},
         {"file_text": [str(checkout / "edited.txt"), "edited\n"]},
@@ -185,6 +187,25 @@ def check_project_actions(binary, root):
     ], env)
     output, = (state / "worktrees").glob("*/action.txt")
     assert output.read_text() == "first\nsecond\n"
+
+    alternate = root / "alternate"
+    subprocess.run(["git", "-C", checkout, "worktree", "add", "-qb", "alternate", alternate], check=True)
+    run_window(binary, state, [
+        {"click": "Settings"}, {"click": "Projects"},
+        {"next_file_selection": [str(alternate)]}, {"click": "Add project"},
+        {"click": "Project actions/alternate"},
+        *add_action("Alternate", "echo alternate > alternate.txt"),
+        {"click": "Done"},
+        *launch_thread(alternate, "Alternate action worktree", branch="alternate-action-worktree"),
+        {"click": "Expand terminal"}, {"see": "Prefill Alternate"}, {"absent": "Prefill Check"},
+    ], env)
+    run_window(binary, state, [
+        {"click": "Expand terminal"}, {"click": "Prefill Alternate"},
+        {"see": "Prefilled terminal command"}, {"key": "enter"}, {"see": "Shell exited"},
+    ], env)
+    alternate_output, = (state / "worktrees").glob("*/alternate.txt")
+    assert alternate_output.read_text() == "alternate\n"
+    assert not (alternate / "alternate.txt").exists()
 
 
 if __name__ == "__main__":

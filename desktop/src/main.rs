@@ -42,6 +42,7 @@ actions!(
         NewConversation,
         NewConversationWithSetup,
         FocusMessage,
+        SendMessage,
         CloseDocument,
         SaveDocument
     ]
@@ -138,6 +139,7 @@ fn main() -> Result<()> {
         gpui_component::init(cx);
         fonts::init(cx);
         ui::init_theme(cx);
+        // GPUI maps secondary to Command on macOS and Control on other platforms.
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-,", OpenSettings, None),
@@ -146,7 +148,12 @@ fn main() -> Result<()> {
             KeyBinding::new(
                 "shift-enter",
                 gpui_component::input::Enter { secondary: true },
-                Some(conversation::COMPOSER_CONTEXT),
+                Some("HugglerComposer > Input"),
+            ),
+            KeyBinding::new(
+                "secondary-enter",
+                SendMessage,
+                Some("HugglerComposer && command_to_send > Input"),
             ),
             KeyBinding::new("secondary-l", FocusMessage, None),
             KeyBinding::new(
