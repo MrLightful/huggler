@@ -779,12 +779,13 @@ impl Desktop {
             explicit_name.to_owned()
         };
         let checkout = self.launch_checkout(cx);
-        let saved_checkout = self
+        let saved_roots: HashSet<_> = self
             .settings
             .read(cx)
             .saved_projects()
             .iter()
-            .any(|project| project.root == checkout);
+            .map(|project| project.root.clone())
+            .collect();
         let scratch_root = self.scratch_root.clone();
         let branch = self.branch.read(cx).value();
         let scratch = checkout.as_os_str().is_empty();
@@ -829,7 +830,7 @@ impl Desktop {
             } else {
                 let project = runtime.open_project(&checkout)?;
                 anyhow::ensure!(
-                    !saved_checkout || project.root == checkout,
+                    !saved_roots.contains(&checkout) || project.root == checkout,
                     "The saved project checkout has moved. Choose a Git checkout for this conversation."
                 );
                 project
@@ -870,7 +871,7 @@ impl Desktop {
             // A saved linked checkout can define its own actions. Git only reports
             // the repository's main checkout from the newly allocated worktree.
             let worktree_project = (allocated
-                && saved_checkout
+                && saved_roots.contains(&source_root)
                 && git::main_worktree(&project.root).is_ok_and(|main| main != source_root))
             .then_some((project.root, source_root));
             let sent = if let Some(action) = first_message {

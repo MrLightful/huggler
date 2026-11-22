@@ -190,13 +190,15 @@ def check_project_actions(binary, root):
 
     alternate = root / "alternate"
     subprocess.run(["git", "-C", checkout, "worktree", "add", "-qb", "alternate", alternate], check=True)
+    alternate_alias = root / "alternate-link"
+    alternate_alias.symlink_to(alternate, target_is_directory=True)
     run_window(binary, state, [
         {"click": "Settings"}, {"click": "Projects"},
         {"next_file_selection": [str(alternate)]}, {"click": "Add project"},
         {"click": "Project actions/alternate"},
         *add_action("Alternate", "echo alternate > alternate.txt"),
         {"click": "Back to Projects"}, {"click": "Back to Settings"}, {"click": "Back to workspace"},
-        *launch_thread(alternate, "Alternate action worktree", branch="alternate-action-worktree"),
+        *launch_thread(alternate_alias, "Alternate action worktree", branch="alternate-action-worktree"),
         {"click": "Expand terminal"}, {"see": "Prefill Alternate"}, {"absent": "Prefill Check"},
     ], env)
     run_window(binary, state, [
