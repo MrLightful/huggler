@@ -1,5 +1,5 @@
 use super::*;
-use gpui_component::popover::Popover;
+use gpui_component::{popover::Popover, tooltip::Tooltip};
 use huggler::{McpServerState, McpServerStatus};
 
 type Source = (ProviderInstanceId, PathBuf);
@@ -167,22 +167,44 @@ impl Desktop {
                                 .and_then(|instance| login_command(instance, server))
                             {
                                 let source = source.clone();
+                                let keyboard_source = source.clone();
+                                let keyboard_command = command.clone();
+                                let theme = cx.theme();
+                                let hover = theme.secondary_hover;
+                                let ring = theme.ring;
                                 return control!(
                                     format!("Authenticate MCP/{}", server.name),
-                                    Button::new(SharedString::from(format!(
-                                        "mcp-auth-{}",
-                                        server.name
-                                    )))
-                                    .ghost()
-                                    .w_full()
-                                    .child(row)
-                                    .tooltip("Authenticate in terminal")
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.open_mcp_login(&source, &command, window, cx);
-                                    }))
+                                    row.id(SharedString::from(format!("mcp-auth-{}", server.name)))
+                                        .tab_index(0)
+                                        .cursor_pointer()
+                                        .hover(move |style| style.bg(hover))
+                                        .focus(move |style| style.border_color(ring))
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("Authenticate in terminal")
+                                                .build(window, cx)
+                                        })
+                                        .on_key_down(cx.listener(
+                                            move |view, event: &KeyDownEvent, window, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                ) {
+                                                    cx.stop_propagation();
+                                                    view.open_mcp_login(
+                                                        &keyboard_source,
+                                                        &keyboard_command,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            }
+                                        ))
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.open_mcp_login(&source, &command, window, cx);
+                                        }))
                                 );
                             }
-                            row
+                            control!(format!("MCP/{}", server.name), row)
                         })),
                 ),
                 Some(Err(_)) => control!(
@@ -203,7 +225,7 @@ impl Desktop {
     }
 }
 
-fn server_row(server: &McpServerStatus, cx: &App) -> Div {
+fn server_status(server: &McpServerStatus, cx: &App) -> Div {
     use McpServerState::*;
     let theme = cx.theme();
     let muted = theme.muted_foreground;
@@ -227,21 +249,32 @@ fn server_row(server: &McpServerStatus, cx: &App) -> Div {
     control!(
         format!("MCP/{}/{}", server.name, label),
         h_flex()
-            .w_full()
-            .gap_3()
-            .px_2()
-            .py_1()
+            .flex_shrink_0()
             .text_size(crate::ui::control_text_size())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(server.name.clone())
-            )
-            .child(div().flex_shrink_0().text_color(muted).child(label))
+            .gap_3()
+            .child(div().text_color(muted).child(label))
             .child(Icon::new(icon).with_size(px(14.)).text_color(color))
     )
+}
+
+fn server_row(server: &McpServerStatus, cx: &App) -> Div {
+    h_flex()
+        .w_full()
+        .h_6()
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .rounded_sm()
+        .gap_2()
+        .px_2()
+        .text_size(crate::ui::control_text_size())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(server.name.clone()),
+        )
+        .child(server_status(server, cx).flex_shrink_0())
 }
 
 #[cfg(target_os = "macos")]
