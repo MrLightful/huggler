@@ -1103,10 +1103,17 @@ async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result
     assert!(active.history.messages[0].timestamp_ms.unwrap() > 0);
     assert!(active.history.messages[0].turn_duration_ms.is_none());
     let active = active.activity;
-    assert_eq!(active[0].items.len(), 1);
+    assert_eq!(active[0].items.len(), 2);
     assert_eq!(active[0].items[0].title, "make check");
     assert_eq!(active[0].items[0].status, ActivityStatus::Running);
     assert!(rt.detail(&other, None, "", 32)?.activity.is_empty());
+    assert_eq!(
+        rt.tool_traces(&thread, Some(ToolTraceSource::Mcp), 10)?[0]
+            .item
+            .status,
+        ActivityStatus::Running
+    );
+    assert!(rt.tool_traces(&other, None, 10)?.is_empty());
     let live = rt.command_output(&thread, &run, "build", None).await?;
     assert!(live.truncated && !live.closed);
     assert!(live.text.len() <= 32768 && live.text.starts_with('界') && live.text.ends_with("end"));
@@ -1138,14 +1145,14 @@ async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result
         items.iter().map(|item| item.kind).collect::<Vec<_>>(),
         [
             ActivityKind::Command,
-            ActivityKind::Compaction,
             ActivityKind::Tool,
+            ActivityKind::Compaction,
             ActivityKind::Commentary,
         ]
     );
     assert_eq!(items[0].title, "make check");
     assert_eq!(items[0].status, ActivityStatus::Completed);
-    assert_eq!(items[2].status, ActivityStatus::Failed);
+    assert_eq!(items[1].status, ActivityStatus::Failed);
     assert!(items[3].timestamp_ms.unwrap() >= messages[0].timestamp_ms.unwrap());
     let (snapshot, mut events) = rt.subscribe(&thread, Some(0))?;
     loop {
@@ -1161,6 +1168,32 @@ async fn command_output_is_scoped_bounded_and_available_after_reopen() -> Result
     assert_eq!(rt.command_items(&thread, &run)?, ["build"]);
     let reopened = rt.detail(&thread, None, "", 32)?;
     assert_eq!(reopened.activity, activity);
+    let traces = rt.tool_traces(&thread, None, 10)?;
+    assert_eq!(
+        traces
+            .iter()
+            .map(|trace| trace.item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["lookup", "build"]
+    );
+    assert_eq!(
+        rt.tool_traces(&thread, Some(ToolTraceSource::Standard), 10)?,
+        traces[1..]
+    );
+    assert_eq!(
+        rt.tool_traces(&thread, Some(ToolTraceSource::Mcp), 10)?,
+        traces[..1]
+    );
+    assert_eq!(rt.tool_traces(&thread, None, 1)?, traces[..1]);
+    let (trace, payload) = rt.tool_trace(&thread, &run, "lookup")?;
+    assert_eq!(trace, traces[0]);
+    assert_eq!(trace.item.status, ActivityStatus::Failed);
+    assert!(payload.input.unwrap().contains("build report"));
+    assert!(payload.result.unwrap().contains("Document unavailable"));
+    assert!(matches!(
+        rt.tool_trace(&other, &run, "lookup"),
+        Err(Error::NotFound(_))
+    ));
     for (reopened, original) in reopened.history.messages.iter().zip(messages) {
         assert_eq!(reopened.timestamp_ms, original.timestamp_ms);
         assert_eq!(reopened.turn_duration_ms, original.turn_duration_ms);
@@ -1471,5 +1504,45 @@ async fn acp_image_delivery_follows_the_advertised_capability() -> Result<()> {
             assert_eq!(fs::read(path)?, image);
         }
     }
+    rt.close().await
+}
+
+#[tokio::test]
+async fn acp_trace_keeps_mcp_source_across_partial_updates() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    checkout(&repo);
+    let rt = Huggler::open(options(&dir.path().join("state"))).await?;
+    let thread = launch(&rt, &rt.open_project(&repo)?, "root", Provider::ClaudeAgent);
+    let before = rt.detail(&thread, None, "", 10)?.history.sequence;
+    assert!(!rt.tool_traces_changed_since(&thread, before)?);
+    let run = rt
+        .send(
+            CommandId("trace".into()),
+            thread.clone(),
+            "trace ACP tools".into(),
+        )?
+        .run_id
+        .unwrap();
+    completed(&rt, &thread, &run).await;
+
+    assert!(rt.tool_traces_changed_since(&thread, before)?);
+    let calls = rt.tool_traces(&thread, Some(ToolTraceSource::Mcp), 10)?;
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| call.item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["navigation", "weather"]
+    );
+    assert_eq!(calls[1].item.status, ActivityStatus::Completed);
+    let (_, payload) = rt.tool_trace(&thread, &run, "weather")?;
+    assert!(payload.result.unwrap().contains("temperature"));
+
+    let calls = rt.tool_traces(&thread, Some(ToolTraceSource::Standard), 10)?;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].item.id, "standard");
+    let (_, payload) = rt.tool_trace(&thread, &run, "standard")?;
+    assert!(payload.result.unwrap().contains("Found README.md"));
     rt.close().await
 }

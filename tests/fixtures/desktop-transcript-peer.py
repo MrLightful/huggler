@@ -39,7 +39,8 @@ for line in sys.stdin:
              text="I’ll check the transcript layout and run the native workflow checks.")
     complete("command", "commandExecution", command="cargo test --locked --test context",
              status="completed", aggregatedOutput="All 12 checks passed.")
-    complete("lookup", "mcpToolCall", server="docs", tool="lookup", status="failed")
+    complete("lookup", "mcpToolCall", server="docs", tool="lookup", status="failed",
+             arguments={"query": "Review notes"}, error={"message": "No matching document"})
     time.sleep(8)
     complete("compact", "contextCompaction")
     complete("patch", "fileChange", status="completed", changes=[{"path": "desktop/src/conversation.rs"}])

@@ -1025,7 +1025,7 @@ fn message_footer(
         .child(copy.flex_shrink_0())
 }
 
-fn item_status(status: ActivityStatus, run: RunStatus) -> Option<&'static str> {
+pub(super) fn item_status(status: ActivityStatus, run: RunStatus) -> Option<&'static str> {
     match status {
         ActivityStatus::Running if !run.terminal() => Some("Running"),
         ActivityStatus::Running | ActivityStatus::Unknown if run == RunStatus::Interrupted => {

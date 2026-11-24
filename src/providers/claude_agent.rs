@@ -395,20 +395,30 @@ pub(crate) async fn execute(
                         )
                         && let Some(id) = notification["toolCallId"].as_str()
                     {
-                        use crate::{ActivityItem, ActivityKind, ActivityStatus};
+                        use crate::{ActivityItem, ActivityKind, ActivityStatus, ToolTracePayload};
+                        let title = notification["title"].as_str().unwrap_or_default();
+                        let source = tool_trace_source(notification, title);
                         let status = match notification["status"].as_str() {
                             Some("completed") => ActivityStatus::Completed,
                             Some("failed") => ActivityStatus::Failed,
                             Some("pending" | "in_progress") => ActivityStatus::Running,
                             _ => ActivityStatus::Unknown,
                         };
-                        update(Update::Activity(ActivityItem {
-                            id: id.into(),
-                            kind: ActivityKind::Tool,
-                            title: notification["title"].as_str().unwrap_or_default().into(),
-                            status,
-                            timestamp_ms: None,
-                        }))?;
+                        update(Update::Activity(
+                            ActivityItem {
+                                id: id.into(),
+                                kind: ActivityKind::Tool,
+                                title: title.into(),
+                                status,
+                                timestamp_ms: None,
+                            },
+                            source,
+                            ToolTracePayload {
+                                input: super::trace_excerpt(&notification["rawInput"]),
+                                result: super::trace_excerpt(&notification["rawOutput"])
+                                    .or_else(|| super::trace_excerpt(&notification["content"])),
+                            },
+                        ))?;
                     }
                     if notification["sessionUpdate"] == "subagent_update" {
                         if let Some(child) = client.children.announcement(&session, params, false) {
@@ -471,6 +481,48 @@ pub(crate) async fn execute(
         result = conversation => result,
     };
     rpc.finish(outcome).await
+}
+
+fn tool_trace_source(notification: &Value, title: &str) -> Option<crate::ToolTraceSource> {
+    use crate::ToolTraceSource;
+
+    let meta = &notification["_meta"];
+    let input = &notification["rawInput"];
+    let named_mcp = [
+        Some(title),
+        meta["toolName"].as_str(),
+        meta["claudeCode"]["toolName"].as_str(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|name| name.starts_with("mcp__") || name.starts_with("mcp::"));
+    let identifies_tool = |server: &Value, tool: &Value| {
+        [server, tool]
+            .into_iter()
+            .all(|value| value.as_str().is_some_and(|name| !name.trim().is_empty()))
+    };
+
+    if named_mcp
+        || meta["is_mcp_tool_call"] == true
+        || identifies_tool(&input["ServerName"], &input["ToolName"])
+    {
+        return Some(ToolTraceSource::Mcp);
+    }
+    matches!(
+        notification["kind"].as_str(),
+        Some(
+            "read"
+                | "edit"
+                | "delete"
+                | "move"
+                | "search"
+                | "execute"
+                | "think"
+                | "fetch"
+                | "switch_mode"
+        )
+    )
+    .then_some(ToolTraceSource::Standard)
 }
 
 /// Load visible history before the host creates a durable binding. This operation sends no prompt.

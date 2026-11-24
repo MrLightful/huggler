@@ -519,6 +519,33 @@ pub struct ActivityItem {
     pub timestamp_ms: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolTraceSource {
+    Mcp,
+    Standard,
+    /// The provider or an older record did not identify the source.
+    Unknown,
+}
+
+/// One tool call observed on an application run, independent of chat pagination.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolTrace {
+    pub run_id: RunId,
+    pub run_status: RunStatus,
+    pub item: ActivityItem,
+    pub source: ToolTraceSource,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolTracePayload {
+    /// Bounded, display-ready excerpts of provider-reported input and result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunActivity {
     pub run_id: RunId,

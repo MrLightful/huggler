@@ -44,7 +44,8 @@ for line in sys.stdin:
                 "type": "commandExecution", "id": "build", "aggregatedOutput": "final report"}})
             for item in [
                 {"type": "contextCompaction", "id": "compact"},
-                {"type": "mcpToolCall", "id": "lookup", "server": "docs", "tool": "lookup", "status": "failed"},
+                {"type": "mcpToolCall", "id": "lookup", "server": "docs", "tool": "lookup",
+                 "status": "failed", "error": {"message": "Document unavailable"}},
                 {"type": "agentMessage", "id": "progress", "phase": "commentary", "text": "Checking the report."},
             ]:
                 emit(method="item/completed", params={"threadId": session, "turnId": turn, "item": item})
@@ -136,6 +137,22 @@ for line in sys.stdin:
         result = {"data": [{"id": boundary}], "nextCursor": None}
     elif method == "session/prompt":
         prompt = params["prompt"][0]["text"]
+        if prompt == "trace ACP tools":
+            for call in [
+                {"sessionUpdate": "tool_call", "toolCallId": "weather", "title": "Checking the forecast",
+                 "kind": "execute", "status": "in_progress",
+                 "_meta": {"claudeCode": {"toolName": "mcp__weather__get_weather"}}},
+                {"sessionUpdate": "tool_call_update", "toolCallId": "weather", "title": "Checking the forecast",
+                 "kind": "execute", "status": "completed"},
+                {"sessionUpdate": "tool_call_update", "toolCallId": "weather", "rawOutput": {"temperature": 12}},
+                {"sessionUpdate": "tool_call", "toolCallId": "navigation", "title": "MCP Tool navigate_page",
+                 "kind": "execute", "status": "completed",
+                 "rawInput": {"ServerName": "browser", "ToolName": "navigate_page", "Arguments": {}}},
+                {"sessionUpdate": "tool_call", "toolCallId": "standard", "title": "Search the checkout",
+                 "kind": "search", "status": "completed",
+                 "content": [{"type": "content", "content": {"type": "text", "text": "Found README.md"}}]},
+            ]:
+                emit(method="session/update", params={"sessionId": session, "update": call})
         emit(method="session/update", params={"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk",
              "content": {"type": "text", "text": "portable reply"}}})
         result = {"stopReason": "end_turn"}
@@ -167,6 +184,9 @@ for line in sys.stdin:
         if prompt == "command output":
             emit(method="item/started", params={"threadId": session, "turnId": turn, "item": {
                 "type": "commandExecution", "id": "build", "command": "make check", "status": "inProgress"}})
+            emit(method="item/started", params={"threadId": session, "turnId": turn, "item": {
+                "type": "mcpToolCall", "id": "lookup", "server": "docs", "tool": "lookup",
+                "status": "inProgress", "arguments": {"query": "build report"}}})
             for target, item, delta in [(turn, "build", "prefix" + "界" * 20000 + "end"),
                                         ("prior", "foreign", "wrong")]:
                 emit(method="item/commandExecution/outputDelta", params={

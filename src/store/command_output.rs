@@ -38,7 +38,7 @@ pub(super) fn record(
         ..
     } = &frame
     {
-        crate::store::activity::record(tx, thread, run, item.clone())?;
+        crate::store::activity::record(tx, thread, run, item.clone(), None, Default::default())?;
     }
     if finished {
         return Ok(());

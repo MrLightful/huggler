@@ -17,6 +17,7 @@ mod terminal;
 mod terminal_actions;
 #[cfg(target_os = "macos")]
 mod terminal_pane;
+mod traces;
 mod transcript;
 
 use attachments::Attachments;
@@ -74,6 +75,7 @@ struct Workspace {
     files: Entity<FileTree>,
     changes: Entity<Changes>,
     documents: DocumentTabs,
+    traces: traces::Traces,
     draft: Entity<InputState>,
     attachments: Attachments,
     questions: HashMap<huggler::RequestId, Entity<Questions>>,
@@ -94,6 +96,7 @@ impl Workspace {
 enum WorkspaceTab {
     AllFiles,
     Changes,
+    Traces,
 }
 
 impl WorkspaceTab {
@@ -101,6 +104,7 @@ impl WorkspaceTab {
         match self {
             Self::AllFiles => "All files",
             Self::Changes => "Changes",
+            Self::Traces => "Traces",
         }
     }
 
@@ -108,6 +112,7 @@ impl WorkspaceTab {
         match self {
             Self::AllFiles => workspace.files.update(cx, |tree, cx| tree.refresh(cx)),
             Self::Changes => workspace.changes.update(cx, |panel, cx| panel.refresh(cx)),
+            Self::Traces => {}
         }
     }
 }
@@ -513,6 +518,7 @@ impl Desktop {
         self.model_picker = None;
         self.launch_workspace.close_picker();
         self.current = Some(snapshot);
+        self.refresh_traces(None);
         self.pull_request = None;
         self.watch_pull_request(cx);
         self.preload_models(cx);
@@ -642,6 +648,7 @@ impl Desktop {
                     files,
                     changes,
                     documents: DocumentTabs::default(),
+                    traces: traces::Traces::default(),
                     draft,
                     attachments: Attachments::default(),
                     questions: HashMap::new(),
@@ -699,7 +706,9 @@ impl Desktop {
             {
                 self.checkout_unavailable = !self.workspaces[&thread.id].root.is_dir();
             }
+            let previous_sequence = old.history.sequence;
             self.current = Some(thread);
+            self.refresh_traces(Some(previous_sequence));
         }
         Ok(())
     }
@@ -1302,6 +1311,8 @@ impl Desktop {
                     (WorkspaceTab::AllFiles, false) => "Show all files",
                     (WorkspaceTab::Changes, true) => "Hide changes",
                     (WorkspaceTab::Changes, false) => "Show changes",
+                    (WorkspaceTab::Traces, true) => "Hide traces",
+                    (WorkspaceTab::Traces, false) => "Show traces",
                 };
                 header.child(self.project_actions(cx)).child(control!(
                     action,
@@ -1322,6 +1333,9 @@ impl Desktop {
                             view.right_sidebar.toggle(right_open);
                             if !right_open && let Some(thread) = &view.current {
                                 view.workspace_tab.refresh(&view.workspaces[&thread.id], cx);
+                                if view.workspace_tab == WorkspaceTab::Traces {
+                                    view.refresh_trace_list();
+                                }
                             }
                             cx.notify();
                         }))
@@ -1329,9 +1343,14 @@ impl Desktop {
             })
     }
 
-    fn workspace_tabs(&self, cx: &Context<Self>) -> Div {
-        h_flex().flex_shrink_0().h_10().px_2().gap_1().children(
-            [WorkspaceTab::AllFiles, WorkspaceTab::Changes].map(|tab| {
+    fn workspace_tabs(&self, width: f32, cx: &Context<Self>) -> Div {
+        h_flex().flex_shrink_0().h_10().px_1().gap_0p5().children(
+            [
+                WorkspaceTab::AllFiles,
+                WorkspaceTab::Changes,
+                WorkspaceTab::Traces,
+            ]
+            .map(|tab| {
                 let label = tab.label();
                 control!(
                     format!("{label} tab"),
@@ -1339,7 +1358,8 @@ impl Desktop {
                         .label(label)
                         .ghost()
                         .small()
-                        .px_2()
+                        .px_1p5()
+                        .when(width < 190., |button| button.xsmall().h_6().px_0p5())
                         .selected(self.workspace_tab == tab)
                         .when(self.workspace_tab == tab, |button| {
                             button
@@ -1350,6 +1370,9 @@ impl Desktop {
                             view.workspace_tab = tab;
                             if let Some(thread) = &view.current {
                                 tab.refresh(&view.workspaces[&thread.id], cx);
+                            }
+                            if tab == WorkspaceTab::Traces {
+                                view.refresh_trace_list();
                             }
                             cx.notify();
                         }))
@@ -2206,6 +2229,9 @@ impl Render for Desktop {
                     let panel = match self.workspace_tab {
                         WorkspaceTab::AllFiles => workspace.files.clone().into_any_element(),
                         WorkspaceTab::Changes => workspace.changes.clone().into_any_element(),
+                        WorkspaceTab::Traces => {
+                            self.trace_panel(&workspace.traces, cx).into_any_element()
+                        }
                     };
                     layout.child(
                         div()
@@ -2224,7 +2250,7 @@ impl Render for Desktop {
                                     .border_l_1()
                                     .border_color(cx.theme().sidebar_border)
                                     .bg(cx.theme().sidebar)
-                                    .child(self.workspace_tabs(cx))
+                                    .child(self.workspace_tabs(right_width, cx))
                                     .child(div().flex_1().min_h_0().overflow_hidden().child(panel))
                                     .map(|panel| {
                                         #[cfg(target_os = "macos")]
@@ -2245,6 +2271,7 @@ impl Render for Desktop {
                     let resize = match self.workspace_tab {
                         WorkspaceTab::AllFiles => "Resize all files",
                         WorkspaceTab::Changes => "Resize changes",
+                        WorkspaceTab::Traces => "Resize traces",
                     };
                     layout.child(SidebarEdge::Right.handle(resize, right_width, narrow, cx))
                 },
