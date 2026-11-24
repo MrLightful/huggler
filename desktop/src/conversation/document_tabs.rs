@@ -1,7 +1,8 @@
 mod diff;
 mod editor;
+mod trace;
 
-use super::{markdown_view::Markdown, *};
+use super::{markdown_view::Markdown, traces, *};
 use crate::{
     changes::{ReviewRow, line_counts},
     file_icons,
@@ -16,6 +17,7 @@ use gpui_component::{
     scroll::{ScrollableElement, ScrollbarAxis},
     tooltip::Tooltip,
 };
+use huggler::{ToolTrace, ToolTracePayload};
 use std::{
     cell::Cell,
     io::Read,
@@ -34,13 +36,15 @@ const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 pub(super) enum Document {
     File(Arc<Path>),
     Diff(ReviewRow),
+    Trace(ToolTrace),
 }
 
 impl Document {
-    fn path(&self) -> &Path {
+    fn path(&self) -> Option<&Path> {
         match self {
-            Self::File(path) => path,
-            Self::Diff(row) => &row.file.path,
+            Self::File(path) => Some(path),
+            Self::Diff(row) => Some(&row.file.path),
+            Self::Trace(_) => None,
         }
     }
 
@@ -48,13 +52,14 @@ impl Document {
         match (self, other) {
             (Self::File(a), Self::File(b)) => a == b,
             (Self::Diff(a), Self::Diff(b)) => a.file.path == b.file.path && a.scope == b.scope,
+            (Self::Trace(a), Self::Trace(b)) => a.run_id == b.run_id && a.item.id == b.item.id,
             _ => false,
         }
     }
 
     fn comparison(&self) -> Option<&'static str> {
         match self {
-            Self::File(_) => None,
+            Self::File(_) | Self::Trace(_) => None,
             Self::Diff(row) => Some(match row.scope {
                 git::ChangeScope::All => "All changes",
                 git::ChangeScope::Uncommitted => "Uncommitted files",
@@ -63,8 +68,10 @@ impl Document {
     }
 
     fn read(&self, root: &Path, refresh: bool) -> Result<Loaded> {
-        let Self::Diff(row) = self else {
-            return Ok(Loaded::file(read_file(root, self.path())?));
+        let row = match self {
+            Self::File(path) => return Ok(Loaded::file(read_file(root, path)?)),
+            Self::Diff(row) => row,
+            Self::Trace(_) => unreachable!("traces are read from the conversation"),
         };
         let row = if refresh {
             let snapshot = git::changed_files(root, row.scope)?;
@@ -123,9 +130,14 @@ impl DocumentTabs {
         self.active.and_then(|index| self.tabs.get(index))
     }
 
+    pub(super) fn is_active(&self, document: &Document) -> bool {
+        self.active()
+            .is_some_and(|tab| tab.document.matches(document))
+    }
+
     pub(super) fn active_editor_focus(&self, cx: &App) -> Option<FocusHandle> {
         let tab = self.active().filter(|tab| tab.mode == DocumentMode::Raw)?;
-        let draft = self.editors.get(tab.document.path())?.draft()?;
+        let draft = self.editors.get(tab.document.path()?)?.draft()?;
         (!draft.is_saving()).then(|| draft.input.focus_handle(cx))
     }
 
@@ -152,6 +164,13 @@ pub(super) struct DocumentTab {
     loaded: Option<Result<Loaded>>,
     revert_error: Option<String>,
     load: Option<Task<()>>,
+    trace: Option<TraceContent>,
+}
+
+struct TraceContent {
+    payload: huggler::Result<ToolTracePayload>,
+    output: Option<huggler::Result<huggler::CommandOutput>>,
+    _reader: Option<Task<()>>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -389,6 +408,7 @@ impl Desktop {
                     loaded: None,
                     revert_error: None,
                     load: None,
+                    trace: None,
                 });
                 tabs.next_id += 1;
                 index
@@ -397,10 +417,15 @@ impl Desktop {
         let tab = &mut tabs.tabs[index];
         tab.document = document;
         tab.revert_error = None;
-        tab.load(&thread, &workspace.root, false, cx);
-        let path = tab.document.path();
-        let editor_path = (tab.mode == DocumentMode::Raw || tabs.editors.contains_key(path))
-            .then(|| Arc::from(path));
+        let editor_path = if let Some(path) = tab.document.path() {
+            let editor_path = (tab.mode == DocumentMode::Raw || tabs.editors.contains_key(path))
+                .then(|| Arc::from(path));
+            tab.load(&thread, &workspace.root, false, cx);
+            editor_path
+        } else {
+            tab.load_trace(&thread, &self.runtime, cx);
+            None
+        };
         self.focus_workspace(window, cx);
         if let Some(path) = editor_path {
             self.load_raw_editor(&thread, path, true, window, cx);
@@ -414,8 +439,9 @@ impl Desktop {
         };
         if let Some(tab) = self.workspaces[&thread].documents.active()
             && tab.mode == DocumentMode::Raw
+            && let Some(path) = tab.document.path()
         {
-            self.load_raw_editor(&thread, tab.document.path().into(), false, window, cx);
+            self.load_raw_editor(&thread, path.into(), false, window, cx);
         }
     }
 
@@ -433,7 +459,9 @@ impl Desktop {
             workspace.files.update(cx, FileTree::refresh);
         }
         for tab in &mut workspace.documents.tabs {
-            let path = tab.document.path();
+            let Some(path) = tab.document.path() else {
+                continue;
+            };
             let error = result.failure.as_ref().filter(|(failed, _)| failed == path);
             if error.is_none() && !result.paths.iter().any(|changed| changed == path) {
                 continue;
@@ -465,12 +493,14 @@ impl Desktop {
         let Some(index) = tabs.index_of(id) else {
             return;
         };
-        let path = tabs.tabs[index].document.path();
+        let Some(path) = tabs.tabs[index].document.path() else {
+            return self.remove_document(id, window, cx);
+        };
         let last = !tabs
             .tabs
             .iter()
             .enumerate()
-            .any(|(other, tab)| other != index && tab.document.path() == path);
+            .any(|(other, tab)| other != index && tab.document.path() == Some(path));
         if last && let Some(draft) = tabs.editors.get(path).and_then(Editor::draft) {
             if draft.is_saving() || window.has_active_dialog(cx) {
                 return;
@@ -515,12 +545,13 @@ impl Desktop {
             return;
         };
         let tab = tabs.tabs.remove(index);
-        if !tabs
-            .tabs
-            .iter()
-            .any(|other| other.document.path() == tab.document.path())
+        if let Some(path) = tab.document.path()
+            && !tabs
+                .tabs
+                .iter()
+                .any(|other| other.document.path() == Some(path))
         {
-            tabs.editors.remove(tab.document.path());
+            tabs.editors.remove(path);
         }
         match tabs.active {
             Some(active) if active == index && index > 0 => tabs.select(index - 1),
@@ -610,9 +641,9 @@ impl Desktop {
                                         |(index, tab)| {
                                             tab.selector(
                                                 documents.active == Some(index),
-                                                documents
-                                                    .editors
-                                                    .get(tab.document.path())
+                                                tab.document
+                                                    .path()
+                                                    .and_then(|path| documents.editors.get(path))
                                                     .and_then(Editor::draft)
                                                     .is_some_and(|draft| draft.dirty),
                                                 window,
@@ -654,18 +685,32 @@ impl DocumentTab {
         cx: &Context<Desktop>,
     ) -> impl IntoElement {
         let id = self.id;
-        let path = self.document.path();
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .replace(['\n', '\r', '\t'], " ");
-        let full_path = path.display().to_string();
         let diff = self.document.comparison();
-        let _key = diff.map_or_else(
-            || format!("File tab/{full_path}"),
-            |scope| format!("Diff tab/{scope}/{full_path}"),
-        );
+        let (name, full_title, _key) = match &self.document {
+            Document::Trace(trace) => {
+                let title = traces::title(trace);
+                (
+                    title.to_owned(),
+                    title.to_owned(),
+                    format!("Trace tab/{title}"),
+                )
+            }
+            document => {
+                let path = document.path().expect("working file path");
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                let full_path = path.display().to_string();
+                let key = diff.map_or_else(
+                    || format!("File tab/{full_path}"),
+                    |scope| format!("Diff tab/{scope}/{full_path}"),
+                );
+                (name, full_path, key)
+            }
+        };
+        let name = name.replace(['\n', '\r', '\t'], " ");
         let theme = cx.theme();
         let ring = theme.ring;
         let muted = theme.muted_foreground;
@@ -684,8 +729,8 @@ impl DocumentTab {
             .ceil();
         let truncated = label_width > TAB_LABEL_WIDTH;
         let tooltip = match diff {
-            Some(scope) => Some(format!("{full_path} · {scope}")),
-            None if full_path != name || truncated => Some(full_path),
+            Some(scope) => Some(format!("{full_title} · {scope}")),
+            None if full_title != name || truncated => Some(full_title),
             None => None,
         };
         let name = if truncated {
@@ -716,7 +761,12 @@ impl DocumentTab {
                         .when_some(tooltip, |tab, tooltip| tab.tooltip(move |window, cx| {
                             Tooltip::new(tooltip.clone()).build(window, cx)
                         }))
-                        .child(file_icons::icon(path, muted))
+                        .child(match &self.document {
+                            Document::Trace(trace) => traces::icon(trace, cx).into_any_element(),
+                            document =>
+                                file_icons::icon(document.path().expect("working file path"), muted)
+                                    .into_any_element(),
+                        })
                         .child(
                             div()
                                 .w(label_width.min(TAB_LABEL_WIDTH))
@@ -800,8 +850,11 @@ impl DocumentTab {
         documents: &DocumentTabs,
         window: &mut Window,
         cx: &mut Context<Desktop>,
-    ) -> impl IntoElement {
-        let path = self.document.path();
+    ) -> AnyElement {
+        if let Document::Trace(trace) = &self.document {
+            return self.render_trace(trace, cx).into_any_element();
+        }
+        let path = self.document.path().expect("working file path");
         let path_label = path.display().to_string();
         let scope = self.document.comparison();
         let theme = cx.theme();
@@ -1020,6 +1073,7 @@ impl DocumentTab {
                 pane.child(hint("Showing the first 128 KiB", cx).px_3().py_1())
             })
             .child(div().relative().flex_1().min_h_0().min_w_0().child(content))
+            .into_any_element()
     }
 
     fn copy_button(

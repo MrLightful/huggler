@@ -1046,7 +1046,9 @@ impl Database {
                 tx.execute("DELETE FROM app_context WHERE thread=? AND claimed_run=?", params![thread.0, id.0])?;
             }
             Update::Steer(command,outcome) => steering::settle(&tx, thread,id,&command,outcome)?,
-            Update::Activity(item) => activity::record(&tx, thread, id, item)?,
+            Update::Activity(item, source, payload) => {
+                activity::record(&tx, thread, id, item, source, payload)?;
+            }
             Update::CommandOutput { item, frame } => command_output::record(&tx,thread,id,&item,frame)?,
             Update::Output(text) => {
                 event(&tx, thread, Change::OutputDelta { run_id: id.clone(), text })?;

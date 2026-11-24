@@ -463,13 +463,41 @@ def check_transcript(binary):
             {"absent": "activity-item/docs / lookup"},
             {"click": "activity/2 tool calls · 2 messages"}, {"see": "activity-item/docs / lookup"},
             {"click": "activity/1 tool call"}, {"see": "activity-item/desktop/src/conversation.rs"},
+            {"right_of": ["Traces tab", "Changes tab"]}, {"click": "Traces tab"},
+            {"see": "Trace/docs / lookup"}, {"see": "Trace/desktop/src/conversation.rs"},
+            {"see": "Trace/cargo test --locked --test context"}, {"absent": "Trace/Context compacted"},
+            {"click": "Trace filter/MCP"}, {"see": "Trace/docs / lookup"},
+            {"absent": "Trace/cargo test --locked --test context"},
+            {"click": "Trace/docs / lookup"}, {"see": "Tool trace/docs / lookup"},
+            {"max_height": ["Tool trace/docs / lookup", 24]},
+            {"right_of": ["Trace tab/docs / lookup", "Chat tab"]},
+            {"contains": "Trace Input/"}, {"contains": "Trace Result/"},
+            {"see": "Trace field/query"}, {"see": "Trace field/message"},
+            {"click": "Document mode/Raw"}, {"absent": "Trace field/query"},
+            {"contains": "Trace Input/"}, {"contains": "Trace Result/"},
+            {"click": "Document mode/Fields"}, {"see": "Trace field/query"},
+            {"click": "Trace filter/Std"}, {"absent": "Trace/docs / lookup"},
+            {"click": "Trace/cargo test --locked --test context"},
+            {"max_height": ["Tool trace/cargo test --locked --test context", 24]},
+            {"see": "Trace Output/All 12 checks passed."},
+            {"see": "Trace tab/docs / lookup"},
+            {"click": "Trace/cargo test --locked --test context"},
+            {"key": "cmd-w"}, {"absent": "Trace tab/cargo test --locked --test context"},
+            {"see": "Tool trace/docs / lookup"},
+            {"click": "Close Trace tab/docs / lookup"}, {"see": "Message"},
+            {"click": "Trace filter/All"}, {"see": "Trace/docs / lookup"},
+            {"drag_x": ["Resize traces", 176]}, {"center_x": ["Resize traces", 960]},
+            {"screenshot": {"name": "Traces at minimum sidebar width", "component": "Traces tab"}},
         ], env)
         run_window(binary, state, [
             {"see": "Context compacted"}, {"contains": "Codex/## Review summary"},
             {"click": "activity/2 tool calls · 2 messages"}, {"click": "Command 1 output"},
             {"see": "command-output/All 12 checks passed."},
+            {"click": "Traces tab"}, {"see": "Trace/docs / lookup"},
+            {"click": "Trace/cargo test --locked --test context"},
+            {"see": "Trace Output/All 12 checks passed."},
         ], env)
-    print("Native transcript activity grouping and saved command output passed")
+    print("Native transcript activity, tool trace filters and saved command output passed")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,14 @@ use crate::{
 use std::path::PathBuf;
 use tokio::sync::oneshot;
 
+fn trace_excerpt(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(text) => Some(text.clone()),
+        _ => serde_json::to_string_pretty(value).ok(),
+    }
+}
+
 pub(crate) struct ChildInterrupt {
     pub thread: NativeThreadId,
     pub turn: Option<NativeTurnId>,
@@ -75,7 +83,11 @@ pub(crate) enum CommandFrame {
 
 pub(crate) enum Update {
     SubmittingAppContext,
-    Activity(crate::ActivityItem),
+    Activity(
+        crate::ActivityItem,
+        Option<crate::ToolTraceSource>,
+        crate::ToolTracePayload,
+    ),
     CommandOutput {
         item: String,
         frame: CommandFrame,

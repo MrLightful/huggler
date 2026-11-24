@@ -9,8 +9,8 @@ use super::{
 };
 use crate::{
     ActivityItem, ActivityKind, ActivityStatus, Error, NativeChildTurn, NativeThreadId,
-    NativeTurnId, PermissionOption, PermissionRequest, RequestId, Result, UserAnswer, UserAnswers,
-    UserInputQuestion, UserInputRequest,
+    NativeTurnId, PermissionOption, PermissionRequest, RequestId, Result, ToolTracePayload,
+    ToolTraceSource, UserAnswer, UserAnswers, UserInputQuestion, UserInputRequest,
 };
 pub use commit_message::generate_commit_message;
 
@@ -55,7 +55,8 @@ fn activity_item(item: &Value, completed: bool) -> Option<ActivityItem> {
         "failed" | "declined" => ActivityStatus::Failed,
         "interrupted" | "cancelled" => ActivityStatus::Interrupted,
         _ if item["exitCode"].as_i64().is_some_and(|code| code != 0)
-            || item["success"] == false =>
+            || item["success"] == false
+            || item["result"]["isError"] == true =>
         {
             ActivityStatus::Failed
         }
@@ -69,6 +70,37 @@ fn activity_item(item: &Value, completed: bool) -> Option<ActivityItem> {
         status,
         timestamp_ms: None,
     })
+}
+
+fn activity_update(item: &Value, completed: bool) -> Option<Update> {
+    let activity = activity_item(item, completed)?;
+    let (source, input, result) = match item["type"].as_str()? {
+        "mcpToolCall" => (
+            Some(ToolTraceSource::Mcp),
+            &item["arguments"],
+            item.get("error")
+                .filter(|error| !error.is_null())
+                .unwrap_or(&item["result"]),
+        ),
+        "dynamicToolCall" => (
+            Some(ToolTraceSource::Standard),
+            &item["arguments"],
+            &item["contentItems"],
+        ),
+        "fileChange" => (None, &item["changes"], &Value::Null),
+        "webSearch" => (None, &item["action"], &Value::Null),
+        "imageView" => (Some(ToolTraceSource::Standard), &Value::Null, &Value::Null),
+        "imageGeneration" => (Some(ToolTraceSource::Standard), &Value::Null, &Value::Null),
+        _ => (None, &Value::Null, &Value::Null),
+    };
+    Some(Update::Activity(
+        activity,
+        source,
+        ToolTracePayload {
+            input: super::trace_excerpt(input),
+            result: super::trace_excerpt(result),
+        },
+    ))
 }
 use children::Children;
 use serde::Deserialize;
@@ -675,9 +707,9 @@ impl Client {
             if p["turnId"] == id
                 && let Some(method @ ("item/started" | "item/completed")) = frame["method"].as_str()
                 && p["item"]["type"] != "commandExecution"
-                && let Some(item) = activity_item(&p["item"], method == "item/completed")
+                && let Some(activity) = activity_update(&p["item"], method == "item/completed")
             {
-                update(Update::Activity(item))?;
+                update(activity)?;
             }
             match frame["method"].as_str() {
                 Some("item/commandExecution/outputDelta") if p["turnId"] == id => {

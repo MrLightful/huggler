@@ -885,6 +885,33 @@ impl Huggler {
             .access(|db| db.detail(thread, before, query, limit))
     }
 
+    /// Check whether tool trace summaries may have changed after a conversation cursor.
+    pub fn tool_traces_changed_since(&self, thread: &ThreadId, after: i64) -> Result<bool> {
+        self.shared
+            .access(|db| db.tool_traces_changed_since(thread, after))
+    }
+
+    /// Read the newest observed tool calls on a conversation across all runs.
+    pub fn tool_traces(
+        &self,
+        thread: &ThreadId,
+        source: Option<ToolTraceSource>,
+        limit: usize,
+    ) -> Result<Vec<ToolTrace>> {
+        self.shared
+            .access(|db| db.tool_traces(thread, source, limit))
+    }
+
+    /// Read a single trace and any provider-reported input and result excerpts.
+    pub fn tool_trace(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+        item: &str,
+    ) -> Result<(ToolTrace, ToolTracePayload)> {
+        self.shared.access(|db| db.tool_trace(thread, run, item))
+    }
+
     /// Codex command item IDs observed on one application run, in discovery order.
     pub fn command_items(&self, thread: &ThreadId, run: &RunId) -> Result<Vec<String>> {
         self.shared.access(|db| db.command_items(thread, run))

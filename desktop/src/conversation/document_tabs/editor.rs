@@ -134,7 +134,7 @@ impl Desktop {
                     .as_ref()
                     .is_some_and(|current| current.id == *thread)
                 && workspace.documents.active().is_some_and(|tab| {
-                    tab.mode == DocumentMode::Raw && tab.document.path() == &*path
+                    tab.mode == DocumentMode::Raw && tab.document.path() == Some(path.as_ref())
                 })
             {
                 draft.input.focus_handle(cx).focus(window);
@@ -162,7 +162,7 @@ impl Desktop {
                                 .active()
                                 .is_some_and(|tab| {
                                     tab.mode == DocumentMode::Raw
-                                        && tab.document.path() == &*editor_path
+                                        && tab.document.path() == Some(editor_path.as_ref())
                                 })
                             && !view.show_settings
                             && !window.has_active_dialog(cx)
@@ -204,7 +204,8 @@ impl Desktop {
         let Some(path) = workspace
             .documents
             .active()
-            .map(|tab| Arc::<Path>::from(tab.document.path()))
+            .and_then(|tab| tab.document.path())
+            .map(Arc::<Path>::from)
         else {
             return;
         };
@@ -272,7 +273,7 @@ impl Desktop {
         let workspace = self.workspaces.get_mut(thread).expect("document workspace");
         workspace.refresh_after_checkout_update(self.workspace_tab, cx);
         for tab in &mut workspace.documents.tabs {
-            if tab.document.path() == path {
+            if tab.document.path() == Some(path) {
                 tab.revert_error = None;
                 tab.load(thread, &workspace.root, true, cx);
             }
@@ -286,7 +287,9 @@ impl Desktop {
         let Some(tab) = self.workspaces[&thread].documents.active() else {
             return;
         };
-        let path: Arc<Path> = tab.document.path().into();
+        let Some(path) = tab.document.path().map(Arc::<Path>::from) else {
+            return;
+        };
         let draft = self.workspaces[&thread]
             .documents
             .editors
