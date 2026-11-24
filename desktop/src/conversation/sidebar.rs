@@ -197,7 +197,7 @@ impl Desktop {
             let selected = self
                 .current
                 .as_ref()
-                .filter(|_| !self.show_settings && !self.remote_open())
+                .filter(|_| self.local_workspace_visible())
                 .map(|t| &t.id);
             // Before the user toggles a lower group, keep just the open thread visible.
             let expanded = self.expanded_sections.get(&section).copied();
@@ -268,9 +268,8 @@ impl Desktop {
         cx: &Context<Self>,
     ) -> Div {
         let id = thread.id.clone();
-        let selected = !self.show_settings
-            && !self.remote_open()
-            && self.current.as_ref().is_some_and(|t| t.id == id);
+        let selected =
+            self.local_workspace_visible() && self.current.as_ref().is_some_and(|t| t.id == id);
         let attention = section == Section::Attention;
         // Button measures its custom label at its intrinsic width. Bound it to the
         // space inside the sidebar and row padding so long names get an ellipsis.

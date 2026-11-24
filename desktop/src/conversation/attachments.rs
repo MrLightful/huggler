@@ -148,6 +148,17 @@ pub(super) struct Attachments {
 }
 
 impl Attachments {
+    pub(super) fn from_files(files: Vec<Attachment>) -> Self {
+        Self {
+            files,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn files(&self) -> &[Attachment] {
+        &self.files
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.files.is_empty()
     }

@@ -10,7 +10,7 @@ use huggler::{Project, workspace::WorktreeBranch};
 use markdown::{ParseOptions, mdast::Node, to_mdast};
 use std::time::Duration;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum WorkspaceMode {
     Current,
     #[default]
@@ -219,7 +219,7 @@ mod title_tests {
 }
 
 impl WorkspaceMode {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Current => "Current checkout",
             Self::Worktree => "New worktree",
@@ -247,6 +247,10 @@ impl LaunchWorkspace {
         }
     }
 
+    pub(super) fn loading_branches(&self) -> bool {
+        self.load.is_some() && self.branches.is_none()
+    }
+
     pub(super) fn requested_mode(&self) -> WorkspaceMode {
         self.mode
     }
@@ -258,11 +262,11 @@ impl LaunchWorkspace {
         }
     }
 
-    fn branches(&self) -> Option<&git::Branches> {
+    pub(super) fn branches(&self) -> Option<&git::Branches> {
         self.branches.as_ref()?.as_ref().ok()
     }
 
-    fn displayed_branch(&self, mode: WorkspaceMode) -> Option<&git::Branch> {
+    pub(super) fn displayed_branch(&self, mode: WorkspaceMode) -> Option<&git::Branch> {
         self.selected_branch(mode).or_else(|| {
             let branches = self.branches()?;
             match mode {

@@ -39,6 +39,8 @@ export interface ProviderInstance {
   requestApprovals?: boolean
   /** Allow workspace writes for Codex outside plan mode. Defaults to false. */
   workspaceWrite?: boolean
+  /** Give Codex full access or approve ACP tool requests without prompting. Defaults to false. */
+  fullAccess?: boolean
 }
 
 /** Provide at least one of name, slug, or stateDir when opening Huggler. */

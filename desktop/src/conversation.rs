@@ -1,5 +1,6 @@
 mod agent_activity;
 mod attachments;
+mod backlog;
 mod document_tabs;
 mod file_tree;
 mod launch_workspace;
@@ -19,6 +20,7 @@ mod terminal_pane;
 mod transcript;
 
 use attachments::Attachments;
+use backlog::{Backlog, LaunchDraft};
 pub(crate) use document_tabs::DOCUMENT_CONTEXT;
 use document_tabs::{Document, DocumentTabs};
 use file_tree::{FileAction, FileTree};
@@ -113,6 +115,7 @@ impl WorkspaceTab {
 pub struct Desktop {
     settings: Entity<Settings>,
     show_settings: bool,
+    backlog: Backlog,
     #[cfg(unix)]
     remote_project: Option<Entity<crate::machines::RemoteProject>>,
     #[cfg(unix)]
@@ -260,6 +263,7 @@ impl Desktop {
         let mut view = Self {
             settings,
             show_settings: false,
+            backlog: Backlog::default(),
             #[cfg(unix)]
             remote_project: None,
             #[cfg(unix)]
@@ -439,6 +443,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         self.show_settings = false;
+        self.backlog.open = false;
         self.error = None;
         let key = (machine.environment.clone(), machine.project.clone());
         let view = self.remote_projects.entry(key).or_insert_with(|| {
@@ -455,6 +460,10 @@ impl Desktop {
         self.remote_project = Some(view.clone());
         self.focus.focus(window);
         cx.notify();
+    }
+
+    fn local_workspace_visible(&self) -> bool {
+        !self.show_settings && !self.backlog.open && !self.remote_open()
     }
 
     fn remote_open(&self) -> bool {
@@ -474,6 +483,7 @@ impl Desktop {
         self.project_picker = None;
         self.checkout_browse = None;
         self.ensure_workspace(&id, window, cx)?;
+        self.backlog.open = false;
         #[cfg(unix)]
         {
             self.remote_project = None;
@@ -742,7 +752,7 @@ impl Desktop {
             self.settings.read(cx).focus.focus(window);
             return;
         }
-        if self.remote_open() {
+        if self.backlog.open || self.remote_open() {
             self.focus.focus(window);
             return;
         }
@@ -766,7 +776,7 @@ impl Desktop {
     }
 
     pub(super) fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.show_settings || self.launching.is_some() {
+        if self.show_settings || self.backlog.open || self.launching.is_some() {
             return;
         }
         #[cfg(unix)]
@@ -799,6 +809,8 @@ impl Desktop {
         if !self.leave_settings(cx) {
             return;
         }
+        self.backlog.open = false;
+        self.error = None;
         self.suggestions = Default::default();
         self.model_picker = None;
         self.mcp_status = None;
@@ -835,28 +847,77 @@ impl Desktop {
         cx.notify();
     }
 
+    fn launch_draft(&self, cx: &App) -> LaunchDraft {
+        let message = self.starter.read(cx).value().to_string();
+        let name = self.name.read(cx).value();
+        let name = name.trim();
+        let name = if name.is_empty() {
+            launch_workspace::conversation_title(&message, self.starter_attachments.first_name())
+        } else {
+            name.to_owned()
+        };
+        let checkout = self.launch_checkout(cx);
+        let workspace_mode = if checkout.as_os_str().is_empty() {
+            WorkspaceMode::Current
+        } else {
+            self.launch_workspace.requested_mode()
+        };
+        LaunchDraft {
+            name,
+            message,
+            project_name: self.launch_project_name(cx),
+            checkout,
+            checkout_root: None,
+            workspace_mode,
+            selected_branch: self
+                .launch_workspace
+                .selected_branch(workspace_mode)
+                .cloned(),
+            branch: self.branch.read(cx).value().trim().to_owned(),
+            model: self.launch_model.clone(),
+            model_options: self.launch_model_options.clone(),
+            instance: self.instance.clone(),
+        }
+    }
+
     fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.launching.is_some()
             || self.checkout_browse.is_some()
             || self.starter_attachments.loading
+            || (self.name.read(cx).value().trim().is_empty()
+                && self.starter.read(cx).value().trim().is_empty()
+                && self.starter_attachments.is_empty())
         {
             return;
         }
-        let message = self.starter.read(cx).value().to_string();
-        let explicit_name = self.name.read(cx).value();
-        let explicit_name = explicit_name.trim();
-        if explicit_name.is_empty()
-            && message.trim().is_empty()
-            && self.starter_attachments.is_empty()
-        {
-            return;
-        }
-        let name = if explicit_name.is_empty() {
-            launch_workspace::conversation_title(&message, self.starter_attachments.first_name())
-        } else {
-            explicit_name.to_owned()
-        };
-        let checkout = self.launch_checkout(cx);
+        let draft = self.launch_draft(cx);
+        let attachments = std::mem::take(&mut self.starter_attachments);
+        self.starter
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.start_launch(draft, attachments, None, window, cx);
+    }
+
+    fn start_launch(
+        &mut self,
+        draft: LaunchDraft,
+        attachments: Attachments,
+        saved_draft: Option<Uuid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let LaunchDraft {
+            name,
+            message,
+            checkout,
+            checkout_root,
+            workspace_mode,
+            selected_branch,
+            branch,
+            model,
+            model_options,
+            instance,
+            ..
+        } = draft;
         let saved_roots: HashSet<_> = self
             .settings
             .read(cx)
@@ -865,22 +926,12 @@ impl Desktop {
             .map(|project| project.root.clone())
             .collect();
         let scratch_root = self.scratch_root.clone();
-        let branch = self.branch.read(cx).value();
         let scratch = checkout.as_os_str().is_empty();
-        let workspace_mode = if scratch {
-            WorkspaceMode::Current
-        } else {
-            self.launch_workspace.requested_mode()
-        };
-        let selected_branch = self
-            .launch_workspace
-            .selected_branch(workspace_mode)
-            .cloned();
-        let model = self.launch_model.clone();
-        let model_options = self.launch_model_options.clone();
-        let instance = self.instance.clone();
         let runtime = self.runtime.clone();
-        let id = ThreadId(Uuid::new_v4().to_string());
+        let id = ThreadId(saved_draft.unwrap_or_else(Uuid::new_v4).to_string());
+        if let Some(draft) = saved_draft {
+            self.backlog.sending = Some(draft);
+        }
         self.launching = Some(LaunchProgress {
             thread: id.clone(),
             title: name.clone(),
@@ -894,19 +945,45 @@ impl Desktop {
         self.error = None;
         cx.notify();
         let thread = id.clone();
-        self.starter
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        let attachments = std::mem::take(&mut self.starter_attachments);
         let first_message = (!message.trim().is_empty() || !attachments.is_empty())
             .then(|| attachments.action(message.clone()));
         let launch_name = name.clone();
         let (report_stage, mut stages) = tokio::sync::mpsc::unbounded_channel();
         let launch = cx.background_spawn(async move {
+            let send = || match first_message {
+                Some(action) => runtime.dispatch(Command {
+                    id: CommandId(saved_draft.map_or_else(
+                        || Uuid::new_v4().to_string(),
+                        |id| format!("backlog-send-{id}"),
+                    )),
+                    thread_id: thread.clone(),
+                    action,
+                }).map(|_| ()),
+                None => Ok(()),
+            };
+            // Launch and enqueue commit separately. A retry uses the existing
+            // conversation and the same enqueue ID, even after an app restart.
+            if saved_draft.is_some() && backlog::has_draft_conversation(&runtime, &thread)? {
+                return Ok((send(), None));
+            }
             let source = if scratch {
                 fs::create_dir_all(&scratch_root)?;
-                runtime.create_scratch(&scratch_root.join(&thread.0))?
+                let mut path = scratch_root.join(&thread.0);
+                if saved_draft.is_some() && path.try_exists()? {
+                    path = scratch_root.join(format!("{thread}-{}", Uuid::new_v4()));
+                }
+                runtime.create_scratch(&path)?
             } else {
+                if saved_draft.is_some() && !checkout.try_exists()? {
+                    anyhow::bail!("The saved checkout is missing. Restore it and retry.");
+                }
                 let project = runtime.open_project(&checkout)?;
+                if let Some(root) = &checkout_root {
+                    anyhow::ensure!(
+                        project.root == *root,
+                        "The saved checkout now points to a different Git repository. Restore the original checkout and retry."
+                    );
+                }
                 anyhow::ensure!(
                     !saved_roots.contains(&checkout) || project.root == checkout,
                     "The saved project checkout has moved. Choose a Git checkout for this conversation."
@@ -919,7 +996,7 @@ impl Desktop {
                 source,
                 workspace_mode,
                 selected_branch,
-                branch.trim(),
+                &branch,
                 &name,
                 |stage| {
                     let _ = report_stage.send(stage);
@@ -952,18 +1029,7 @@ impl Desktop {
                 && saved_roots.contains(&source_root)
                 && git::main_worktree(&project.root).is_ok_and(|main| main != source_root))
             .then_some((project.root, source_root));
-            let sent = if let Some(action) = first_message {
-                runtime
-                    .dispatch(Command {
-                        id: CommandId(Uuid::new_v4().to_string()),
-                        thread_id: thread,
-                        action,
-                    })
-                    .map(|_| ())
-            } else {
-                Ok(())
-            };
-            anyhow::Ok((sent, worktree_project))
+            anyhow::Ok((send(), worktree_project))
         });
         cx.spawn_in(window, async move |view, cx| {
             while let Some(stage) = stages.recv().await {
@@ -980,6 +1046,9 @@ impl Desktop {
                 if still_open {
                     v.launching = None;
                 }
+                if saved_draft.is_some() {
+                    v.backlog.sending = None;
+                }
                 match result {
                     Ok((sent, worktree_project)) => {
                         let saved = worktree_project.map(|(worktree, root)| {
@@ -987,34 +1056,59 @@ impl Desktop {
                                 settings.save_worktree_project(worktree, root, cx)
                             })
                         });
+                        let cleanup = saved_draft
+                            .filter(|_| sent.is_ok())
+                            .map(|draft| v.remove_saved_draft(draft));
+                        let failed_draft = saved_draft.filter(|_| sent.is_err());
                         let result = (|| {
-                            if sent.is_err() {
+                            if sent.is_err() && saved_draft.is_none() {
                                 v.ensure_workspace(&id, w, cx)?;
                                 v.workspaces.get_mut(&id).unwrap().attachments = attachments;
                                 v.workspaces[&id]
                                     .draft
                                     .update(cx, |input, cx| input.set_value(message, w, cx));
                             }
-                            if still_open {
+                            if still_open
+                                && !v.show_settings
+                                && (v.backlog.open == saved_draft.is_some())
+                                && (saved_draft.is_none() || sent.is_ok())
+                            {
                                 v.select(id, w, cx)?;
                             }
                             sent
                         })();
-                        v.report(result, cx);
-                        if v.error.is_none()
+                        if let (Some(draft), Err(error)) = (failed_draft, &result) {
+                            v.backlog
+                                .errors
+                                .insert(draft, format!("Could not send draft. {error}"));
+                        } else {
+                            v.report(result, cx);
+                        }
+                        if let Some(Err(error)) = cleanup {
+                            v.error = Some(format!(
+                                "Message sent. Could not remove its Backlog draft. {error}"
+                            ));
+                        } else if v.error.is_none()
                             && let Some(Err(error)) = saved
                         {
                             v.error = Some(format!("{error:#}"));
                         }
                     }
                     Err(error) => {
-                        if v.starter.read(cx).value().is_empty() && v.starter_attachments.is_empty()
+                        if saved_draft.is_none()
+                            && v.starter.read(cx).value().is_empty()
+                            && v.starter_attachments.is_empty()
                         {
                             v.starter_attachments = attachments;
                             v.starter
                                 .update(cx, |input, cx| input.set_value(message, w, cx));
                         }
-                        v.error = Some(format!("Could not open {launch_name}. {error}"));
+                        let error = format!("Could not open {launch_name}. {error}");
+                        if let Some(draft) = saved_draft {
+                            v.backlog.errors.insert(draft, error);
+                        } else {
+                            v.error = Some(error);
+                        }
                         if still_open {
                             v.focus_workspace(w, cx);
                         }
@@ -1325,6 +1419,10 @@ impl Desktop {
                         .child(self.model_control(cx))
                         .child(div().flex_1().min_w_0())
                         .child(self.mcp_status_control(window, cx))
+                        .child(self.save_backlog_button(
+                            empty_message || browsing || self.starter_attachments.loading,
+                            cx,
+                        ))
                         .child(
                             self.send_controls(
                                 &self.starter_attachments,
@@ -1381,9 +1479,13 @@ impl Desktop {
             .child(
                 h_flex()
                     .gap_2()
-                    .justify_between()
                     .flex_wrap()
                     .child(self.model_control(cx))
+                    .child(div().flex_1().min_w_0())
+                    .child(self.save_backlog_button(
+                        empty_message || browsing || self.starter_attachments.loading,
+                        cx,
+                    ))
                     .child(
                         self.send_controls(
                             &self.starter_attachments,
@@ -1842,7 +1944,7 @@ impl Render for Desktop {
         let navigation_open = self.navigation.is_open(navigation_default);
         let left = self.navigation.fraction(navigation_default, window);
         let remote = self.remote_open();
-        let right = if self.current.is_some() && !self.show_settings && !remote {
+        let right = if self.current.is_some() && self.local_workspace_visible() {
             self.right_sidebar.fraction(!narrow, window)
         } else {
             0.
@@ -1862,14 +1964,13 @@ impl Render for Desktop {
             .flex()
             .track_focus(&self.focus)
             .when(
-                !self.show_settings
-                    && !remote
+                self.local_workspace_visible()
                     && self.current.as_ref().is_some_and(|thread| {
                         self.workspaces[&thread.id].documents.active().is_some()
                     }),
                 |layout| layout.key_context(DOCUMENT_CONTEXT),
             )
-            .when(!remote, |layout| {
+            .when(!remote && !self.backlog.open, |layout| {
                 layout
                     .on_action(cx.listener(Self::close_active_document))
                     .on_action(cx.listener(Self::save_active_document))
@@ -1950,6 +2051,21 @@ impl Render for Desktop {
                                                         cx,
                                                     )
                                                 }))
+                                        ))
+                                        .child(control!(
+                                            "Backlog",
+                                            Button::new("backlog")
+                                                .small()
+                                                .compact()
+                                                .w_full()
+                                                .justify_start()
+                                                .ghost()
+                                                .icon(IconName::File)
+                                                .label("Backlog")
+                                                .selected(self.backlog.open && !self.show_settings)
+                                                .on_click(cx.listener(|view, _, w, cx| {
+                                                    view.open_backlog(w, cx)
+                                                }))
                                         )),
                                 )
                                 .child(
@@ -2008,7 +2124,7 @@ impl Render for Desktop {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .when(!self.show_settings && !remote, |pane| {
+                    .when(self.local_workspace_visible(), |pane| {
                         pane.child(self.workspace_header(navigation_open, right_open, cx))
                             .child(self.document_tab_strip(window, cx))
                     })
@@ -2024,6 +2140,9 @@ impl Render for Desktop {
                         let toggle = self.navigation_toggle(navigation_open, cx);
                         self.settings
                             .update(cx, |settings, cx| settings.panel(toggle, cx))
+                            .into_any_element()
+                    } else if self.backlog.open {
+                        self.backlog_page(navigation_open, conversation_width, cx)
                             .into_any_element()
                     } else {
                         match &self.current {

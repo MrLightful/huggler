@@ -77,7 +77,7 @@ pub(super) struct Models {
     preferences: ModelPreferences,
 }
 
-fn effort_label(effort: &str) -> String {
+pub(super) fn effort_label(effort: &str) -> String {
     match effort {
         "xhigh" => "Extra high".into(),
         _ => {

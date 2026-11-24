@@ -139,7 +139,7 @@ pub fn main_worktree(root: &Path) -> Result<PathBuf> {
     Ok(file_path(path)?.canonicalize()?)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Branch {
     pub reference: String,
     pub name: String,
@@ -157,6 +157,7 @@ impl Branch {
 }
 
 pub struct Branches {
+    pub root: PathBuf,
     pub branches: Vec<Branch>,
     pub default: Option<Branch>,
 }
@@ -225,7 +226,11 @@ pub fn branches(path: &Path) -> Result<Branches> {
         })
         .or_else(|| branches.first().cloned());
     branches.sort_by_key(|branch| (!branch.current, branch.remote));
-    Ok(Branches { branches, default })
+    Ok(Branches {
+        root,
+        branches,
+        default,
+    })
 }
 
 pub fn workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
