@@ -7,7 +7,7 @@ if [ "$#" -ne 2 ]; then
 fi
 
 revision=338352dee2f43079482e054e8229a2ba055641d9
-fixture=$(cd "$(dirname "$0")/../docs/reference/codex-resume" && pwd)
+fixture=$(cd "$(dirname "$0")/../knowledge/reference/codex-resume" && pwd)
 upstream=$(cd "$1" && pwd)
 git -C "$upstream" cat-file -e "$revision^{commit}"
 mkdir "$2"

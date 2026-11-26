@@ -63,7 +63,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: docs-app
+        working-directory: docs
     env:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
@@ -74,7 +74,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: docs-app/package-lock.json
+          cache-dependency-path: docs/package-lock.json
       - run: npm ci
       - run: npm run typecheck
       - name: Build and verify the static export

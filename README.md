@@ -10,7 +10,7 @@ Add the published [`huggler` crate](https://crates.io/crates/huggler) to your Ru
 cargo add huggler
 ```
 
-Requires Rust 1.94.1 or later. Follow the [Rust quickstart](docs-app/content/docs/bindings/rust/quickstart.mdx#run-one-turn) to launch a conversation and recover its reply after reopening the database.
+Requires Rust 1.94.1 or later. Follow the [Rust quickstart](docs/content/docs/bindings/rust/quickstart.mdx#run-one-turn) to launch a conversation and recover its reply after reopening the database.
 
 Huggler runs inside your application. Your host provides the interface and decides when to send prompts, display questions, and request approvals. Install and authenticate the coding agent you want to use; runtime requirements belong to the selected provider adapter. The Rust library itself does not require Node.js.
 
@@ -33,20 +33,20 @@ Huggler runs inside your application. Your host provides the interface and decid
 
 | Language | Distribution | Guide |
 | --- | --- | --- |
-| Rust | Published `huggler` crate on crates.io | [Rust quickstart](docs-app/content/docs/bindings/rust/quickstart.mdx) · [API reference](https://docs.rs/huggler) |
-| TypeScript | `@huggler/sdk` preview, installed from locally built tarballs | [TypeScript quickstart](docs-app/content/docs/bindings/typescript/quickstart.mdx) |
-| Python | Native wheels from CI artifacts or built from a checkout | [Python quickstart](docs-app/content/docs/bindings/python/quickstart.mdx) |
+| Rust | Published `huggler` crate on crates.io | [Rust quickstart](docs/content/docs/bindings/rust/quickstart.mdx) · [API reference](https://docs.rs/huggler) |
+| TypeScript | `@huggler/sdk` preview, installed from locally built tarballs | [TypeScript quickstart](docs/content/docs/bindings/typescript/quickstart.mdx) |
+| Python | Native wheels from CI artifacts or built from a checkout | [Python quickstart](docs/content/docs/bindings/python/quickstart.mdx) |
 
-Bindings expose different parts of the runtime. Check the [feature comparison](docs-app/content/docs/bindings/index.mdx#feature-availability) before choosing one. Rust hosts can enable the optional `application` feature for workspace management, schedules, repository bindings, and host services.
+Bindings expose different parts of the runtime. Check the [feature comparison](docs/content/docs/bindings/index.mdx#feature-availability) before choosing one. Rust hosts can enable the optional `application` feature for workspace management, schedules, repository bindings, and host services.
 
 ## Providers
 
-Huggler integrates with Codex, Claude Agent, Cursor, Grok, FX, Kiro, Antigravity, OpenCode, Pi, Muse, and agents from the ACP registry. Available operations depend on the adapter and installed agent version. See the [provider reference](docs-app/content/docs/reference/providers.mdx) for transports, tested versions, and limitations.
+Huggler integrates with Codex, Claude Agent, Cursor, Grok, FX, Kiro, Antigravity, OpenCode, Pi, Muse, and agents from the ACP registry. Available operations depend on the adapter and installed agent version. See the [provider reference](docs/content/docs/reference/providers.mdx) for transports, tested versions, and limitations.
 
 ## Documentation
 
-- [User documentation](docs-app/content/docs/index.mdx): runtime concepts and guides for building a host.
-- [Engineering documentation](docs/README.md): architecture boundaries, verification, bindings, and upstream review.
+- [User documentation](docs/content/docs/index.mdx): runtime concepts and guides for building a host.
+- [Engineering documentation](knowledge/README.md): architecture boundaries, verification, bindings, and upstream review.
 
 ## License
 

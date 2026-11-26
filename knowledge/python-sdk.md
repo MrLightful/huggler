@@ -1,6 +1,6 @@
 # Python SDK packaging and qualification
 
-The Python package embeds Huggler with Cargo's `application` feature enabled. It exposes the conversation, command-output, and application methods and uses the same action, event and persistence contracts as Rust. Tool trace queries are currently available through the Rust API. Python hosts choose the timer, HTTP server and external credentials, and supply host callbacks for preview and device integrations. [Python documentation](../docs-app/content/docs/bindings/python/index.mdx) · [Consumer and orchestration boundary](README.md#consumer-and-orchestration-boundary)
+The Python package embeds Huggler with Cargo's `application` feature enabled. It exposes the conversation, command-output, and application methods and uses the same action, event and persistence contracts as Rust. Tool trace queries are currently available through the Rust API. Python hosts choose the timer, HTTP server and external credentials, and supply host callbacks for preview and device integrations. [Python documentation](../docs/content/docs/bindings/python/index.mdx) · [Consumer and orchestration boundary](README.md#consumer-and-orchestration-boundary)
 
 ## Build and test from a checkout
 

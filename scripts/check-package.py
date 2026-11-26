@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix="huggler independent ") as tmp:
         tracked = subprocess.check_output(
             ["git", "ls-files", "-z", "--", "tests/fixtures", "migrations"], cwd=root
         ).decode().split("\0")
-        reference = "docs/reference/codex-resume"
+        reference = "knowledge/reference/codex-resume"
         required = {p for p in tracked if p} | {
             "Cargo.lock", "LICENSE", "src/providers/codex.rs", "tests/support/resume.rs",
             *(f"{reference}/{f}" for f in ("LICENSE", "cursors.json", "expected.txt", "codex_transcript.ndjson")),
