@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Scripted Codex app-server and ACP peers for context and input assertions."""
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -17,6 +18,10 @@ def emit(**frame):
     if acp:
         frame["jsonrpc"] = "2.0"
     print(json.dumps(frame), flush=True)
+
+
+def config_revision(config):
+    return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
 
 def completed():
@@ -64,6 +69,44 @@ for line in sys.stdin:
             "supportedReasoningEfforts": [{"reasoningEffort": "medium"}, {"reasoningEffort": "high"}],
             **({"serviceTiers": [{"id": "priority", "name": "Fast"}]} if model == "fixture-deep" else {}),
         } for model in models]}
+    elif method == "config/read" and params.get("includeLayers"):
+        assert params == {"includeLayers": True}
+        path = Path("mcp-settings-fixture.json")
+        config = json.loads(path.read_text()) if path.is_file() else {}
+        result = {"layers": [
+            {"name": {"type": "system"}, "config": {
+                "mcp_servers": {"managed": {"url": "https://example.org/managed"}}
+            }},
+            {"name": {"type": "user", "profile": None},
+             "config": config, "version": config_revision(config)},
+        ]}
+    elif method == "config/batchWrite":
+        path = Path("mcp-settings-fixture.json")
+        config = json.loads(path.read_text()) if path.is_file() else {}
+        if params["expectedVersion"] != config_revision(config):
+            emit(id=frame["id"], error={"code": -32600, "data": {
+                "config_write_error_code": "configVersionConflict"
+            }})
+            continue
+        assert "filePath" not in params
+        servers = config.setdefault("mcp_servers", {})
+        for edit in params["edits"]:
+            assert edit["mergeStrategy"] == "replace"
+            section, _, key_path = edit["keyPath"].partition(".")
+            assert section == "mcp_servers"
+            name, end = json.JSONDecoder().raw_decode(key_path)
+            key = key_path[end:].removeprefix(".")
+            value = edit["value"]
+            if key:
+                servers[name][key] = value
+            elif value is None:
+                del servers[name]
+            else:
+                assert name not in servers
+                servers[name] = value
+        path.write_text(json.dumps(config))
+        status = "okOverridden" if Path("mcp-settings-overridden").exists() else "ok"
+        result = {"status": status, "version": config_revision(config)}
     elif method == "config/read" and Path("codex-fixture-config.json").exists():
         result = {"config": json.loads(Path("codex-fixture-config.json").read_text())}
     elif method == "skills/list" and not acp:

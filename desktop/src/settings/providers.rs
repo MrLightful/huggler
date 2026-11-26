@@ -77,6 +77,7 @@ pub(super) struct ProviderSettings {
     reset_pending: bool,
     reset_needs_restart: bool,
     detected_scroll: ScrollHandle,
+    pub(super) mcp: super::mcp::Panel,
     setup: HashMap<ProviderInstanceId, SetupState>,
 }
 
@@ -89,6 +90,7 @@ impl ProviderSettings {
             reset_pending: false,
             reset_needs_restart: false,
             detected_scroll: ScrollHandle::default(),
+            mcp: super::mcp::Panel::default(),
             setup: HashMap::new(),
         }
     }
@@ -283,6 +285,7 @@ impl Settings {
                 cx.notify();
                 if load_models {
                     view.request_models(true, cx);
+                    view.request_mcp_settings(cx);
                 }
             });
         })
@@ -304,6 +307,7 @@ impl Settings {
         self.providers.reset_pending = false;
         self.providers.reset_needs_restart = false;
         self.environment_rows = None;
+        self.providers.mcp = super::mcp::Panel::default();
         self.model_catalog = None;
         self.catalog_subscription = None;
         let instance = self.selected_provider();
@@ -311,6 +315,7 @@ impl Settings {
             && setup::executable_available(&self.state, instance)
         {
             self.request_models(false, cx);
+            self.request_mcp_settings(cx);
         }
     }
 
@@ -548,6 +553,9 @@ impl Settings {
                 installed || matches!(status, Status::ServerConfigured),
                 |page| {
                     page.child(self.render_models(cx))
+                        .when(installed && instance.driver == Provider::Codex, |page| {
+                            page.child(self.render_mcp_settings(cx))
+                        })
                         .when(installed, |page| page.child(self.render_environment(cx)))
                         .child(self.render_advanced(installed, cx))
                 },
@@ -691,6 +699,7 @@ impl Settings {
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.refresh_providers(cx);
                         view.request_models(true, cx);
+                        view.request_mcp_settings(cx);
                     }))
             ))
             .when(

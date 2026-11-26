@@ -364,6 +364,81 @@ async fn codex_discovers_mcp_status_across_pages_without_a_turn() {
 }
 
 #[tokio::test]
+async fn codex_mcp_settings_reject_invalid_operations_and_stale_revisions() {
+    use huggler::providers::codex::mcp_settings::{McpConnection, McpEdit};
+
+    let (temp, root) = checkout();
+    let mut options = HugglerOptions::new(temp.path().join("state"));
+    options.codex.executable =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context-provider.py");
+    let rt = Huggler::open(options).await.unwrap();
+    let settings = rt.read_mcp_settings("codex", &root).await.unwrap().unwrap();
+    let http = || McpConnection::Http {
+        url: "https://example.org/mcp".into(),
+    };
+    let write = |revision: String, edit| {
+        rt.write_mcp_settings("codex", &root, revision, "docs".into(), edit)
+    };
+    assert!(matches!(
+        write(settings.revision.clone(), McpEdit::SetEnabled(false)).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        write(
+            settings.revision.clone(),
+            McpEdit::Add(McpConnection::Http {
+                url: "not a URL".into(),
+            }),
+        )
+        .await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        rt.write_mcp_settings(
+            "codex",
+            &root,
+            settings.revision.clone(),
+            rt.output().name.clone(),
+            McpEdit::Add(http()),
+        )
+        .await,
+        Err(Error::Invalid(_))
+    ));
+    write(settings.revision.clone(), McpEdit::Add(http()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        write(settings.revision, McpEdit::Remove).await,
+        Err(Error::Provider(_))
+    ));
+
+    let settings = rt.read_mcp_settings("codex", &root).await.unwrap().unwrap();
+    assert!(matches!(
+        write(settings.revision.clone(), McpEdit::Add(http())).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        write(
+            settings.revision,
+            McpEdit::Edit(McpConnection::Stdio {
+                command: "example".into(),
+                args: vec![],
+            }),
+        )
+        .await,
+        Err(Error::Invalid(_))
+    ));
+    let config_path = root.join("mcp-settings-fixture.json");
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    assert_eq!(
+        config["mcp_servers"]["docs"],
+        serde_json::json!({"url": "https://example.org/mcp"})
+    );
+    rt.close().await.unwrap();
+}
+
+#[tokio::test]
 #[ignore = "uses the signed-in cloud Codex subscription"]
 async fn cloud_codex_with_missing_acp() {
     let (temp, root) = checkout();
