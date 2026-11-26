@@ -28,6 +28,8 @@ def check(executable, root, screenshots=None):
     send = f"Send draft/{title}"
     card = f"Draft card/{title}"
     actions = f"Draft actions/{title}"
+    details = f"Draft details/{title}"
+    details_panel = f"Draft details panel/{title}"
     def capture(name):
         if screenshots is None:
             return []
@@ -52,6 +54,9 @@ def check(executable, root, screenshots=None):
         {"next_file_selection": [str(attachment)]}, {"click": "Attach files"},
         {"see": "Remove notes.txt"}, {"click": "Save to Backlog"}, {"see": send},
         {"absent": f"thread/{title}"},
+        {"absent": details_panel}, {"click": details}, {"see": details_panel},
+        *capture("details"),
+        {"click": details}, {"absent": details_panel},
         {"hover": card}, {"click": actions}, {"click": "Edit draft"},
         {"click": "Draft message"}, {"key": "cmd-a"}, {"type": prompt},
         {"click": "Save draft changes"}, {"see": card},
@@ -73,7 +78,8 @@ def check(executable, root, screenshots=None):
     unavailable = checkout.with_name("moved")
     checkout.rename(unavailable)
     run_window(executable, state, [
-        {"click": "Backlog"}, {"hover": card}, {"click": send}, {"contains": "Could not open"},
+        {"click": "Backlog"}, {"absent": details_panel},
+        {"hover": card}, {"click": send}, {"contains": "Could not open"},
         {"see": send},
         *([{"resize": [960, 640]}, {"hover": card}, {"see": send}, *capture("retry")] if screenshots else []),
     ], env)
