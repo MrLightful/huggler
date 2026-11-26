@@ -259,13 +259,14 @@ impl Desktop {
         Ok(())
     }
 
-    pub(super) fn save_backlog_button(&self, disabled: bool, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn save_backlog_button(&self, disabled: bool, cx: &Context<Self>) -> Div {
         control!(
             "Save to Backlog",
             Button::new("save-to-backlog")
                 .small()
                 .ghost()
-                .label("Save to Backlog")
+                .icon(IconName::GalleryVerticalEnd)
+                .tooltip("Save to Backlog")
                 .disabled(disabled || self.launch_workspace.loading_branches())
                 .on_click(cx.listener(|view, _, window, cx| {
                     if let Err(error) = view.save_to_backlog(window, cx) {
@@ -274,7 +275,7 @@ impl Desktop {
                     }
                 }))
         )
-        .into_any_element()
+        .flex_shrink_0()
     }
 
     fn send_backlog(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
