@@ -165,6 +165,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/041.sql"),
     include_str!("../migrations/042.sql"),
     include_str!("../migrations/043.sql"),
+    include_str!("../migrations/044.sql"),
 ];
 
 const RUN_FIELDS: &str = "id, ordinal, status, native_turn, error, queue_held, delivery_slot, usage_limit_reset_at, prompt_suggestion, started_at_ms";
@@ -227,13 +228,40 @@ fn event(tx: &Transaction<'_>, thread: &ThreadId, change: Change) -> Result<i64>
     Ok(sequence)
 }
 
+fn conversation_revision(db: &Connection) -> Result<i64> {
+    Ok(db
+        .prepare_cached(
+            "SELECT max(
+                coalesce((SELECT max(activity) FROM thread_order),0),
+                coalesce((SELECT max(title_revision) FROM thread_order),0)
+            )",
+        )?
+        .query_row([], |row| row.get(0))?)
+}
+
 fn mark_conversation_changed(tx: &Transaction<'_>, thread: &ThreadId) -> Result<()> {
     tx.execute(
-        "UPDATE thread_order SET activity=(SELECT max(activity)+1 FROM thread_order) WHERE id=?",
-        [&thread.0],
+        "UPDATE thread_order SET activity=? WHERE id=?",
+        params![conversation_revision(tx)? + 1, thread.0],
     )?;
     Ok(())
 }
+
+fn thread_title(db: &Connection, thread: &ThreadId) -> Result<crate::ThreadTitle> {
+    db.prepare_cached(
+        "SELECT name,title_revision FROM thread JOIN thread_order USING(id) WHERE id=?",
+    )?
+    .query_row([&thread.0], |row| {
+        Ok(crate::ThreadTitle {
+            thread: thread.clone(),
+            name: row.get(0)?,
+            revision: row.get(1)?,
+        })
+    })
+    .optional()?
+    .ok_or_else(|| Error::NotFound(thread.to_string()))
+}
+
 fn run_event(tx: &Transaction<'_>, thread: &ThreadId, id: &RunId) -> Result<i64> {
     event(tx, thread, Change::Run { run: run(tx, id)? })
 }
@@ -1504,6 +1532,40 @@ impl Database {
             .ok_or_else(|| Error::NotFound(id.to_string()))
     }
 
+    pub fn thread_title(&self, thread: &ThreadId) -> Result<crate::ThreadTitle> {
+        thread_title(&self.db, thread)
+    }
+
+    pub fn set_thread_title_if_current(
+        &mut self,
+        expected: &crate::ThreadTitle,
+        title: &str,
+    ) -> Result<bool> {
+        let tx = self.db.transaction()?;
+        let thread = &expected.thread;
+        let current = thread_title(&tx, thread)?;
+        if current != *expected || current.name == title {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE thread SET name=? WHERE id=?",
+            params![title, thread.0],
+        )?;
+        tx.execute(
+            "UPDATE thread_order SET title_revision=? WHERE id=?",
+            params![conversation_revision(&tx)? + 1, thread.0],
+        )?;
+        event(
+            &tx,
+            thread,
+            Change::TitleChanged {
+                title: title.into(),
+            },
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     pub fn threads_after(&self, position: i64) -> Result<Vec<ThreadSummary>> {
         Ok(self
             .db
@@ -1518,10 +1580,7 @@ impl Database {
     }
 
     pub fn conversation_revision(&self) -> Result<i64> {
-        Ok(self
-            .db
-            .prepare_cached("SELECT coalesce(max(activity),0) FROM thread_order")?
-            .query_row([], |row| row.get(0))?)
+        conversation_revision(&self.db)
     }
 
     pub fn conversation_list(&self) -> Result<ConversationList> {

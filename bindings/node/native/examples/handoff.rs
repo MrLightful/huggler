@@ -25,11 +25,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = rt.read(&thread)?;
     assert_eq!(snapshot.cursor.to_string(), saved["cursor"]);
     let message = &snapshot.messages[0];
-    let receipt = rt.send(CommandId("send-first".into()), thread, message.text.clone())?;
+    let receipt = rt.send(
+        CommandId("send-first".into()),
+        thread.clone(),
+        message.text.clone(),
+    )?;
     assert_eq!(
         serde_json::to_value(receipt.run_id)?,
         saved["sent"]["runId"]
     );
+    let title = rt.thread_title(&thread)?;
+    assert!(rt.set_thread_title_if_current(&title, "Resume replay fixture")?);
     rt.close().await?;
     Ok(())
 }

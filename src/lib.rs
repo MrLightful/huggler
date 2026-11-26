@@ -4,6 +4,8 @@ mod attachments;
 #[cfg(feature = "application")]
 pub mod automation;
 pub mod contracts;
+mod conversation_title;
+pub use conversation_title::{ConversationTitleRequest, ThreadTitle};
 pub mod guest;
 mod imports;
 mod layout;

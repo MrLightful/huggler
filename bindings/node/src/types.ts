@@ -230,6 +230,7 @@ export type Change =
   | { type: "message"; message: Message }
   | { type: "bound"; nativeThread: NativeThreadId }
   | { type: "settlementChanged"; settled: boolean }
+  | { type: "titleChanged"; title: string }
   | { type: "modelSelected"; model: string | null }
   | { type: "questionRequested"; request: QuestionRequest }
   | { type: "permissionRequested"; request: PermissionRequest }

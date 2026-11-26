@@ -112,6 +112,7 @@ pub fn event(e: Event) -> Value {
     let change = match e.change {
         ActivityChanged { run_id } => json!({"type": "activityChanged", "runId": run_id}),
         Launched => json!({"type": "launched"}),
+        TitleChanged { title } => json!({"type": "titleChanged", "title": title}),
         SessionReset => json!({"type": "sessionReset"}),
         Run { run: r } => json!({"type": "run", "run": run(r)}),
         Message { message: m } => json!({"type": "message", "message": message(m)}),

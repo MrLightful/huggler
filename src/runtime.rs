@@ -904,6 +904,32 @@ impl Huggler {
         self.shared.access(|db| db.read(id))
     }
 
+    /// Capture the current name and its revision before scheduling title generation.
+    pub fn thread_title(&self, thread: &ThreadId) -> Result<crate::ThreadTitle> {
+        self.shared.access(|db| db.thread_title(thread))
+    }
+
+    /// Apply a title only if the snapshot is still current. Returns false if the
+    /// title has been edited since the snapshot or already equals the requested title.
+    /// The host controls scheduling and cancellation of competing suggestions.
+    pub fn set_thread_title_if_current(
+        &self,
+        expected: &crate::ThreadTitle,
+        title: &str,
+    ) -> Result<bool> {
+        let title = title.trim();
+        if !crate::conversation_title::is_valid_title(title) {
+            return Err(Error::Invalid("invalid conversation title".into()));
+        }
+        let changed = self
+            .shared
+            .access(|db| db.set_thread_title_if_current(expected, title))?;
+        if changed {
+            self.shared.changed.send_replace(());
+        }
+        Ok(changed)
+    }
+
     /// Read up to 100 message previews, applying an optional ASCII case-insensitive literal search.
     /// A change to the conversation invalidates its history cursor.
     pub fn detail(
