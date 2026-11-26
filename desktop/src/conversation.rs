@@ -1426,6 +1426,13 @@ impl Desktop {
         let browsing = self.checkout_browse.is_some();
         let empty_message =
             self.starter.read(cx).value().trim().is_empty() && self.starter_attachments.is_empty();
+        let draft_unavailable = empty_message || browsing || self.starter_attachments.loading;
+        let project_row = h_flex()
+            .w_full()
+            .justify_between()
+            .gap_2()
+            .child(self.project_control(window, cx))
+            .child(self.save_backlog_button(draft_unavailable, cx));
         if !self.launch_setup {
             let title = self.launch_project_name(cx).map_or_else(
                 || "What should we build?".into(),
@@ -1442,10 +1449,6 @@ impl Desktop {
                         .child(self.model_control(cx))
                         .child(div().flex_1().min_w_0())
                         .child(self.mcp_status_control(window, cx))
-                        .child(self.save_backlog_button(
-                            empty_message || browsing || self.starter_attachments.loading,
-                            cx,
-                        ))
                         .child(
                             self.send_controls(
                                 &self.starter_attachments,
@@ -1457,9 +1460,7 @@ impl Desktop {
                                         self.settings.read(cx).preferences().send_shortcut.label()
                                     ),
                                 )
-                                .disabled(
-                                    empty_message || browsing || self.starter_attachments.loading,
-                                )
+                                .disabled(draft_unavailable)
                                 .on_click(cx.listener(|v, _, w, cx| v.launch(w, cx))),
                                 cx,
                             ),
@@ -1472,12 +1473,7 @@ impl Desktop {
                 .p_4()
                 .gap_2()
                 .child(heading(title).text_xl().mb_1())
-                .child(
-                    h_flex()
-                        .flex_wrap()
-                        .gap_1()
-                        .child(self.project_control(window, cx)),
-                )
+                .child(project_row)
                 .child(composer)
                 .when(!checkout_empty, |body| {
                     body.child(self.launch_checkout_controls(cx))
@@ -1505,10 +1501,6 @@ impl Desktop {
                     .flex_wrap()
                     .child(self.model_control(cx))
                     .child(div().flex_1().min_w_0())
-                    .child(self.save_backlog_button(
-                        empty_message || browsing || self.starter_attachments.loading,
-                        cx,
-                    ))
                     .child(
                         self.send_controls(
                             &self.starter_attachments,
@@ -1600,12 +1592,7 @@ impl Desktop {
                 body.child(self.launch_checkout_controls(cx))
             })
             .child(context)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(self.project_control(window, cx)),
-            )
+            .child(project_row)
             .child(
                 h_flex()
                     .gap_2()
@@ -2083,7 +2070,7 @@ impl Render for Desktop {
                                                 .w_full()
                                                 .justify_start()
                                                 .ghost()
-                                                .icon(IconName::File)
+                                                .icon(IconName::GalleryVerticalEnd)
                                                 .label("Backlog")
                                                 .selected(self.backlog.open && !self.show_settings)
                                                 .on_click(cx.listener(|view, _, w, cx| {
