@@ -380,7 +380,7 @@ asyncio.run(main())
         requests = []
         pull = {
             "id": "PR-fixture", "number": 7, "url": "https://example.test/pull/7",
-            "state": "OPEN", "isDraft": False, "baseRefName": "master", "headRefOid": "a" * 40,
+            "state": "OPEN", "isDraft": False, "baseRefName": "main", "headRefOid": "a" * 40,
             "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "canBeRebased": True,
             "viewerCanEnableAutoMerge": True, "isMergeQueueEnabled": False,
             "isCrossRepository": False, "repository": {
