@@ -39,6 +39,72 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn checkout_path(
+    db: &Connection,
+    storage: &crate::StorageLayout,
+    state_dir: &Path,
+    project: &Path,
+) -> Result<PathBuf> {
+    let mut words = storage.worktree_words.clone();
+    words.sort_by_cached_key(|_| uuid::Uuid::new_v4());
+    for word in words {
+        let path = match storage.checkout(state_dir, project, &word) {
+            Ok(path) => path,
+            // Existing filesystem entries are never reused, including dangling symlinks.
+            Err(Error::Invalid(_)) => continue,
+            Err(error) => return Err(error),
+        };
+        let reserved = checkout_reserved(db, &path)?;
+        if !reserved {
+            return Ok(path);
+        }
+    }
+    Err(Error::Invalid("all short worktree names are in use".into()))
+}
+
+fn checkout_reserved(db: &Connection, path: &Path) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM worktree WHERE path=?1
+         UNION ALL SELECT 1 FROM project WHERE root=?1)",
+        [path
+            .to_str()
+            .ok_or_else(|| Error::Invalid("expected UTF-8 workspace".into()))?],
+        |row| row.get(0),
+    )?)
+}
+
+#[test]
+fn dictionary_checkout_names_skip_existing_and_reserved_paths() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db = Connection::open_in_memory()?;
+    db.execute_batch("CREATE TABLE worktree(path TEXT); CREATE TABLE project(root TEXT);")?;
+    let storage = crate::StorageLayout::default();
+    let words = crate::worktree::checkout_names();
+    let unique: std::collections::HashSet<_> = words.iter().collect();
+    assert_eq!(unique.len(), words.len());
+    for word in &words {
+        assert!((4..=8).contains(&word.len()));
+        assert!(word.bytes().all(|b| b.is_ascii_lowercase()));
+    }
+    let available = storage.checkout(dir.path(), dir.path(), &words[0])?;
+    let reserved = storage.checkout(dir.path(), dir.path(), &words[1])?;
+    db.execute("INSERT INTO worktree VALUES(?)", [reserved.to_str()])?;
+    for word in &words[2..] {
+        let path = storage.checkout(dir.path(), dir.path(), word)?;
+        std::fs::write(path, "occupied")?;
+    }
+    assert_eq!(
+        checkout_path(&db, &storage, dir.path(), dir.path())?,
+        available
+    );
+    db.execute("INSERT INTO project VALUES(?)", [available.to_str()])?;
+    assert!(
+        matches!(checkout_path(&db, &storage, dir.path(), dir.path()),
+        Err(Error::Invalid(message)) if message == "all short worktree names are in use")
+    );
+    Ok(())
+}
+
 fn validate_model_options(driver: &str, options: &ModelOptions) -> Result<()> {
     if !options.is_default() && driver != Provider::Codex.key() {
         return Err(Error::Invalid("model options require Codex".into()));
@@ -622,8 +688,7 @@ impl Database {
                         |r| r.get(0),
                     )?;
                     let path =
-                        self.storage
-                            .checkout(&self.state_dir, Path::new(&project), &new_id())?;
+                        checkout_path(&tx, &self.storage, &self.state_dir, Path::new(&project))?;
                     checkpoints::reserve(&tx, thread, &path, &common_dir, &commit)?;
                 }
                 context::save_fork(&tx, thread, &history, instance)?;

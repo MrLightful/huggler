@@ -125,6 +125,26 @@ impl Runtime {
         })
     }
 
+    #[pyo3(signature = (source, revision, name, branch=None))]
+    fn allocate_workspace_named(
+        &self,
+        py: Python<'_>,
+        source: String,
+        revision: &str,
+        name: &str,
+        branch: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let branch: Option<Branch> = branch.map(parse).transpose()?;
+        let branch = branch.as_ref().map(|branch| match branch {
+            Branch::Exact(name) => WorktreeBranch::Exact(name),
+            Branch::FromTitle(title) => WorktreeBranch::FromTitle(title),
+        });
+        read(py, || {
+            self.0
+                .allocate_workspace_named(&ProjectId(source), revision, name, branch)
+        })
+    }
+
     fn allocated_workspaces(&self, py: Python<'_>, source: String) -> PyResult<Py<PyAny>> {
         read(py, || self.0.allocated_workspaces(&ProjectId(source)))
     }

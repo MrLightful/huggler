@@ -94,10 +94,10 @@ impl Huggler {
     /// Resolve a Git revision in the source repository and allocate a detached checkout of its commit.
     pub fn allocate_workspace_at(&self, source: &ProjectId, revision: &str) -> Result<Project> {
         self.shared
-            .access(|db| db.allocate_workspace(source, revision, None))
+            .access(|db| db.allocate_workspace(source, revision, None, None))
     }
     /// Create a managed checkout and a new local branch at the resolved Git revision.
-    /// The checkout directory includes a readable name and a generated suffix.
+    /// The checkout directory uses a random dictionary word of 4–8 letters.
     pub fn allocate_workspace_on_branch(
         &self,
         source: &ProjectId,
@@ -105,7 +105,20 @@ impl Huggler {
         branch: WorktreeBranch<'_>,
     ) -> Result<Project> {
         self.shared
-            .access(|db| db.allocate_workspace(source, revision, Some(branch)))
+            .access(|db| db.allocate_workspace(source, revision, Some(branch), None))
+    }
+    /// Allocate a checkout with an exact directory name, bypassing the naming template.
+    /// The name must be a single path component; occupied or reserved names are errors.
+    /// Pass a branch to create a new local branch, or None for a detached checkout.
+    pub fn allocate_workspace_named(
+        &self,
+        source: &ProjectId,
+        revision: &str,
+        name: &str,
+        branch: Option<WorktreeBranch<'_>>,
+    ) -> Result<Project> {
+        self.shared
+            .access(|db| db.allocate_workspace(source, revision, branch, Some(name)))
     }
     /// Enumerate managed checkout reservations in the same Git repository as the source.
     pub fn allocated_workspaces(&self, source: &ProjectId) -> Result<Vec<Project>> {

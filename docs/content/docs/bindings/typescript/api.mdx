@@ -69,3 +69,5 @@ Keep cursors and 64-bit counts as strings across storage and serialization. See 
 ## Handle errors
 
 Catch `HugglerError` and check `error.code`. For `busy`, inspect the foreground run before submitting again. For `conflict`, `error.detail.originalThread` and `error.detail.requestedThread` identify where a command ID was reused. For `cursor_expired`, rebuild the view with a fresh subscription. For `history_changed`, restart the history query from its first page.
+
+Set `storage.worktreeWords` to replace the bundled dictionary for automatic worktree names, for example `storage: { worktreeWords: ["cedar", "meadow", "sparrow"] }`. The list must be nonempty and contain unique words of 4–8 lowercase ASCII letters. Occupied names are skipped and exhausting the list returns an error. The TypeScript preview does not expose workspace allocation methods; exact per-workspace directory names are available through the Rust and Python application APIs.

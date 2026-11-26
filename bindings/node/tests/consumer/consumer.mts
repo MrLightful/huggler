@@ -17,7 +17,7 @@ const options: FixtureOptions = {
   stateDir: resolve("state"),
   name: "Fixture Studio",
   slug: "fixture-app",
-  storage: { databasePath: resolve("custom.sqlite"), worktreeRoot: { kind: "shared", path: resolve("trees") } },
+  storage: { worktreeWords: ["cedar", "maple"], databasePath: resolve("custom.sqlite"), worktreeRoot: { kind: "shared", path: resolve("trees") } },
   output: { version: "fixture-sdk" },
   instances: [
     { id: recorded, driver: "codex", executable: resolve("codex"), home: resolve("codex-home") },
@@ -171,6 +171,8 @@ async function check(rt: Huggler) {
     // @ts-expect-error JavaScript callers can pass a value of the wrong type
     await assert.rejects(rt.probeProvider(123, checkout), code("invalid"))
     await assert.rejects(Huggler.open({ ...options, storage: { worktreeRoot: { kind: "projectRelative", path: checkout } } }), code("invalid"))
+    await assert.rejects(Huggler.open({ ...options, storage: { worktreeWords: [] } }), code("invalid"))
+    await assert.rejects(Huggler.open({ ...options, storage: { worktreeWords: ["cedar", "cedar"] } }), code("invalid"))
     const invalidJSON = { stateDir: "state", output: { version: 1n } }
     // @ts-expect-error BigInt cannot be serialized as an SDK option
     await assert.rejects(Huggler.open(invalidJSON), code("invalid"))

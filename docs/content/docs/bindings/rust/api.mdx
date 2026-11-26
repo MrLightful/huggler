@@ -28,16 +28,17 @@ Use `HugglerOptions::new(state_dir)` to choose a state directory with `huggler.s
 | `auto_resume_usage_limits` | `false`. Allows one eligible continuation after a provider-reported Codex quota reset. A newer message or stop can cancel it. |
 | `prompt_suggestions` | `false`. Enables extra Codex sampling for an eligible follow-up, exposed as `Run.prompt_suggestion`. |
 
-Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_dir`. Use `WorktreeRoot::ProjectRelative` for a directory relative to each registered project. The `worktree_name` is a single path component containing the literal placeholder `{id}`. Huggler replaces it with a generated identifier, which includes a branch-derived name for workspaces created with `allocate_workspace_on_branch`.
+Use `WorktreeRoot::Shared` for an absolute directory or one relative to `state_dir`. Use `WorktreeRoot::ProjectRelative` for a directory relative to each registered project. The `worktree_name` is a single path component containing the literal placeholder `{id}`. Huggler replaces it with a generated identifier, which uses a random dictionary word of 4–8 letters.
 
 ```rust
 let mut options = HugglerOptions::new(state_dir).with_name("Studio Workbench")?;
 options.storage.database_path = "sessions/history.db".into();
 options.storage.worktree_root = WorktreeRoot::ProjectRelative(".myapp/worktrees".into());
 options.storage.worktree_name = "checkout-{id}".into();
+options.storage.worktree_words = vec!["cedar".into(), "meadow".into(), "sparrow".into()];
 ```
 
-This places the database and its owner lock, `history.db.runtime.lock`, under `state_dir/sessions/`. It creates new checkouts under `.myapp/worktrees/` in the registered project. Ignore that directory in Git if it should stay out of checkpoint diffs. Existing reservations keep their recorded checkout paths.
+This places the database and its owner lock, `history.db.runtime.lock`, under `state_dir/sessions/`. It creates new checkouts under `.myapp/worktrees/` in the registered project. Ignore that directory in Git if it should stay out of checkpoint diffs. Existing reservations keep their recorded checkout paths. Set `storage.worktree_words` to replace the bundled dictionary with a nonempty list of unique words, each 4–8 lowercase ASCII letters. Automatic allocation skips occupied and reserved names and returns an error if every candidate is taken.
 
 ## Read and control
 

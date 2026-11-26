@@ -277,16 +277,20 @@ asyncio.run(main())
             self.assertEqual(run["status"], "completed", run["error"])
 
     async def test_managed_workspace_and_repository_links(self):
-        async with await self.open() as rt:
+        async with await self.open(config={"storage": {"worktree_words": ["cedar"]}}) as rt:
             rt.set_preferences({"theme": "dark", "reduce_motion": True})
             self.assertEqual(rt.preferences(), {"theme": "dark", "reduce_motion": True})
             project = rt.open_project(self.checkout)["id"]
             worktree = rt.allocate_workspace_on_branch(project, "HEAD", {"exact": "fixture"})
+            self.assertEqual(Path(worktree["root"]).name, "cedar")
             self.assertEqual(rt.allocated_workspaces(project), [worktree])
             self.assertEqual(await rt.setup_workspace(worktree["id"], "/usr/bin/true", []), "Ready")
             self.assertEqual(rt.workspace_setup_status(worktree["id"]), "Ready")
             rt.release_workspace(worktree["id"])
             self.assertEqual(rt.allocated_workspaces(project), [])
+            named = rt.allocate_workspace_named(project, "HEAD", "orchid", {"exact": "manual-fixture"})
+            self.assertEqual(Path(named["root"]).name, "orchid")
+            rt.release_workspace(named["id"])
             self.assertEqual(rt.inspect_orphaned_worktrees()["entries"], [])
             rt.launch("launch", "thread", project, "Repository watch")
             repo = rt.bind_thread_repository("thread", "GitHub", "https://api.github.com", "demo/repo")
