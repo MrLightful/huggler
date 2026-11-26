@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "bindings/node/native/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'huggler' && !@.source)].version"
+        },
+        {
+          "type": "toml",
+          "path": "bindings/python/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'huggler' && !@.source)].version"
+        }
+      ]
+    }
+  }
+}
