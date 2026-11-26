@@ -9,7 +9,7 @@ Enable the optional Cargo feature on a local dependency with `cargo add huggler 
 
 Use `clone_project` to create a local clone, or `create_scratch` to register a new directory and `promote_scratch` to initialize Git there while preserving its project ID. Use `allocate_workspace` to create a managed detached checkout at the source’s current HEAD.
 
-Use `allocate_workspace_on_branch(source, revision, branch)` to create a managed worktree on a new local branch at a selected revision. Pass `WorktreeBranch::FromTitle(title)` for a generated branch with a numeric suffix when needed, or `WorktreeBranch::Exact(name)` to require a specific branch. The checkout folder includes a readable branch-derived name and a unique suffix. The host supplies the title and can use it when launching the conversation.
+Use `allocate_workspace_on_branch(source, revision, branch)` to create a managed worktree on a new local branch at a selected revision. Pass `WorktreeBranch::FromTitle(title)` for a generated branch with a numeric suffix when needed, or `WorktreeBranch::Exact(name)` to require a specific branch. The checkout folder uses a random dictionary word of 4–8 letters. The host supplies the title and can use it when launching the conversation.
 
 Call `setup_workspace(project, program, args)` with a host-selected program and arguments. Huggler runs it in the project directory. An active run in that checkout blocks setup. A failed setup blocks new runs there until a successful retry. Register an isolated thread’s `worktree_path` with `open_project` to address setup to that checkout.
 

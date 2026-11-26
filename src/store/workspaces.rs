@@ -335,17 +335,7 @@ impl Database {
         let named_branch = branch
             .map(|naming| worktree::resolve_new_branch(&root, naming).map(|name| (naming, name)))
             .transpose()?;
-        let checkout_path = |id: &str| self.storage.checkout(&self.state_dir, &root, id);
-        let path = match &named_branch {
-            Some((_, name)) => match checkout_path(&worktree::named_checkout_id(name, 48)) {
-                // A custom template can leave only enough room for the usual 36-byte UUID.
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::InvalidFilename => {
-                    checkout_path(&worktree::named_checkout_id(name, 23))
-                }
-                result => result,
-            },
-            None => checkout_path(&new_id()),
-        }?;
+        let path = checkout_path(&self.db, &self.storage, &self.state_dir, &root)?;
         let checkout = Worktree {
             path: path
                 .to_str()

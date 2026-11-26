@@ -618,12 +618,9 @@ async fn named_workspace_respects_git_case_and_existing_storage_templates() -> R
         name
     );
     let folder = worktree.root.file_name().unwrap().to_str().unwrap();
-    assert!(
-        folder
-            .strip_prefix(&prefix)
-            .unwrap()
-            .starts_with("case-sensitive-")
-    );
+    let id = folder.strip_prefix(&prefix).unwrap();
+    assert!((4..=8).contains(&id.len()));
+    assert!(id.bytes().all(|b| b.is_ascii_lowercase()));
     assert!(folder.len() <= prefix.len() + 36);
     rt.release_workspace(&worktree.id)?;
     rt.close().await
@@ -717,15 +714,9 @@ async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
         run_git(&named.root, &["branch", "--show-current"])?,
         "huggler/fix-the-parser-2"
     );
-    assert!(
-        named
-            .root
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("fix-the-parser-2-")
-    );
+    let folder = named.root.file_name().unwrap().to_str().unwrap();
+    assert!((4..=8).contains(&folder.len()));
+    assert!(folder.bytes().all(|b| b.is_ascii_lowercase()));
     assert!(
         rt.allocate_workspace_on_branch(
             &cloned.id,

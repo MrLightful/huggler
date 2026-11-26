@@ -97,7 +97,7 @@ impl Huggler {
             .access(|db| db.allocate_workspace(source, revision, None))
     }
     /// Create a managed checkout and a new local branch at the resolved Git revision.
-    /// The checkout directory includes a readable name and a generated suffix.
+    /// The checkout directory uses a random dictionary word of 4–8 letters.
     pub fn allocate_workspace_on_branch(
         &self,
         source: &ProjectId,

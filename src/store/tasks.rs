@@ -183,9 +183,7 @@ impl Database {
                 [&parent.0], |r| Ok((r.get(0)?,r.get(1)?)),
             )?;
             let (common_dir, base) = worktree::base(Path::new(&cwd))?;
-            let path = self
-                .storage
-                .checkout(&self.state_dir, Path::new(&project), &child.0)?;
+            let path = checkout_path(&tx, &self.storage, &self.state_dir, Path::new(&project))?;
             super::checkpoints::reserve(&tx, &child, &path, &common_dir, &base)?;
         }
         let model = tx.query_row("SELECT model FROM thread WHERE id=?", [&child.0], |r| {

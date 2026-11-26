@@ -75,12 +75,28 @@ fn slug(title: &str, max_bytes: usize) -> String {
     }
 }
 
-#[cfg(feature = "application")]
-pub(crate) fn named_checkout_id(branch: &str, name_bytes: usize) -> String {
-    let leaf = branch.rsplit('/').next().unwrap_or(branch);
-    let name = slug(leaf, name_bytes);
-    let suffix = uuid::Uuid::new_v4().simple().to_string();
-    format!("{name}-{}", &suffix[..12])
+/// A bundled dictionary keeps naming independent of host dictionaries and runtimes.
+pub(crate) fn checkout_names() -> Vec<&'static str> {
+    let mut words = vec![
+        "acorn", "alder", "amber", "apple", "aspen", "aster", "atlas", "badger", "bamboo",
+        "barley", "basil", "beacon", "beaver", "berry", "birch", "bison", "bloom", "boulder",
+        "breeze", "brook", "cactus", "canyon", "cedar", "cherry", "clover", "cobalt", "comet",
+        "coral", "cosmos", "cotton", "crane", "creek", "cricket", "daisy", "delta", "dolphin",
+        "dragon", "drift", "eagle", "ember", "falcon", "feather", "fennel", "finch", "fjord",
+        "flint", "forest", "fossil", "garden", "garnet", "ginger", "glacier", "grove", "harbor",
+        "hazel", "heather", "heron", "holly", "indigo", "island", "jasper", "juniper", "kelp",
+        "lagoon", "lantern", "laurel", "lavender", "lemon", "lilac", "linden", "lotus", "lunar",
+        "maple", "marble", "marigold", "martin", "meadow", "melon", "meteor", "mint", "moss",
+        "nectar", "nettle", "nutmeg", "olive", "onyx", "opal", "orchard", "orchid", "osprey",
+        "otter", "pebble", "pelican", "pepper", "petal", "pine", "planet", "plover", "poppy",
+        "prairie", "quartz", "rabbit", "raven", "reed", "ridge", "ripple", "river", "robin",
+        "rocket", "saffron", "sage", "salmon", "satin", "scarlet", "shadow", "shell", "silver",
+        "sorrel", "sparrow", "spruce", "stone", "summit", "sunrise", "swift", "thistle", "tiger",
+        "timber", "topaz", "tulip", "tundra", "valley", "velvet", "violet", "walnut", "willow",
+        "winter", "wren", "yarrow", "zephyr", "zinnia",
+    ];
+    words.sort_by_cached_key(|_| uuid::Uuid::new_v4());
+    words
 }
 
 #[cfg(feature = "application")]

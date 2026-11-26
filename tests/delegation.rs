@@ -1201,12 +1201,13 @@ async fn exercise_worktree_delegation() {
     let child = &task.child_thread_id;
     let path = rt.read(child).unwrap().worktree_path.unwrap();
     assert_eq!(
-        path,
-        project
-            .root
-            .join(".my-host/checkouts")
-            .join(format!("agent-{child}"))
+        path.parent().unwrap(),
+        project.root.join(".my-host/checkouts")
     );
+    let folder = path.file_name().unwrap().to_str().unwrap();
+    let id = folder.strip_prefix("agent-").unwrap();
+    assert!((4..=8).contains(&id.len()));
+    assert!(id.bytes().all(|b| b.is_ascii_lowercase()));
     assert!(!options.state_dir.join("worktrees").exists());
     assert_eq!(git(&path, &["rev-parse", "HEAD"]), base);
     assert_eq!(

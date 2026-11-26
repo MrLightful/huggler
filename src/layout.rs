@@ -25,7 +25,7 @@ pub struct StorageLayout {
     /// Directory shared by isolated delegations, checkpoint forks and allocated workspaces.
     pub worktree_root: WorktreeRoot,
     /// One directory name containing `{id}`, replaced by a generated identifier.
-    /// Named workspaces include a readable branch-derived component in that identifier.
+    /// The identifier is a random dictionary word of 4–8 lowercase letters.
     pub worktree_name: String,
 }
 
