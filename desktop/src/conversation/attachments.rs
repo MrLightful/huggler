@@ -407,18 +407,27 @@ pub(super) fn image_preview(bytes: &[u8], upscale: bool) -> Option<Arc<RenderIma
     Some(Arc::new(RenderImage::new([Frame::new(thumbnail)])))
 }
 
+pub(super) struct SentAttachmentCaption<'a> {
+    pub(super) text: &'a str,
+    pub(super) author: &'a str,
+    pub(super) names: &'a [String],
+}
+
 impl Desktop {
     pub(super) fn sent_caption(
         &self,
         thread: &ThreadId,
         message: &MessageId,
-        caption: &str,
-        _author: &str,
-        names: &[String],
+        caption: SentAttachmentCaption<'_>,
         width: Pixels,
         window: &Window,
         cx: &Context<Self>,
     ) -> (Div, Option<Div>) {
+        let SentAttachmentCaption {
+            text: caption,
+            author: _author,
+            names,
+        } = caption;
         let rem = window.rem_size();
         // Account for the icon and gap in rems, plus the two one-pixel borders.
         let chip_extra = rems(2. * CHIP_SIDE_PADDING + 1.).to_pixels(rem) + px(2.);

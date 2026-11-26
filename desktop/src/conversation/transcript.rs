@@ -2,7 +2,7 @@ mod activity_title;
 mod turn_rail;
 
 use self::activity_title::ActivityTitle;
-use super::attachments::MESSAGE_LINE_HEIGHT;
+use super::attachments::{MESSAGE_LINE_HEIGHT, SentAttachmentCaption};
 use super::markdown_view::{ResponseImages, prose};
 use super::*;
 use gpui_component::{Icon, tooltip::Tooltip};
@@ -476,9 +476,11 @@ impl Desktop {
             let (caption_view, separate_preview) = self.sent_caption(
                 &thread.id,
                 id,
-                caption,
-                author,
-                &files.names,
+                SentAttachmentCaption {
+                    text: caption,
+                    author,
+                    names: &files.names,
+                },
                 width,
                 window,
                 cx,
