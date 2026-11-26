@@ -41,6 +41,12 @@ cargo build --locked --manifest-path desktop/Cargo.toml --features qualification
 python3 scripts/check-desktop-history.py target/desktop/debug/huggler-desktop
 ```
 
+The response image check uses a scripted Codex app-server and a local HTTP fixture. It verifies previews while streaming and after reopening history, fallback for missing and out-of-checkout files, and user-initiated web loading.
+
+```sh
+python3 scripts/check-desktop-images.py target/desktop/debug/huggler-desktop
+```
+
 The merged-PR settlement check drives the desktop with a local GitHub fixture. It verifies selected and background conversations, the persisted General setting, closed PRs, and edits or branch switches during a status request. It tracks each app PID and verifies exit.
 
 ```sh

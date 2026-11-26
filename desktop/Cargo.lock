@@ -2925,6 +2925,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-process",
+ "base64 0.22.1",
  "bindgen",
  "block2",
  "chrono",
@@ -2941,7 +2942,9 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-user-notifications",
+ "percent-encoding",
  "portable-pty",
+ "reqwest",
  "rustix 1.1.6",
  "semver",
  "serde",

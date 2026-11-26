@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use diff::Diff;
+pub(super) use editor::open_workspace_file;
 use editor::{Editor, confirm_discard};
 use gpui_component::{
     WindowExt,
@@ -330,7 +331,7 @@ fn read_file(root: &Path, path: &Path) -> Result<Preview> {
         if bytes.len() > IMAGE_LIMIT {
             return Ok(Preview::Notice("This image is too large to preview."));
         }
-        return Ok(attachments::image_preview(&bytes).map_or(
+        return Ok(attachments::image_preview(&bytes, true).map_or(
             Preview::Notice("Could not preview this image."),
             |thumbnail| Preview::Image {
                 thumbnail,
