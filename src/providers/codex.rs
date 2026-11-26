@@ -1,8 +1,8 @@
 //! Codex app-server over newline-delimited JSON-RPC on a managed child's stdio.
 mod children;
-mod commit_message;
 pub mod mcp_settings;
 pub(super) mod mcp_status;
+mod text_generation;
 use super::registry::ProviderInstance;
 use super::{
     ChildInterrupt, CommandFrame, Control, Permissions, Turn, Update,
@@ -13,7 +13,7 @@ use crate::{
     NativeTurnId, PermissionOption, PermissionRequest, RequestId, Result, ToolTracePayload,
     ToolTraceSource, UserAnswer, UserAnswers, UserInputQuestion, UserInputRequest,
 };
-pub use commit_message::generate_commit_message;
+pub use text_generation::{generate_commit_message, generate_conversation_title};
 
 fn activity_item(item: &Value, completed: bool) -> Option<ActivityItem> {
     let field = |key: &str| item[key].as_str().unwrap_or_default();

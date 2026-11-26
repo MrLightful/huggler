@@ -106,6 +106,10 @@ async function check(rt: Huggler) {
     await assert.rejects(rt.send({ ...first, text: "different intent" }), code("conflict"))
     const replay = await rt.subscribe(thread, { after: saved.initial })
     assert.deepEqual(await drain(replay, saved.initial, saved.cursor), ["starting", "running", "waiting", "completed"])
+    const newTitle = "Resume replay fixture"
+    const renamed = await rt.subscribe(thread, { after: saved.cursor })
+    assert.deepEqual(await until(renamed, "titleChanged"), { type: "titleChanged", title: newTitle })
+    assert.equal(renamed.snapshot.name, newTitle)
     const detail = await rt.readHistory(thread, { limit: 1 })
     sample("ConversationDetail", detail)
     assert.equal(detail.model, model)
@@ -117,7 +121,7 @@ async function check(rt: Huggler) {
     const history = detail.history
     assert(history.older)
     assert.equal((await rt.readHistory(thread, { before: history.older })).history.messages[0].message.id, saved.sent.messageId)
-    recording(41)
+    recording(41, resumeRecording, { [name]: newTitle })
     const sent = await rt.send({ threadId: thread, commandId: commandId("second"), text: second })
     assert.notEqual(sent.runId, saved.sent.runId)
     sample("SendReceipt", sent)

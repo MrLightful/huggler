@@ -889,6 +889,9 @@ pub enum Change {
         task: DelegatedTask,
     },
     Launched,
+    TitleChanged {
+        title: String,
+    },
     SessionReset,
     UserNotice {
         run_id: RunId,
