@@ -197,6 +197,64 @@ def check_suggestions(executable, tmp, env):
     assert [frame["params"]["input"][0]["text"] for frame in frames if frame.get("method") == "turn/start"] == [first, followup]
 
 
+def check_mcp_settings(executable, tmp, env):
+    state = tmp / "mcp-settings-state"
+    state.mkdir()
+    (state / "mcp-settings-overridden").touch()
+    config = state / "mcp-settings-fixture.json"
+    config.write_text(json.dumps({
+        "model": "fixture-fast",
+        "mcp_servers": {
+            "notes.v2": {"url": "https://example.org/notes", "bearer_token_env_var": "NOTES_TOKEN"}
+        },
+    }))
+    env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
+    settings = [
+        {"resize": [960, 860]}, {"key": "cmd-,"}, {"click": "Providers"},
+        {"see": "MCP servers"}, {"absent": "Add MCP server"}, {"click": "MCP servers"},
+    ]
+    run_window(executable, state, [
+        *settings,
+        {"see": "MCP settings/notes.v2/Enabled"}, {"absent": "MCP settings/managed/Enabled"},
+        {"click": "Disable MCP/notes.v2"}, {"see": "MCP settings/notes.v2/Disabled"},
+        {"see": "MCP setting overridden"},
+        {"click": "Edit MCP/notes.v2"}, {"click": "Server URL"}, {"key": "cmd-a"},
+        {"type": "https://example.org/updated"},
+        {"click": "MCP servers"}, {"absent": "Server URL"},
+        {"click": "MCP servers"}, {"click": "Save MCP server"},
+        {"absent": "Server URL"}, {"click": "Enable MCP/notes.v2"},
+        {"see": "MCP settings/notes.v2/Enabled"},
+        {"click": "Add MCP server"}, {"type": "test-tools"}, {"click": "Stdio"},
+        {"click": "Command"}, {"type": "/usr/bin/false"}, {"click": "Arguments"},
+        {"type": '--name "two words"'}, {"click": "Save MCP server"},
+        {"see": "MCP settings/test-tools/Enabled"},
+    ], env)
+    assert json.loads(config.read_text()) == {
+        "model": "fixture-fast",
+        "mcp_servers": {
+            "notes.v2": {"url": "https://example.org/updated", "bearer_token_env_var": "NOTES_TOKEN",
+                      "enabled": True},
+            "test-tools": {"command": "/usr/bin/false", "args": ["--name", "two words"]},
+        },
+    }
+    run_window(executable, state, [
+        *settings, {"see": "MCP settings/test-tools/Enabled"},
+        {"click": "Remove MCP/test-tools"}, {"click": "Cancel MCP removal"},
+        {"see": "MCP settings/test-tools/Enabled"}, {"click": "Remove MCP/test-tools"},
+        {"click": "Confirm MCP removal"}, {"absent": "MCP settings/test-tools/Enabled"},
+        {"click": "Remove MCP/notes.v2"}, {"click": "Confirm MCP removal"},
+        {"see": "No user MCP servers"},
+        {"click": "Add MCP server"}, {"type": "huggler"},
+        {"click": "Server URL"}, {"type": "https://example.org/mcp"},
+        {"click": "Save MCP server"}, {"see": "MCP settings error"},
+        {"click": "Cancel MCP edit"}, {"see": "No user MCP servers"},
+    ], env)
+    assert json.loads(config.read_text()) == {"model": "fixture-fast", "mcp_servers": {}}
+    frames = [json.loads(line) for line in (state / "frames.ndjson").read_text().splitlines()]
+    assert sum(frame.get("method") == "config/batchWrite" for frame in frames) == 6
+    assert all(frame.get("method") not in ("thread/start", "turn/start") for frame in frames)
+
+
 def check_mcp_status(executable, tmp, env):
     state = tmp / "mcp-state"
     state.mkdir()
@@ -258,6 +316,7 @@ def main():
         check_provider_presets(executable, tmp, env)
         check_models(executable, tmp, env)
         check_suggestions(executable, tmp, env)
+        check_mcp_settings(executable, tmp, env)
         check_mcp_status(executable, tmp, env)
         state = tmp / "state"
         run_window(executable, state, steps, env)

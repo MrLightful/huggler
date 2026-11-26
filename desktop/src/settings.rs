@@ -4,6 +4,7 @@ mod environment;
 mod general;
 #[cfg(unix)]
 mod machines;
+mod mcp;
 mod models;
 mod project_actions;
 pub(crate) mod projects;

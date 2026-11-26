@@ -1,6 +1,7 @@
 //! Codex app-server over newline-delimited JSON-RPC on a managed child's stdio.
 mod children;
 mod commit_message;
+pub mod mcp_settings;
 pub(super) mod mcp_status;
 use super::registry::ProviderInstance;
 use super::{

@@ -1,5 +1,5 @@
-use super::{Preferences, Settings};
-use crate::ui::{hint, label, section_title};
+use super::{Preferences, Settings, providers::ProviderSection};
+use crate::ui::{hint, label};
 use anyhow::{Result, ensure};
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -124,6 +124,31 @@ impl Settings {
             .get(self.providers.selected.as_str());
         let pending = saved != Some(self.selected_provider().environment())
             && (saved.is_some() || !self.selected_provider().environment().is_empty());
+        let count = saved.map_or(0, BTreeMap::len);
+        let summary = if self.environment_rows.is_some() {
+            "Editing".into()
+        } else if pending {
+            "Restart to apply".into()
+        } else {
+            match count {
+                1 => "1 variable".into(),
+                count => format!("{count} variables"),
+            }
+        };
+        self.provider_section(
+            ProviderSection::Environment,
+            Some(summary),
+            || self.environment_body(saved, pending, cx),
+            cx,
+        )
+    }
+
+    fn environment_body(
+        &self,
+        saved: Option<&BTreeMap<String, String>>,
+        pending: bool,
+        cx: &Context<Self>,
+    ) -> Div {
         let actions = h_flex()
             .gap_2()
             .flex_wrap()
@@ -149,11 +174,7 @@ impl Settings {
             ));
 
         v_flex()
-            .gap_3()
-            .pt_4()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(control!("Environment", section_title("Environment")))
+            .gap_2()
             .child(
                 h_flex()
                     .gap_2()
@@ -163,12 +184,19 @@ impl Settings {
                     .child(actions),
             )
             .when(self.environment_rows.is_none(), |section| {
-                section.children(saved.into_iter().flat_map(BTreeMap::keys).map(|name| {
-                    control!(
-                        format!("environment-variable/{name}"),
-                        label(name.clone()).truncate()
-                    )
-                }))
+                section.child(
+                    v_flex().children(saved.into_iter().flat_map(BTreeMap::keys).map(|name| {
+                        control!(
+                            format!("environment-variable/{name}"),
+                            div()
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .py_2()
+                                .px_2()
+                                .child(label(name.clone()).truncate())
+                        )
+                    })),
+                )
             })
             .when_some(self.environment_rows.as_ref(), |section, rows| {
                 section

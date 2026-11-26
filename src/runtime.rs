@@ -765,6 +765,38 @@ impl Huggler {
         .await
     }
 
+    /// Read the selected Codex instance’s user-level MCP settings without starting a thread.
+    /// Returns None when the provider does not expose these settings.
+    pub async fn read_mcp_settings(
+        &self,
+        id: &str,
+        cwd: impl AsRef<Path>,
+    ) -> Result<Option<crate::providers::codex::mcp_settings::McpSettings>> {
+        self.discover_provider(id, cwd.as_ref(), async |instance, output, cwd| {
+            crate::providers::codex::mcp_settings::read(&instance, &output, &cwd).await
+        })
+        .await
+    }
+
+    /// Update a server in the selected Codex instance’s user configuration.
+    /// Use the revision from a successful read to avoid overwriting concurrent edits.
+    pub async fn write_mcp_settings(
+        &self,
+        id: &str,
+        cwd: impl AsRef<Path>,
+        revision: String,
+        name: String,
+        edit: crate::providers::codex::mcp_settings::McpEdit,
+    ) -> Result<crate::providers::codex::mcp_settings::McpWriteOutcome> {
+        self.discover_provider(id, cwd.as_ref(), async move |instance, output, cwd| {
+            crate::providers::codex::mcp_settings::write(
+                &instance, &output, &cwd, &revision, &name, edit,
+            )
+            .await
+        })
+        .await
+    }
+
     async fn discover_provider<T: Send + 'static, F: Future<Output = Result<T>> + Send>(
         &self,
         id: &str,
