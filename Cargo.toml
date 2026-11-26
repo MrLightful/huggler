@@ -6,7 +6,7 @@ edition = "2024"
 rust-version = "1.94.1"
 repository = "https://github.com/MrLightful/huggler"
 description = "Orchestrate durable coding-agent conversations in Rust applications"
-include = ["LICENSE", "src/**", "migrations/**", "Cargo.toml", "Cargo.lock", "tests/**", "!**/__pycache__/**", "!**/*.pyc", "knowledge/reference/codex-resume/{LICENSE,codex_transcript.ndjson,cursors.json,expected.txt}"]
+include = ["LICENSE", "CHANGELOG.md", "src/**", "migrations/**", "Cargo.toml", "Cargo.lock", "tests/**", "!**/__pycache__/**", "!**/*.pyc", "knowledge/reference/codex-resume/{LICENSE,codex_transcript.ndjson,cursors.json,expected.txt}"]
 
 [features]
 application = ["dep:chrono", "dep:chrono-tz", "dep:hmac", "dep:hex", "reqwest/rustls-tls"]

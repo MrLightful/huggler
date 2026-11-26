@@ -32,16 +32,22 @@ Run the installed consumer for the binding you changed. The packaging guides cov
 
 ## Publish the Rust crate
 
-The [Release crate workflow](../.github/workflows/publish-crate.yml) runs manually
-on `main`. It reads the version from the root Cargo manifest, verifies the
-crate and an independent consumer, and publishes to crates.io. It then creates
-the matching `v<version>` tag and a GitHub Release with generated notes on the
-published commit.
+[Release Please](../.github/workflows/release-please.yml) maintains a release
+pull request on `main` with the version bump, all three Cargo lockfile updates
+and the [changelog](../CHANGELOG.md). Merging that pull request creates the
+GitHub release and its `v<version>` tag. The
+[Release crate workflow](../.github/workflows/publish-crate.yml) verifies and
+publishes that tagged commit to crates.io when run manually.
 
 ### One-time setup
 
+Release Please uses the built-in `GITHUB_TOKEN`. Enable **Allow GitHub Actions
+to create and approve pull requests** in the repository's Actions settings.
+On a generated release pull request, select **Approve workflows to run** to
+start CI.
+
 In the GitHub Actions environment named `crates-io`, select **Selected branches
-and tags** and allow the `main` branch. Remove any older `v*` tag rule.
+and tags** and allow the `main` branch.
 
 For a new crate, crates.io requires an API token for the initial publication.
 Sign in to crates.io, verify your email and create a short-lived token allowing
@@ -66,23 +72,24 @@ omit the bootstrap secret.
 
 ### Release a version
 
-The initial release uses the existing `0.0.1` version. For subsequent releases,
-pass the next version to the version script from the repository root:
+Use Conventional Commit subjects for releasable work, such as `feat:` for
+features and `fix:` for fixes. Use `feat!:` or a `BREAKING CHANGE:` footer for
+breaking changes. While the crate is below 1.0, breaking changes bump the minor
+version. Release Please opens its first pull request once it finds a releasable
+commit after the existing `v0.0.1` tag.
 
-```sh
-python3 scripts/version-crate.py 0.0.2
-```
+1. Review the Release Please pull request before merging. Check the version and
+   the generated changelog. Fold any entries under **Unreleased** into the
+   versioned entry and keep the notes in the pull request description in sync
+   with the changelog, since Release Please uses that description for GitHub.
+2. Merge the pull request and wait for the Release Please run on `main`. Check
+   that the release notes and tag appear on GitHub.
+3. Open **Actions → Release crate → Run workflow**, select `main`, and enter
+   the GitHub release tag. Confirm that the same version appears on crates.io.
 
-The script updates the root Cargo manifest and the local Huggler entry in all
-three Cargo lockfiles. Run it without an argument to check that they agree.
-Commit and merge version changes into `main`. In GitHub, open **Actions →
-Release crate → Run workflow**, select `main`, and start the run. Confirm the
-version on crates.io and the matching tag and release on GitHub.
-
-If the GitHub release job fails after the crate publishes, use **Re-run failed
-jobs** on the same run. That job can reuse a matching tag from a partial attempt.
-Published versions cannot be overwritten. Fixes to a published crate require a
-new version.
+If publishing fails before crates.io accepts the upload, rerun the failed jobs
+or dispatch the same tag again. Check crates.io before retrying if the upload
+result is unclear. Published versions require a new release for corrections.
 
 ## Package the crate and Pi extension
 
