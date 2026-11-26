@@ -63,7 +63,7 @@ class Consumer(unittest.IsolatedAsyncioTestCase):
 
     def recording(self, start=1, fixture=None):
         if fixture is None:
-            fixture = ROOT / "docs/reference/codex-resume/codex_transcript.ndjson"
+            fixture = ROOT / "knowledge/reference/codex-resume/codex_transcript.ndjson"
         (self.root / "case.json").write_text(json.dumps({
             "start": start, "fixture": str(fixture), "version": "0.0.1",
         }))

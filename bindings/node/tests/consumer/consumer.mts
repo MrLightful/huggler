@@ -33,7 +33,7 @@ const native = "01a0d5ef-62bd-7c20-861b-0528ff7d86bd"
 const answer = "provider thread resume fixture first turn complete"
 const first = { threadId: thread, commandId: commandId("send-first"), text: "Respond with exactly: " + answer }
 const second = "Using the conversation history available in this resumed thread, first repeat the exact final answer you gave in the previous turn. Then on a new line write exactly: provider thread resume fixture second turn complete"
-const resumeRecording = join(repo, "docs/reference/codex-resume/codex_transcript.ndjson")
+const resumeRecording = join(repo, "knowledge/reference/codex-resume/codex_transcript.ndjson")
 function recording(start: number, fixture = resumeRecording, substitutions: Record<string, string> = {}) {
   writeFileSync("case.json", JSON.stringify({ start, fixture, substitutions,
     clientInfo: { name: "fixture-app", title: "Fixture Studio", version: "fixture-sdk" } }))

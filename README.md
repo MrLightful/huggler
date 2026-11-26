@@ -1,16 +1,18 @@
 # Huggler
 
-Huggler is an agent orchestration engine for running and coordinating coding agents in your own application. It’s built in Rust.
+Huggler is a Rust library for running and coordinating coding agents in your application. It runs agents in Git working trees and stores conversation state in SQLite, so your app can stream replies, handle approvals, and reopen conversations after a restart.
 
-## Run the desktop app
+## Get started
 
-On macOS, run this command from the repository root to build and open Huggler:
+Add the published [`huggler` crate](https://crates.io/crates/huggler) to your Rust project:
 
 ```sh
-cargo run --locked --manifest-path desktop/Cargo.toml
+cargo add huggler
 ```
 
-Press **⌘Q** to quit.
+Requires Rust 1.94.1 or later. Follow the [Rust quickstart](docs/content/docs/bindings/rust/quickstart.mdx#run-one-turn) to launch a conversation and recover its reply after reopening the database.
+
+Huggler runs inside your application. Your host provides the interface and decides when to send prompts, display questions, and request approvals. Install and authenticate the coding agent you want to use; runtime requirements belong to the selected provider adapter. The Rust library itself does not require Node.js.
 
 ## Capabilities
 
@@ -29,7 +31,23 @@ Press **⌘Q** to quit.
 
 ## Available languages
 
-- **Rust**. Embed the `huggler` crate in your application. [Rust quickstart](docs-app/content/docs/bindings/rust/quickstart.mdx)
-- **TypeScript**. Use the `@huggler/sdk` preview in a Node.js application. [TypeScript quickstart](docs-app/content/docs/bindings/typescript/quickstart.mdx)
+| Language | Distribution | Guide |
+| --- | --- | --- |
+| Rust | Published `huggler` crate on crates.io | [Rust quickstart](docs/content/docs/bindings/rust/quickstart.mdx) · [API reference](https://docs.rs/huggler) |
+| TypeScript | `@huggler/sdk` preview, installed from locally built tarballs | [TypeScript quickstart](docs/content/docs/bindings/typescript/quickstart.mdx) |
+| Python | Native wheels from CI artifacts or built from a checkout | [Python quickstart](docs/content/docs/bindings/python/quickstart.mdx) |
 
-See which capabilities each language supports. [Feature comparison](docs-app/content/docs/bindings/index.mdx#feature-availability)
+Bindings expose different parts of the runtime. Check the [feature comparison](docs/content/docs/bindings/index.mdx#feature-availability) before choosing one. Rust hosts can enable the optional `application` feature for workspace management, schedules, repository bindings, and host services.
+
+## Providers
+
+Huggler integrates with Codex, Claude Agent, Cursor, Grok, FX, Kiro, Antigravity, OpenCode, Pi, Muse, and agents from the ACP registry. Available operations depend on the adapter and installed agent version. See the [provider reference](docs/content/docs/reference/providers.mdx) for transports, tested versions, and limitations.
+
+## Documentation
+
+- [User documentation](docs/content/docs/index.mdx): runtime concepts and guides for building a host.
+- [Engineering documentation](knowledge/README.md): architecture boundaries, verification, bindings, and upstream review.
+
+## License
+
+[MIT](LICENSE).
