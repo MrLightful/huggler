@@ -32,16 +32,16 @@ Run the installed consumer for the binding you changed. The packaging guides cov
 
 ## Publish the Rust crate
 
-The [Publish crate workflow](../.github/workflows/publish-crate.yml) runs on pushed
-`v*` tags in `MrLightful/huggler`. It requires the tag to equal `v` followed by the
-root Cargo.toml version, runs formatting, Clippy, default and all-feature tests,
-and checks the packaged independent consumer before publishing to crates.io.
-The existing Release candidates workflow only uploads artifacts.
+The [Release crate workflow](../.github/workflows/publish-crate.yml) runs manually
+on `master`. It reads the version from the root Cargo manifest, verifies the
+crate and an independent consumer, and publishes to crates.io. It then creates
+the matching `v<version>` tag and a GitHub Release with generated notes on the
+published commit.
 
 ### One-time setup
 
-Create a GitHub Actions environment named `crates-io` in the repository settings.
-Restrict its deployment tags to `v*` and configure any desired required reviewers.
+In the GitHub Actions environment named `crates-io`, select **Selected branches
+and tags** and allow the `master` branch. Remove any older `v*` tag rule.
 
 For a new crate, crates.io requires an API token for the initial publication.
 Sign in to crates.io, verify your email and create a short-lived token allowing
@@ -66,20 +66,23 @@ omit the bootstrap secret.
 
 ### Release a version
 
-Update the root Cargo.toml version and Cargo.lock, commit the release changes,
-and merge them into `master`. From the reviewed release commit, push a matching
-tag, replacing `0.0.1` with the intended version:
+The initial release uses the existing `0.0.1` version. For subsequent releases,
+pass the next version to the version script from the repository root:
 
 ```sh
-git tag -a v0.0.1 -m "Huggler 0.0.1"
-git push origin v0.0.1
+python3 scripts/version-crate.py 0.0.2
 ```
 
-Monitor **Actions → Publish crate**, then confirm the version on crates.io.
-For a transient failure before publication, rerun the failed workflow jobs.
-Published versions cannot be overwritten; fixes require a new version and tag.
-The workflow does not create a GitHub Release or publish the desktop or language
-bindings.
+The script updates the root Cargo manifest and the local Huggler entry in all
+four Cargo lockfiles. Run it without an argument to check that they agree.
+Commit and merge version changes into `master`. In GitHub, open **Actions →
+Release crate → Run workflow**, select `master`, and start the run. Confirm the
+version on crates.io and the matching tag and release on GitHub.
+
+If the GitHub release job fails after the crate publishes, use **Re-run failed
+jobs** on the same run. That job can reuse a matching tag from a partial attempt.
+Published versions cannot be overwritten. Fixes to a published crate require a
+new version.
 
 ## macOS desktop checks
 
