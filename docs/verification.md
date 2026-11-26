@@ -66,10 +66,17 @@ omit the bootstrap secret.
 
 ### Release a version
 
-Update the version in the root `Cargo.toml` and refresh the Huggler entry in the
-root, desktop, Python and Node Cargo lockfiles. Update the Rust quickstart and API
-reference, then merge the release changes into `master`. From the reviewed release
-commit, push a matching tag, replacing `0.0.1` with the intended version:
+The initial release uses the existing `0.0.1` version. For subsequent releases,
+pass the next version to the version script from the repository root:
+
+```sh
+python3 scripts/version-crate.py 0.0.2
+```
+
+The script updates the root Cargo manifest and the local Huggler entry in all
+four Cargo lockfiles. Run it without an argument to check that they agree.
+Commit and merge version changes into `master`. From the reviewed release commit,
+push the tag matching the crate version:
 
 ```sh
 git tag -a v0.0.1 -m "Huggler 0.0.1"
