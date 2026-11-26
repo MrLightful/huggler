@@ -305,6 +305,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         cx.observe_in(input, window, |view, input, window, cx| {
+            view.snap_inline_cursor(&input, window, cx);
             view.update_suggestions(&input, window, cx);
         })
         .detach();
@@ -320,10 +321,10 @@ impl Desktop {
         .detach();
     }
 
-    fn composer_is_active(&self, input: &Entity<InputState>) -> bool {
-        !self.show_settings
-            && if self.current.is_some() {
-                input == &self.prompt
+    pub(super) fn composer_is_active(&self, input: &Entity<InputState>) -> bool {
+        self.local_workspace_visible()
+            && if let Some(thread) = &self.current {
+                input == &self.prompt && self.workspaces[&thread.id].documents.active().is_none()
             } else {
                 !self.launch_setup && self.launching.is_none() && input == &self.starter
             }
@@ -503,7 +504,9 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         if *input == self.starter {
-            if !input.read(cx).value().trim().is_empty() || !self.starter_attachments.is_empty() {
+            if !input.read(cx).value().trim().is_empty()
+                || !self.starter_attachments.is_empty(&input.read(cx).value())
+            {
                 self.launch(window, cx);
             }
         } else {
@@ -559,7 +562,108 @@ impl Desktop {
                     }
                 })
             })
-            .child(control!(_name, Input::new(input).appearance(false)));
+            .capture_action({
+                let input = input.clone();
+                cx.listener(move |view, _: &gpui_component::input::Paste, window, cx| {
+                    if input.focus_handle(cx).is_focused(window)
+                        && view.paste_attachments(&input, window, cx)
+                    {
+                        cx.stop_propagation();
+                    }
+                })
+            })
+            .capture_action({
+                let input = input.clone();
+                cx.listener(
+                    move |view, _: &gpui_component::input::Backspace, window, cx| {
+                        if view.edit_inline_attachment(
+                            &input,
+                            attachments::Direction::Backward,
+                            true,
+                            window,
+                            cx,
+                        ) {
+                            cx.stop_propagation();
+                        }
+                    },
+                )
+            })
+            .capture_action({
+                let input = input.clone();
+                cx.listener(move |view, _: &gpui_component::input::Delete, window, cx| {
+                    if view.edit_inline_attachment(
+                        &input,
+                        attachments::Direction::Forward,
+                        true,
+                        window,
+                        cx,
+                    ) {
+                        cx.stop_propagation();
+                    }
+                })
+            })
+            .capture_action({
+                let input = input.clone();
+                cx.listener(
+                    move |view, _: &gpui_component::input::MoveRight, window, cx| {
+                        if view.edit_inline_attachment(
+                            &input,
+                            attachments::Direction::Forward,
+                            false,
+                            window,
+                            cx,
+                        ) {
+                            cx.stop_propagation();
+                        }
+                    },
+                )
+            })
+            .capture_action({
+                let input = input.clone();
+                cx.listener(
+                    move |view, _: &gpui_component::input::MoveLeft, window, cx| {
+                        if view.edit_inline_attachment(
+                            &input,
+                            attachments::Direction::Backward,
+                            false,
+                            window,
+                            cx,
+                        ) {
+                            cx.stop_propagation();
+                        }
+                    },
+                )
+            })
+            .capture_action({
+                let input = input.clone();
+                cx.listener(move |view, _: &gpui_component::input::Cut, window, cx| {
+                    if view.replace_partial_attachment_selection(&input, None, window, cx) {
+                        cx.stop_propagation();
+                    }
+                })
+            })
+            .capture_key_down({
+                let input = input.clone();
+                cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                    let key = &event.keystroke;
+                    if !key.modifiers.platform
+                        && !key.modifiers.control
+                        && let Some(text) = key
+                            .key_char
+                            .as_deref()
+                            .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+                        && view.replace_partial_attachment_selection(&input, Some(text), window, cx)
+                    {
+                        cx.stop_propagation();
+                    }
+                })
+            })
+            .child(control!(
+                _name,
+                Input::new(input)
+                    .appearance(false)
+                    .inline_elements(self.composer_attachment_pills(input, window, cx))
+            ));
         if input.read(cx).text().len() == 0 && !input.focus_handle(cx).is_focused(window) {
             let shortcut = window
                 .highest_precedence_binding_for_action(&crate::FocusMessage)

@@ -861,7 +861,7 @@ impl Desktop {
         let name = self.name.read(cx).value();
         let name = name.trim();
         let name = if name.is_empty() {
-            launch_workspace::conversation_title(&message, self.starter_attachments.first_name())
+            self.starter_attachments.title(&message)
         } else {
             name.to_owned()
         };
@@ -895,12 +895,14 @@ impl Desktop {
             || self.starter_attachments.loading
             || (self.name.read(cx).value().trim().is_empty()
                 && self.starter.read(cx).value().trim().is_empty()
-                && self.starter_attachments.is_empty())
+                && self
+                    .starter_attachments
+                    .is_empty(&self.starter.read(cx).value()))
         {
             return;
         }
         let draft = self.launch_draft(cx);
-        let attachments = std::mem::take(&mut self.starter_attachments);
+        let attachments = self.starter_attachments.take();
         self.starter
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.start_launch(draft, attachments, None, window, cx);
@@ -954,8 +956,8 @@ impl Desktop {
         self.error = None;
         cx.notify();
         let thread = id.clone();
-        let first_message = (!message.trim().is_empty() || !attachments.is_empty())
-            .then(|| attachments.action(message.clone()));
+        let first_message = (!message.trim().is_empty() || !attachments.is_empty(&message))
+            .then(|| attachments.action(&message));
         let launch_name = name.clone();
         let (report_stage, mut stages) = tokio::sync::mpsc::unbounded_channel();
         let launch = cx.background_spawn(async move {
@@ -1106,7 +1108,7 @@ impl Desktop {
                     Err(error) => {
                         if saved_draft.is_none()
                             && v.starter.read(cx).value().is_empty()
-                            && v.starter_attachments.is_empty()
+                            && v.starter_attachments.is_empty("")
                         {
                             v.starter_attachments = attachments;
                             v.starter
@@ -1138,7 +1140,7 @@ impl Desktop {
         if attachments.loading {
             return Ok(());
         }
-        if text.trim().is_empty() && attachments.is_empty() {
+        if text.trim().is_empty() && attachments.is_empty(&text) {
             return Ok(());
         }
         if thread.foreground_run.is_none() && thread.queued_count == 0 {
@@ -1150,13 +1152,13 @@ impl Desktop {
                 return Ok(());
             }
         }
-        let steer = attachments.is_empty()
+        let steer = attachments.is_empty(&text)
             && self.settings.read(cx).preferences().follow_up == FollowUp::Steer;
         let steering_text = steer.then(|| text.clone());
         let action = if steer {
             Action::SendAuto { text }
         } else {
-            attachments.action(text)
+            attachments.action(&text)
         };
         let receipt = self.runtime.dispatch(Command {
             id: CommandId(Uuid::new_v4().to_string()),
@@ -1166,7 +1168,11 @@ impl Desktop {
         if let Some(text) = steering_text.filter(|_| receipt.message_id.is_none()) {
             self.watch_steering(receipt, text, window, cx);
         }
-        self.workspaces.get_mut(&thread.id).unwrap().attachments = Attachments::default();
+        self.workspaces
+            .get_mut(&thread.id)
+            .unwrap()
+            .attachments
+            .take();
         self.prompt
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.refresh()
@@ -1424,8 +1430,8 @@ impl Desktop {
             .map(|check| check.read(cx));
         let checkout_empty = self.launch_checkout(cx).as_os_str().is_empty();
         let browsing = self.checkout_browse.is_some();
-        let empty_message =
-            self.starter.read(cx).value().trim().is_empty() && self.starter_attachments.is_empty();
+        let text = self.starter.read(cx).value();
+        let empty_message = text.trim().is_empty() && self.starter_attachments.is_empty(&text);
         let draft_unavailable = empty_message || browsing || self.starter_attachments.loading;
         let project_row = h_flex()
             .w_full()
@@ -1641,8 +1647,9 @@ impl Desktop {
         let can_stop =
             thread.foreground_run.is_some() || (thread.queued_count > 0 && !thread.queue_held);
         let attachments = &self.workspaces[&thread.id].attachments;
-        let empty_draft = attachments.loading
-            || (self.prompt.read(cx).value().trim().is_empty() && attachments.is_empty());
+        let text = self.prompt.read(cx).value();
+        let empty_draft =
+            attachments.loading || (text.trim().is_empty() && attachments.is_empty(&text));
         #[cfg(all(feature = "qualification", target_os = "macos"))]
         let status = match last_run.map(|run| run.status) {
             Some(huggler::RunStatus::Running | huggler::RunStatus::Completed) => None,
@@ -1685,7 +1692,7 @@ impl Desktop {
         });
         let preferences = self.settings.read(cx).preferences();
         let (_action_label, action) =
-            if busy && attachments.is_empty() && preferences.follow_up == FollowUp::Steer {
+            if busy && attachments.is_empty(&text) && preferences.follow_up == FollowUp::Steer {
                 ("Send follow-up", "Send follow-up")
             } else if busy {
                 ("Queue message", "Queue")

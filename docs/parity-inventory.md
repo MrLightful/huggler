@@ -213,7 +213,7 @@ All five reads require orchestration-read scope. The live shell, detailed thread
 
 ### File attachments in Huggler
 
-The desktop owns file selection, drag and drop, draft removal, previews, and saving a copy. The crate validates and stores the original bytes with the message, scopes upload claims to their thread, and keeps bytes out of history pages and replay events. Adapters choose how to deliver the files. Huggler uses bounded UTF-8 and PDF excerpts and local file paths for other formats. A configured external OpenCode server needs a shared filesystem for those paths to work. Portable fork summaries carry bounded message text.
+The desktop inserts an inline attachment pill at the composer cursor when you select or drop files or paste an image. The pill includes the file icon, a filename that truncates to fit, and a remove button. Backspace immediately after a pill also removes its reference from the draft. References stay in place in Backlog and become clickable chips in sent messages. Opening a chip displays its preview at that position in the message. Older messages without a reference show their chips after the caption. The desktop owns previews and saving a copy. The crate validates and stores the original bytes with the message, scopes upload claims to their thread, and keeps bytes out of history pages and replay events. Adapters choose how to deliver the files. Huggler uses bounded UTF-8 and PDF excerpts and local file paths for other formats. A configured external OpenCode server needs a shared filesystem for those paths to work. Portable fork summaries carry bounded message text.
 
 | Harness and transport | Turn input |
 | --- | --- |
@@ -223,7 +223,7 @@ The desktop owns file selection, drag and drop, draft removal, previews, and sav
 | Muse 1.4.3 JSON-RPC fixture over stdio | Native image parts on `turn/start` following the upstream Muse adapter. Other files use the text and path fallback. |
 | OpenCode HTTP 1.14.39 and 2.0.18 fixtures | Managed v1 uses native image and PDF file parts. Managed v2 uses native image files and the text and path fallback for PDFs. External servers receive the text and path fallback. |
 
-The upstream reference is the attachment handling at `338352dee2f43079482e054e8229a2ba055641d9`, including the fix that keeps attachment references visible in the provider prompt. Huggler reads PDFs in Rust. Other binary documents use the original file path. [Upstream prompt regression](https://github.com/pingdotgg/t3code/commit/550f119c3ac12b2df070c4fd545ab8b41222debb) · [Crate attachment tests](../tests/context.rs) · [Desktop history check](../scripts/check-desktop-history.py)
+The desktop history check verifies picker and clipboard insertion between existing text and confirms that the unversioned Codex app-server fixture receives the reference in the prompt and a native image over stdio. The upstream reference is the attachment handling at `338352dee2f43079482e054e8229a2ba055641d9`, including the fix that keeps attachment references visible in the provider prompt. Huggler reads PDFs in Rust. Other binary documents use the original file path. [Upstream prompt regression](https://github.com/pingdotgg/t3code/commit/550f119c3ac12b2df070c4fd545ab8b41222debb) · [Crate attachment tests](../tests/context.rs) · [Desktop history check](../scripts/check-desktop-history.py)
 
 ## Durable facts and effects
 

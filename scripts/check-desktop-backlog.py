@@ -25,6 +25,7 @@ def check(executable, root, screenshots=None):
     env["HUGGLER_CODEX"] = str(ROOT / "tests/fixtures/context-provider.py")
     title = "Review the saved context"
     prompt = "$build-guide Review the attached notes and summarize the findings."
+    marker = "⟦Attachment 1: notes.txt⟧"
     send = f"Send draft/{title}"
     card = f"Draft card/{title}"
     actions = f"Draft actions/{title}"
@@ -52,7 +53,7 @@ def check(executable, root, screenshots=None):
         {"see": "suggestion//build-guide"}, {"key": "enter"},
         {"type": "Review the attached notes."},
         {"next_file_selection": [str(attachment)]}, {"click": "Attach files"},
-        {"see": "Remove notes.txt"}, {"click": "Save to Backlog"}, {"see": send},
+        {"key": "cmd-a"}, {"key": "cmd-c"}, {"clipboard_contains": marker}, {"click": "Save to Backlog"}, {"see": send},
         {"absent": f"thread/{title}"},
         {"absent": details_panel}, {"click": details}, {"see": details_panel},
         *capture("details"),
@@ -126,7 +127,7 @@ def check(executable, root, screenshots=None):
         """).fetchall() == [(title, "codex", "fixture-deep", "high", "priority")]
         assert db.execute("SELECT id FROM thread").fetchall() == [(pending_thread,)]
         text, = db.execute("SELECT text FROM message WHERE role='user'").fetchone()
-        assert prompt in text and "Preserve these original bytes." in text
+        assert prompt + " " + marker in text and "Preserve these original bytes." in text
         roots = [Path(root) for root, in db.execute("SELECT root FROM project WHERE id IN (SELECT project FROM thread)")]
     worktree, = roots
     assert worktree != checkout.resolve()

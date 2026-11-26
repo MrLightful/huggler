@@ -85,18 +85,20 @@ def workspace_steps(shot, checkout):
         {"click": "MCP server status"}, *shot("mcp-servers", "MCP/Workspace Tools/3 tools"),
         {"key": "escape"},
         *send_message("command output"), *shot("questions", "Submit answers"),
-        {"click": "Command 1 output"}, {"contains": "command-output/"},
+        {"click": "activity/2 tool calls"}, {"click": "Command 1 output"}, {"contains": "command-output/"},
         *shot("command-output", "Command 1 output"), {"click": "Command 1 output"},
         {"click": "Message"}, {"type": "Review the result."}, {"click": "Queue message"},
         *shot("running-queue", "1 queued message"), {"click": "Dismiss questions"},
         {"see": "Codex/reply Review the result."},
         *send_message("callbacks"), *shot("permission", "permission/allow_once"),
         {"click": "Stop thread"}, {"see": "status/Interrupted"},
-        {"click": "Message"}, {"type": "Review the reference files."},
+        {"click": "Message"}, {"type": "Review this with me."},
+        *[{"key": "left"} for _ in " with me."],
         {"next_file_selection": [str(checkout / "diagram.png"), str(checkout / "report.pdf")]},
-        {"click": "Attach files"}, {"see": "Remove diagram.png"},
+        {"click": "Attach files"}, {"key": "cmd-a"}, {"key": "cmd-c"},
+        {"clipboard_contains": "⟦Attachment 2: report.pdf⟧"}, {"key": "right"},
         *shot("attachment-draft", "Remove report.pdf"),
-        {"click": "Send"}, {"see": "You/Review the reference files."},
+        {"click": "Send"}, {"see": "You/Review this"},
         *shot("conversation", "Ready/Review the workspace/Completed"),
         {"resize": [640, 640]}, *shot("conversation-compact", "Message"),
     ]
@@ -164,7 +166,8 @@ exec "$HUGGLER_SCREENSHOT_CODEX_FIXTURE" "$@"
 
     with sqlite3.connect(state / "huggler.sqlite3") as db:
         message, = db.execute(
-            "SELECT id FROM message WHERE role = 'user' AND text LIKE ?", ("Review the reference files.%",),
+            "SELECT id FROM message WHERE role = 'user' AND attachment_caption = ?",
+            ("Review this⟦Attachment 1: diagram.png⟧ ⟦Attachment 2: report.pdf⟧ with me.",),
         ).fetchone()
     attachment = f"attachment/{message}"
     second = run_window(executable, state, [

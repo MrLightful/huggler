@@ -2,7 +2,7 @@ mod activity_title;
 mod turn_rail;
 
 use self::activity_title::ActivityTitle;
-use super::attachments::{MESSAGE_LINE_HEIGHT, caption_with_attachments};
+use super::attachments::{MESSAGE_LINE_HEIGHT, SentAttachmentCaption};
 use super::markdown_view::{ResponseImages, prose};
 use super::*;
 use gpui_component::{Icon, tooltip::Tooltip};
@@ -466,20 +466,27 @@ impl Desktop {
                         .blend(cx.theme().foreground.opacity(0.035)))
             })
             .when(!outgoing, |body| body.w_full());
+        let mut preview = None;
         if let Some(files) = &item.files {
             let width = if outgoing {
                 text_width
             } else {
                 content_width.min(MAX_RESPONSE_WIDTH)
             };
-            body = body.child(caption_with_attachments(
-                caption,
-                || format!("{author}/{caption}"),
+            let (caption_view, separate_preview) = self.sent_caption(
+                &thread.id,
+                id,
+                SentAttachmentCaption {
+                    text: caption,
+                    author,
+                    names: &files.names,
+                },
                 width,
-                self.sent_file_chips(&thread.id, id, &files.names, width, window, cx),
                 window,
                 cx,
-            ));
+            );
+            body = body.child(caption_view);
+            preview = separate_preview;
         } else if !caption.is_empty() {
             body = body.child(control!(
                 format!("{author}/{caption}"),
@@ -529,10 +536,6 @@ impl Desktop {
                         }))
                 )));
         }
-        let preview = item
-            .files
-            .as_ref()
-            .and_then(|files| self.sent_file_preview(&thread.id, id, files.names.len(), cx));
         let group = format!("message-hover-{id}");
         let copy = if let Some(files) = item.files.as_ref().filter(|_| caption.is_empty()) {
             files.names.join("\n")

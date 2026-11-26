@@ -52,6 +52,10 @@ def write_notices(root, resources, target, features, *, manifest="desktop/Cargo.
             if label in packages:
                 texts[notice["text"].strip()].add(f"{label} / {url}")
     if component == "desktop":
+        texts[(root / "desktop/vendor/gpui-component/LICENSE-APACHE").read_text().strip()].add(
+            "gpui-component 0.5.1 (modified input rendering) / "
+            "https://crates.io/api/v1/crates/gpui-component/0.5.1/download"
+        )
         texts[(root / "desktop/vendor/ghostty-vt/LICENSE").read_text().strip()].add(
             "libghostty-vt 1.0.1 / https://github.com/ghostty-org/ghostty/tree/vt-1.0.1"
         )

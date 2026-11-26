@@ -28,6 +28,7 @@ pub enum Step {
     ClipboardText(String),
     ClipboardContains(String),
     ClipboardWrite(String),
+    ClipboardImage(std::path::PathBuf),
     FileText(std::path::PathBuf, String),
     Resize([u16; 2]),
     Screenshot(screenshot::Screenshot),
@@ -177,6 +178,12 @@ fn advance(step: &Step, window: &mut Window, cx: &mut App) -> bool {
             .is_some_and(|text| text.contains(expected)),
         Step::ClipboardWrite(text) => {
             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            true
+        }
+        Step::ClipboardImage(path) => {
+            let bytes = fs::read(path).expect("read qualification PNG");
+            let image = Image::from_bytes(ImageFormat::Png, bytes);
+            cx.write_to_clipboard(ClipboardItem::new_image(&image));
             true
         }
         Step::FileText(path, expected) => fs::read_to_string(path).as_ref().ok() == Some(expected),

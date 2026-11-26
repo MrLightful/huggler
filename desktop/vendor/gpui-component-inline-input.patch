@@ -1,0 +1,662 @@
+diff --git a/src/history.rs b/src/history.rs
+index a38b5a2..8da133f 100644
+--- a/src/history.rs
++++ b/src/history.rs
+@@ -80,6 +80,11 @@ where
+         self.grouping = false;
+     }
+
++    pub(crate) fn break_group(&mut self) {
++        self.grouping = false;
++        self.version += 1;
++    }
++
+     /// Increment the version number if the last change was made more than `GROUP_INTERVAL` milliseconds ago.
+     fn inc_version(&mut self) -> usize {
+         let t = Instant::now();
+diff --git a/src/input/element.rs b/src/input/element.rs
+index 4e7941c..dc262a7 100644
+--- a/src/input/element.rs
++++ b/src/input/element.rs
+@@ -1,10 +1,10 @@
+ use std::{ops::Range, rc::Rc};
+
+ use gpui::{
+-    App, Bounds, Corners, Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Half,
+-    HighlightStyle, Hitbox, Hsla, IntoElement, LayoutId, MouseButton, MouseMoveEvent, Path, Pixels,
+-    Point, ShapedLine, SharedString, Size, Style, TextRun, TextStyle, UnderlineStyle, Window, fill,
+-    point, px, relative, size,
++    AnyElement, App, Bounds, ContentMask, Corners, Element, ElementId, ElementInputHandler, Entity,
++    GlobalElementId, Half, HighlightStyle, Hitbox, Hsla, IntoElement, LayoutId, MouseButton,
++    MouseMoveEvent, Path, Pixels, Point, ShapedLine, SharedString, Size, Style, TextRun, TextStyle,
++    UnderlineStyle, Window, fill, point, px, relative, size,
+ };
+ use ropey::Rope;
+ use smallvec::SmallVec;
+@@ -14,7 +14,11 @@ use crate::{
+     input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, text_wrapper::LineLayout},
+ };
+
+-use super::{InputState, LastLayout, mode::InputMode};
++use super::{
++    InputState, LastLayout,
++    inline_element::{self, RowFragment, VisualRow},
++    mode::InputMode,
++};
+
+ const BOTTOM_MARGIN_ROWS: usize = 3;
+ pub(super) const RIGHT_MARGIN: Pixels = px(10.);
+@@ -703,23 +707,57 @@ impl TextElement {
+             let mut wrapped_lines = SmallVec::with_capacity(1);
+
+             for range in &line_item.wrapped_lines {
+-                let line_runs = runs_for_range(runs, offset, &range);
+-                let line_runs = if bg_segments.is_empty() {
+-                    line_runs
+-                } else {
+-                    split_runs_by_bg_segments(
+-                        visible_range_offset.start + offset,
+-                        &line_runs,
+-                        bg_segments,
+-                    )
+-                };
+-
+-                let sub_line: SharedString = line[range.clone()].to_string().into();
+-                let shaped_line = window
+-                    .text_system()
+-                    .shape_line(sub_line, font_size, &line_runs, None);
+-
+-                wrapped_lines.push(shaped_line);
++                let line_runs = runs_for_range(runs, offset, range);
++                let sub_line = &line[range.clone()];
++                let elements = inline_element::matches(sub_line, &text_wrapper.inline_elements);
++                if elements.is_empty() {
++                    let line_runs = if bg_segments.is_empty() {
++                        line_runs
++                    } else {
++                        split_runs_by_bg_segments(
++                            visible_range_offset.start + offset + range.start,
++                            &line_runs,
++                            bg_segments,
++                        )
++                    };
++                    wrapped_lines.push(
++                        window
++                            .text_system()
++                            .shape_line(sub_line.to_owned().into(), font_size, &line_runs, None)
++                            .into(),
++                    );
++                    continue;
++                }
++                let mut fragments = Vec::new();
++                let mut end = 0;
++                for (marker, index) in elements {
++                    if end < marker.start {
++                        let text = &sub_line[end..marker.start];
++                        let runs = runs_for_range(&line_runs, 0, &(end..marker.start));
++                        fragments.push(RowFragment::Text(window.text_system().shape_line(
++                            text.to_owned().into(),
++                            font_size,
++                            &runs,
++                            None,
++                        )));
++                    }
++                    fragments.push(RowFragment::Element {
++                        index,
++                        width: text_wrapper.inline_width(index),
++                        len: marker.len(),
++                    });
++                    end = marker.end;
++                }
++                if end < sub_line.len() {
++                    let runs = runs_for_range(&line_runs, 0, &(end..sub_line.len()));
++                    fragments.push(RowFragment::Text(window.text_system().shape_line(
++                        sub_line[end..].to_owned().into(),
++                        font_size,
++                        &runs,
++                        None,
++                    )));
++                }
++                wrapped_lines.push(VisualRow::new(sub_line.to_owned().into(), fragments));
+             }
+
+             line_layout.set_wrapped_lines(wrapped_lines);
+@@ -793,6 +831,7 @@ impl TextElement {
+ pub(super) struct PrepaintState {
+     /// The lines of entire lines.
+     last_layout: LastLayout,
++    inline_elements: Vec<AnyElement>,
+     /// The lines only contains the visible lines in the viewport, based on `visible_range`.
+     ///
+     /// The child is the soft lines.
+@@ -951,6 +990,7 @@ impl Element for TextElement {
+         let is_empty = text.len() == 0;
+         let placeholder = self.placeholder.clone();
+
++        let input_bounds = bounds;
+         let mut bounds = bounds;
+
+         let (display_text, text_color) = if is_empty {
+@@ -1219,7 +1259,52 @@ impl Element for TextElement {
+         let indent_guides_path =
+             self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
+
++        let mut inline_elements = Vec::new();
++        let definitions = state.text_wrapper.inline_elements.clone();
++        let selection = state.selected_range;
++        if !definitions.is_empty() {
++            window.with_content_mask(
++                Some(ContentMask {
++                    bounds: input_bounds,
++                }),
++                |window| {
++                    let mut y = bounds.top() + last_layout.visible_top;
++                    let mut offset = last_layout.visible_range_offset.start;
++                    for line in last_layout.lines.iter() {
++                        for row in &line.wrapped_lines {
++                            for (x, width, index, range) in row.elements() {
++                                let origin =
++                                    point(bounds.left() + last_layout.line_number_width + x, y);
++                                if !input_bounds
++                                    .intersects(&Bounds::new(origin, size(width, line_height)))
++                                {
++                                    continue;
++                                }
++                                let range = offset + range.start..offset + range.end;
++                                let selected = selection.start < range.end
++                                    && range.start < selection.end
++                                    && !selection.is_empty();
++                                let mut element =
++                                    definitions[index].render(range, width, line_height, selected);
++                                element.prepaint_as_root(
++                                    origin,
++                                    size(width.into(), line_height.into()),
++                                    window,
++                                    cx,
++                                );
++                                inline_elements.push(element);
++                            }
++                            offset += row.len();
++                            y += line_height;
++                        }
++                        offset += 1;
++                    }
++                },
++            );
++        }
++
+         PrepaintState {
++            inline_elements,
+             bounds,
+             last_layout,
+             scroll_size,
+@@ -1400,6 +1485,17 @@ impl Element for TextElement {
+             }
+         }
+
++        window.with_content_mask(
++            Some(ContentMask {
++                bounds: input_bounds,
++            }),
++            |window| {
++                for element in &mut prepaint.inline_elements {
++                    element.paint(window, cx);
++                }
++            },
++        );
++
+         // Paint blinking cursor
+         if focused && show_cursor {
+             if let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll() {
+diff --git a/src/input/inline_element.rs b/src/input/inline_element.rs
+new file mode 100644
+index 0000000..c1bf81b
+--- /dev/null
++++ b/src/input/inline_element.rs
+@@ -0,0 +1,221 @@
++use std::{ops::Range, rc::Rc};
++
++use gpui::{AnyElement, App, Pixels, Point, ShapedLine, SharedString, Window, point, px};
++use smallvec::SmallVec;
++
++type RenderInline = dyn Fn(Range<usize>, Pixels, Pixels, bool) -> AnyElement;
++
++/// A native inline element that replaces matching text visually while preserving
++/// the backing text for the input handler, selection, clipboard and undo.
++pub struct InputInlineElement {
++    marker: SharedString,
++    pub(super) width: Pixels,
++    render: Rc<RenderInline>,
++}
++
++impl InputInlineElement {
++    pub fn new(
++        marker: impl Into<SharedString>,
++        width: Pixels,
++        render: impl Fn(Range<usize>, Pixels, Pixels, bool) -> AnyElement + 'static,
++    ) -> Self {
++        Self {
++            marker: marker.into(),
++            width,
++            render: Rc::new(render),
++        }
++    }
++
++    pub(super) fn render(
++        &self,
++        range: Range<usize>,
++        width: Pixels,
++        height: Pixels,
++        selected: bool,
++    ) -> AnyElement {
++        (self.render)(range, width, height, selected)
++    }
++}
++
++pub(super) fn matches(text: &str, elements: &[InputInlineElement]) -> Vec<(Range<usize>, usize)> {
++    let mut matches = Vec::new();
++    for (index, element) in elements.iter().enumerate() {
++        if !element.marker.is_empty() {
++            matches.extend(
++                text.match_indices(element.marker.as_str())
++                    .map(|(start, marker)| (start..start + marker.len(), index)),
++            );
++        }
++    }
++    matches.sort_unstable_by_key(|(range, _)| range.start);
++    let mut end = 0;
++    matches.retain(|(range, _)| {
++        if range.start < end {
++            return false;
++        }
++        end = range.end;
++        true
++    });
++    matches
++}
++
++pub(super) fn same_geometry(a: &[InputInlineElement], b: &[InputInlineElement]) -> bool {
++    a.len() == b.len()
++        && a.iter()
++            .zip(b)
++            .all(|(a, b)| a.marker == b.marker && a.width == b.width)
++}
++
++pub(super) enum RowFragment {
++    Text(ShapedLine),
++    Element {
++        index: usize,
++        width: Pixels,
++        len: usize,
++    },
++}
++
++struct RowPart {
++    start: usize,
++    x: Pixels,
++    fragment: RowFragment,
++}
++
++pub(crate) struct VisualRow {
++    pub(super) text: SharedString,
++    pub(super) width: Pixels,
++    parts: SmallVec<[RowPart; 1]>,
++}
++
++impl From<ShapedLine> for VisualRow {
++    fn from(line: ShapedLine) -> Self {
++        Self::new(line.text.clone(), [RowFragment::Text(line)])
++    }
++}
++
++impl VisualRow {
++    pub(super) fn new(
++        text: SharedString,
++        fragments: impl IntoIterator<Item = RowFragment>,
++    ) -> Self {
++        let mut width = px(0.);
++        let mut offset = 0;
++        let parts = fragments
++            .into_iter()
++            .map(|fragment| {
++                let part = RowPart {
++                    start: offset,
++                    x: width,
++                    fragment,
++                };
++                match &part.fragment {
++                    RowFragment::Text(line) => {
++                        offset += line.len();
++                        width += line.width;
++                    }
++                    RowFragment::Element {
++                        width: advance,
++                        len,
++                        ..
++                    } => {
++                        offset += len;
++                        width += *advance;
++                    }
++                }
++                part
++            })
++            .collect();
++        Self { text, width, parts }
++    }
++
++    pub(super) fn len(&self) -> usize {
++        self.text.len()
++    }
++
++    pub(super) fn x_for_index(&self, index: usize) -> Pixels {
++        if index >= self.len() {
++            return self.width;
++        }
++        self.parts
++            .iter()
++            .rev()
++            .find(|part| part.start <= index)
++            .map_or(px(0.), |part| {
++                part.x
++                    + match &part.fragment {
++                        RowFragment::Text(line) => line.x_for_index(index - part.start),
++                        RowFragment::Element { width, .. } => {
++                            if index == part.start {
++                                px(0.)
++                            } else {
++                                *width
++                            }
++                        }
++                    }
++            })
++    }
++
++    pub(super) fn closest_index_for_x(&self, x: Pixels) -> usize {
++        if x >= self.width {
++            return self.len();
++        }
++        self.parts
++            .iter()
++            .rev()
++            .find(|part| part.x <= x)
++            .map_or(0, |part| {
++                part.start
++                    + match &part.fragment {
++                        RowFragment::Text(line) => line.closest_index_for_x(x - part.x),
++                        RowFragment::Element { width, len, .. } => {
++                            if x - part.x < *width / 2. {
++                                0
++                            } else {
++                                *len
++                            }
++                        }
++                    }
++            })
++    }
++
++    pub(super) fn index_for_x(&self, x: Pixels) -> Option<usize> {
++        if x >= self.width {
++            return None;
++        }
++        self.parts
++            .iter()
++            .rev()
++            .find(|part| part.x <= x)
++            .and_then(|part| match &part.fragment {
++                RowFragment::Text(line) => {
++                    line.index_for_x(x - part.x).map(|index| part.start + index)
++                }
++                RowFragment::Element { .. } => Some(self.closest_index_for_x(x)),
++            })
++    }
++
++    pub(super) fn elements(
++        &self,
++    ) -> impl Iterator<Item = (Pixels, Pixels, usize, Range<usize>)> + '_ {
++        self.parts.iter().filter_map(|part| match part.fragment {
++            RowFragment::Element { width, index, len } => {
++                Some((part.x, width, index, part.start..part.start + len))
++            }
++            RowFragment::Text(_) => None,
++        })
++    }
++
++    pub(super) fn paint(
++        &self,
++        origin: Point<Pixels>,
++        height: Pixels,
++        window: &mut Window,
++        cx: &mut App,
++    ) {
++        for part in &self.parts {
++            if let RowFragment::Text(line) = &part.fragment {
++                _ = line.paint(origin + point(part.x, px(0.)), height, window, cx);
++            }
++        }
++    }
++}
+diff --git a/src/input/input.rs b/src/input/input.rs
+index bad7a2b..408a42b 100644
+--- a/src/input/input.rs
++++ b/src/input/input.rs
+@@ -34,6 +34,7 @@ pub struct Input {
+     focus_bordered: bool,
+     tab_index: isize,
+     selected: bool,
++    inline_elements: Vec<super::InputInlineElement>,
+ }
+
+ impl Sizable for Input {
+@@ -72,9 +73,16 @@ impl Input {
+             focus_bordered: true,
+             tab_index: 0,
+             selected: false,
++            inline_elements: Vec::new(),
+         }
+     }
+
++    /// Render matching text ranges as inline elements in a multiline input.
++    pub fn inline_elements(mut self, elements: Vec<super::InputInlineElement>) -> Self {
++        self.inline_elements = elements;
++        self
++    }
++
+     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
+         self.prefix = Some(prefix.into_any_element());
+         self
+@@ -242,9 +250,10 @@ impl RenderOnce for Input {
+     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+         const LINE_HEIGHT: Rems = Rems(1.25);
+
+-        self.state.update(cx, |state, _| {
++        self.state.update(cx, |state, cx| {
+             state.disabled = self.disabled;
+             state.size = self.size;
++            state.set_inline_elements(self.inline_elements, cx);
+         });
+
+         let state = self.state.read(cx);
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index 18c4292..8c78daf 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -4,6 +4,7 @@ mod clear_button;
+ mod cursor;
+ mod element;
+ mod indent;
++mod inline_element;
+ mod input;
+ mod lsp;
+ mod mask_pattern;
+@@ -14,13 +15,14 @@ mod otp_input;
+ pub(crate) mod popovers;
+ mod rope_ext;
+ mod search;
++mod selection;
+ mod state;
+ mod text_wrapper;
+-mod selection;
+
+ pub(crate) use clear_button::*;
+ pub use cursor::*;
+ pub use indent::TabSize;
++pub use inline_element::InputInlineElement;
+ pub use input::*;
+ pub use lsp::*;
+ pub use mask_pattern::MaskPattern;
+diff --git a/src/input/state.rs b/src/input/state.rs
+index 89b3ffa..088b337 100644
+--- a/src/input/state.rs
++++ b/src/input/state.rs
+@@ -1813,6 +1813,29 @@ impl InputState {
+         cx.notify();
+     }
+
++    /// Replace a UTF-16 range as a standalone undoable edit.
++    pub fn replace_text_as_edit(
++        &mut self,
++        range: Range<usize>,
++        text: &str,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        self.history.break_group();
++        self.replace_text_in_range(Some(range), text, window, cx);
++        self.history.break_group();
++    }
++
++    pub(super) fn set_inline_elements(
++        &mut self,
++        elements: Vec<super::InputInlineElement>,
++        cx: &mut Context<Self>,
++    ) {
++        if self.text_wrapper.set_inline_elements(elements, cx) {
++            self.mode.update_auto_grow(&self.text_wrapper);
++        }
++    }
++
+     pub(super) fn set_input_bounds(&mut self, new_bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
+         let wrap_width_changed = self.input_bounds.size.width != new_bounds.size.width;
+         self.input_bounds = new_bounds;
+diff --git a/src/input/text_wrapper.rs b/src/input/text_wrapper.rs
+index e081b0b..9f1825d 100644
+--- a/src/input/text_wrapper.rs
++++ b/src/input/text_wrapper.rs
+@@ -1,4 +1,6 @@
+-use std::ops::Range;
++use std::{ops::Range, rc::Rc};
++
++use super::inline_element::{self, InputInlineElement, VisualRow};
+
+ use gpui::{App, Font, LineFragment, Pixels, Point, ShapedLine, Size, Window, point, px, size};
+ use ropey::Rope;
+@@ -61,6 +63,7 @@ pub(super) struct TextWrapper {
+     pub(super) lines: Vec<LineItem>,
+
+     _initialized: bool,
++    pub(super) inline_elements: Rc<Vec<InputInlineElement>>,
+ }
+
+ #[allow(unused)]
+@@ -75,6 +78,7 @@ impl TextWrapper {
+             longest_row: LongestRow::default(),
+             lines: Vec::new(),
+             _initialized: false,
++            inline_elements: Rc::new(Vec::new()),
+         }
+     }
+
+@@ -95,6 +99,25 @@ impl TextWrapper {
+         self.lines.iter().skip(row).next()
+     }
+
++    pub(super) fn set_inline_elements(
++        &mut self,
++        elements: Vec<InputInlineElement>,
++        cx: &mut App,
++    ) -> bool {
++        let changed = !inline_element::same_geometry(&self.inline_elements, &elements);
++        self.inline_elements = Rc::new(elements);
++        if changed {
++            self.update_all(&self.text.clone(), cx);
++        }
++        changed
++    }
++
++    pub(super) fn inline_width(&self, index: usize) -> Pixels {
++        self.inline_elements[index]
++            .width
++            .min(self.wrap_width.unwrap_or(Pixels::MAX))
++    }
++
+     pub(super) fn set_wrap_width(&mut self, wrap_width: Option<Pixels>, cx: &mut App) {
+         if wrap_width == self.wrap_width {
+             return;
+@@ -141,14 +164,30 @@ impl TextWrapper {
+         let mut line_wrapper = cx
+             .text_system()
+             .line_wrapper(self.font.clone(), self.font_size);
++        let elements = self.inline_elements.clone();
+         self._update(
+             changed_text,
+             range,
+             new_text,
+             &mut |line_str, wrap_width| {
+-                line_wrapper
+-                    .wrap_line(&[LineFragment::text(line_str)], wrap_width)
+-                    .collect()
++                let matches = inline_element::matches(line_str, &elements);
++                if matches.is_empty() {
++                    return line_wrapper
++                        .wrap_line(&[LineFragment::text(line_str)], wrap_width)
++                        .collect();
++                }
++                let mut fragments = Vec::new();
++                let mut end = 0;
++                for (range, index) in matches {
++                    fragments.push(LineFragment::text(&line_str[end..range.start]));
++                    fragments.push(LineFragment::element(
++                        elements[index].width.min(wrap_width),
++                        range.len(),
++                    ));
++                    end = range.end;
++                }
++                fragments.push(LineFragment::text(&line_str[end..]));
++                line_wrapper.wrap_line(&fragments, wrap_width).collect()
+             },
+         );
+     }
+@@ -340,7 +379,7 @@ pub(crate) struct LineLayout {
+     /// Total bytes length of this line.
+     len: usize,
+     /// The soft wrapped lines of this line (Include the first line).
+-    pub(crate) wrapped_lines: SmallVec<[ShapedLine; 1]>,
++    pub(crate) wrapped_lines: SmallVec<[VisualRow; 1]>,
+     pub(crate) longest_width: Pixels,
+ }
+
+@@ -354,12 +393,12 @@ impl LineLayout {
+     }
+
+     pub(crate) fn lines(mut self, wrapped_lines: SmallVec<[ShapedLine; 1]>) -> Self {
+-        self.set_wrapped_lines(wrapped_lines);
++        self.set_wrapped_lines(wrapped_lines.into_iter().map(VisualRow::from).collect());
+         self
+     }
+
+-    pub(crate) fn set_wrapped_lines(&mut self, wrapped_lines: SmallVec<[ShapedLine; 1]>) {
+-        self.len = wrapped_lines.iter().map(|l| l.len).sum();
++    pub(crate) fn set_wrapped_lines(&mut self, wrapped_lines: SmallVec<[VisualRow; 1]>) {
++        self.len = wrapped_lines.iter().map(VisualRow::len).sum();
+         let width = wrapped_lines
+             .iter()
+             .map(|l| l.width)
+@@ -388,7 +427,7 @@ impl LineLayout {
+
+         for (i, line) in self.wrapped_lines.iter().enumerate() {
+             let is_last = i + 1 == self.wrapped_lines.len();
+-            let line_len = if is_last { line.len + 1 } else { line.len };
++            let line_len = if is_last { line.len() + 1 } else { line.len() };
+
+             let range = acc_len..(acc_len + line_len);
+             if range.contains(&offset) {
