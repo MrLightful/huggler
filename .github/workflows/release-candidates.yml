@@ -35,29 +35,23 @@ jobs:
             target/package/huggler-*.contents.txt
           if-no-files-found: error
 
-  desktop:
-    name: Desktop and Pi packages (macOS arm64)
-    runs-on: macos-15
-    timeout-minutes: 60
+  pi:
+    name: Pi extension package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
-        with:
-          python-version: '3.12'
-      - name: Install Rust and the license notice generator
+      - name: Build and verify the Pi extension archive
         run: |
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-docs
-          cargo install --locked cargo-about --version 0.9.1 --features cli
-          cargo about --version
-      - name: Build and verify the release archives
-        run: |
-          cargo fetch --locked --manifest-path desktop/Cargo.toml
-          python3 scripts/check-desktop-release.py --package-only target/distribution
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          archive="huggler-${version}-pi.zip"
+          zip -j "$archive" adapters/pi/huggler.mjs LICENSE
+          unzip -t "$archive"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: huggler-desktop-and-pi-${{ github.run_attempt }}
-          path: target/distribution/huggler-*.zip
+          name: huggler-pi-${{ github.run_attempt }}
+          path: huggler-*-pi.zip
           compression-level: 0
           if-no-files-found: error

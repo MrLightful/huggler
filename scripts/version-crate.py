@@ -8,7 +8,6 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 LOCKFILES = (
     "Cargo.lock",
-    "desktop/Cargo.lock",
     "bindings/python/Cargo.lock",
     "bindings/node/native/Cargo.lock",
 )
