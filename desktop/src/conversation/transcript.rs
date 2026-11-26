@@ -3,7 +3,7 @@ mod turn_rail;
 
 use self::activity_title::ActivityTitle;
 use super::attachments::{MESSAGE_LINE_HEIGHT, caption_with_attachments};
-use super::markdown_view::prose;
+use super::markdown_view::{ResponseImages, prose};
 use super::*;
 use gpui_component::{Icon, tooltip::Tooltip};
 use huggler::{
@@ -403,6 +403,19 @@ impl Desktop {
         self.report(result, cx);
     }
 
+    fn response_images<'a>(
+        &'a self,
+        thread: &ConversationDetail,
+        run: &'a RunId,
+    ) -> ResponseImages<'a> {
+        ResponseImages {
+            run,
+            checkout: Some(&self.workspaces[&thread.id].root),
+            executor: &self.executor,
+            scroll: &self.history_scroll,
+        }
+    }
+
     fn message_row(
         &self,
         thread: &ConversationDetail,
@@ -483,7 +496,13 @@ impl Desktop {
                             },
                         })
                 } else {
-                    prose(format!("message-{id}"), caption, window, cx)
+                    prose(
+                        format!("message-{id}"),
+                        caption,
+                        self.response_images(thread, &message.run_id),
+                        window,
+                        cx,
+                    )
                 }
             ));
         }
@@ -601,6 +620,7 @@ impl Desktop {
                         prose(
                             format!("stream-{}", run.id),
                             &thread.streaming_text,
+                            self.response_images(thread, &run.id),
                             window,
                             cx
                         )
@@ -785,6 +805,7 @@ impl Desktop {
                         prose(
                             format!("commentary-{run}-{}", item.id),
                             &item.title,
+                            self.response_images(thread, run),
                             window,
                             cx
                         )

@@ -232,7 +232,8 @@ impl Preview {
             file.mime.as_str(),
             "image/jpeg" | "image/png" | "image/webp" | "image/gif"
         ) {
-            image_preview(&file.bytes).map_or(PreviewBody::ImageUnavailable, PreviewBody::Image)
+            image_preview(&file.bytes, true)
+                .map_or(PreviewBody::ImageUnavailable, PreviewBody::Image)
         } else if let Some(text) = file.pdf_text_excerpt() {
             PreviewBody::PdfText(text.into())
         } else if let Some(text) = file.text() {
@@ -263,7 +264,7 @@ impl Preview {
     }
 }
 
-pub(super) fn image_preview(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+pub(super) fn image_preview(bytes: &[u8], upscale: bool) -> Option<Arc<RenderImage>> {
     use image::{Frame, ImageReader, Limits};
     let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -273,7 +274,13 @@ pub(super) fn image_preview(bytes: &[u8]) -> Option<Arc<RenderImage>> {
     limits.max_image_height = Some(8_192);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let mut thumbnail = reader.decode().ok()?.thumbnail(840, 440).into_rgba8();
+    let image = reader.decode().ok()?;
+    let image = if upscale || image.width() > 840 || image.height() > 440 {
+        image.thumbnail(840, 440)
+    } else {
+        image
+    };
+    let mut thumbnail = image.into_rgba8();
     for pixel in thumbnail.pixels_mut() {
         pixel.0.swap(0, 2);
     }

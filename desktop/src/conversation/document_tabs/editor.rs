@@ -1,6 +1,7 @@
 mod file;
 
 use super::*;
+pub(in crate::conversation) use file::open_workspace_file;
 use file::{read_source, uses_crlf, write_source};
 use gpui_component::highlighter::Language;
 

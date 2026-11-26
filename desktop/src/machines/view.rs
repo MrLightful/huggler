@@ -1,6 +1,9 @@
 use super::ssh::{Connection, SavedMachine};
 use crate::{
-    conversation::permission_card,
+    conversation::{
+        markdown_view::{ResponseImages, contains_mermaid_fence, prose},
+        permission_card,
+    },
     ui::{field, heading, hint, label},
 };
 use gpui::{prelude::*, *};
@@ -12,7 +15,8 @@ use gpui_component::{
     v_flex,
 };
 use huggler::{
-    ConversationDetail, ConversationSummary, HistoryItem, MessageId, RequestId, Role, ThreadId,
+    ConversationDetail, ConversationSummary, HistoryItem, MessageId, RequestId, Role, RunId,
+    ThreadId,
     machine::{Client, ClientError, Reply, Request},
 };
 use std::{collections::HashMap, time::Duration};
@@ -450,7 +454,38 @@ impl RemoteProject {
         .detach();
     }
 
-    fn message_row(&self, thread: &ThreadId, item: &HistoryItem, cx: &Context<Self>) -> Div {
+    fn response(
+        &self,
+        id: String,
+        run: &RunId,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Div {
+        if !text.contains("![") && !contains_mermaid_fence(text) {
+            return div().child(text.to_owned());
+        }
+        prose(
+            id,
+            text,
+            ResponseImages {
+                run,
+                checkout: None,
+                executor: &self.executor,
+                scroll: &self.history_scroll,
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn message_row(
+        &self,
+        thread: &ThreadId,
+        item: &HistoryItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let message = &item.message;
         let role = if message.role == Role::User {
             "You"
@@ -473,7 +508,17 @@ impl RemoteProject {
             .child(label(role))
             .child(control!(
                 format!("remote-message/{body}"),
-                div().child(body.clone())
+                if message.role == Role::Assistant {
+                    self.response(
+                        format!("remote-message-{}", message.id),
+                        &message.run_id,
+                        body,
+                        window,
+                        cx,
+                    )
+                } else {
+                    div().child(body.clone())
+                }
             ))
             .when(truncated && full.is_none(), |row| {
                 let thread = thread.clone();
@@ -592,7 +637,7 @@ fn fresh_command() -> huggler::CommandId {
 }
 
 impl Render for RemoteProject {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = self.forward.is_some() && !self.working && self.pending.is_none();
         let competing_request = self.pending.is_some() || self.working;
         let project = &self.machine.project;
@@ -769,17 +814,25 @@ impl Render for RemoteProject {
                                             )
                                         })
                                         .children(
-                                            self.older
-                                                .iter()
-                                                .chain(&detail.history.messages)
-                                                .map(|item| self.message_row(&thread, item, cx)),
+                                            self.older.iter().chain(&detail.history.messages).map(
+                                                |item| self.message_row(&thread, item, window, cx),
+                                            ),
                                         )
                                         .when(!detail.streaming_text.is_empty(), |history| {
-                                            history.child(
-                                                v_flex()
-                                                    .child(label("Codex"))
-                                                    .child(detail.streaming_text.clone()),
-                                            )
+                                            history.child(v_flex().child(label("Codex")).child(
+                                                match &detail.foreground_run {
+                                                    Some(run) => self.response(
+                                                        format!("remote-stream-{}", run.id),
+                                                        &run.id,
+                                                        &detail.streaming_text,
+                                                        window,
+                                                        cx,
+                                                    ),
+                                                    None => {
+                                                        div().child(detail.streaming_text.clone())
+                                                    }
+                                                },
+                                            ))
                                         })
                                         .when_some(
                                             detail

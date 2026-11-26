@@ -39,9 +39,12 @@ fn read_text(file: &fs::File) -> Result<String> {
 }
 
 pub(super) fn read_source(root: &Path, path: &Path) -> Result<SharedString> {
+    Ok(read_text(&open_workspace_file(root, path)?)?.into())
+}
+
+pub(in crate::conversation) fn open_workspace_file(root: &Path, path: &Path) -> Result<fs::File> {
     validate_path(path)?;
-    let target = storage::Target::open(root, path)?;
-    Ok(read_text(&target.file(false)?)?.into())
+    storage::Target::open(root, path)?.file(false)
 }
 
 pub(super) fn write_source(root: &Path, path: &Path, expected: &str, contents: &str) -> Result<()> {

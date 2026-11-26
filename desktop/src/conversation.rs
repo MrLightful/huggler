@@ -4,7 +4,7 @@ mod backlog;
 mod document_tabs;
 mod file_tree;
 mod launch_workspace;
-mod markdown_view;
+pub(crate) mod markdown_view;
 mod mcp_status;
 mod models;
 mod project_actions;
