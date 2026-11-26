@@ -70,6 +70,25 @@ enum ProviderPanel {
     Details,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum ProviderSection {
+    Models,
+    Mcp,
+    Environment,
+    Advanced,
+}
+
+impl ProviderSection {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Models => "Models",
+            Self::Mcp => "MCP servers",
+            Self::Environment => "Environment",
+            Self::Advanced => "Advanced settings",
+        }
+    }
+}
+
 pub(super) struct ProviderSettings {
     pub(super) selected: ProviderInstanceId,
     panel: ProviderPanel,
@@ -77,6 +96,9 @@ pub(super) struct ProviderSettings {
     reset_pending: bool,
     reset_needs_restart: bool,
     detected_scroll: ScrollHandle,
+    models_open: bool,
+    mcp_open: bool,
+    environment_open: bool,
     pub(super) mcp: super::mcp::Panel,
     setup: HashMap<ProviderInstanceId, SetupState>,
 }
@@ -90,6 +112,9 @@ impl ProviderSettings {
             reset_pending: false,
             reset_needs_restart: false,
             detected_scroll: ScrollHandle::default(),
+            models_open: true,
+            mcp_open: false,
+            environment_open: false,
             mcp: super::mcp::Panel::default(),
             setup: HashMap::new(),
         }
@@ -302,6 +327,9 @@ impl Settings {
     fn load_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.load_executable(window, cx);
         self.load_runtime_fields(window, cx);
+        self.providers.models_open = true;
+        self.providers.mcp_open = false;
+        self.providers.environment_open = false;
         self.advanced = false;
         self.providers.custom_executable = false;
         self.providers.reset_pending = false;
@@ -522,6 +550,78 @@ impl Settings {
             )
     }
 
+    pub(super) fn provider_section(
+        &self,
+        section: ProviderSection,
+        summary: Option<String>,
+        body: impl FnOnce() -> Div,
+        cx: &Context<Self>,
+    ) -> Div {
+        let open = match section {
+            ProviderSection::Models => self.providers.models_open,
+            ProviderSection::Mcp => self.providers.mcp_open,
+            ProviderSection::Environment => self.providers.environment_open,
+            ProviderSection::Advanced => self.advanced,
+        };
+        let title = section.title();
+        v_flex()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .relative()
+                    .child(control!(
+                        title,
+                        Button::new((ElementId::from("provider-section"), title))
+                            .ghost()
+                            .w_full()
+                            .h(px(40.))
+                            .with_size(px(40.))
+                            .justify_start()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(if open {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronRight
+                                        })
+                                        .small(),
+                                    )
+                                    .child(section_title(title)),
+                            )
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                match section {
+                                    ProviderSection::Models => view.providers.models_open = !open,
+                                    ProviderSection::Mcp => view.providers.mcp_open = !open,
+                                    ProviderSection::Environment => {
+                                        view.providers.environment_open = !open
+                                    }
+                                    ProviderSection::Advanced => view.advanced = !open,
+                                }
+                                cx.notify();
+                            }))
+                    ))
+                    .when_some(summary, |row, summary| {
+                        row.child(
+                            div()
+                                .absolute()
+                                .right_2()
+                                .top_0()
+                                .bottom_0()
+                                .max_w(relative(0.45))
+                                .flex()
+                                .items_center()
+                                .child(hint(summary, cx).min_w_0().truncate()),
+                        )
+                    }),
+            )
+            .when(open, |section| {
+                section.child(div().px_2().pt_1().pb_3().child(body()))
+            })
+    }
+
     fn render_provider(&self, cx: &Context<Self>) -> Div {
         let instance = self.selected_provider();
         let id = &instance.id;
@@ -552,12 +652,20 @@ impl Settings {
             .when(
                 installed || matches!(status, Status::ServerConfigured),
                 |page| {
-                    page.child(self.render_models(cx))
-                        .when(installed && instance.driver == Provider::Codex, |page| {
-                            page.child(self.render_mcp_settings(cx))
-                        })
-                        .when(installed, |page| page.child(self.render_environment(cx)))
-                        .child(self.render_advanced(installed, cx))
+                    page.child(
+                        v_flex()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(self.render_models(cx))
+                            .when(
+                                installed && instance.driver == Provider::Codex,
+                                |sections| sections.child(self.render_mcp_settings(cx)),
+                            )
+                            .when(installed, |sections| {
+                                sections.child(self.render_environment(cx))
+                            })
+                            .child(self.render_advanced(installed, cx)),
+                    )
                 },
             )
     }

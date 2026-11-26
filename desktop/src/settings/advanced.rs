@@ -1,10 +1,10 @@
-use super::{Preferences, Settings};
+use super::{Preferences, Settings, providers::ProviderSection};
 use crate::ui::{hint, label};
 use anyhow::{Result, ensure};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IconName, Sizable,
-    button::{Button, ButtonVariants},
+    Disableable, Sizable,
+    button::Button,
     h_flex,
     input::{InputEvent, InputState},
     v_flex,
@@ -158,35 +158,21 @@ impl Settings {
     }
 
     pub(super) fn render_advanced(&self, installed: bool, cx: &Context<Self>) -> Div {
-        v_flex()
-            .pt_3()
-            .gap_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(h_flex().child(control!(
-                    "Advanced settings",
-                    Button::new("advanced-settings")
-                        .ghost()
-                        .label("Advanced settings")
-                        .icon(if self.advanced {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.advanced = !view.advanced;
-                            cx.notify();
-                        }))
-                )))
-            .when(self.advanced, |section| {
-                section.child(self.executable_field(installed, cx)).child(
-                    if self.runtime_editable() {
+        self.provider_section(
+            ProviderSection::Advanced,
+            None,
+            || {
+                v_flex()
+                    .gap_3()
+                    .child(self.executable_field(installed, cx))
+                    .child(if self.runtime_editable() {
                         self.runtime_editor(cx)
                     } else {
                         self.configured_runtime(cx)
-                    },
-                )
-            })
+                    })
+            },
+            cx,
+        )
     }
 
     fn runtime_editor(&self, cx: &Context<Self>) -> Div {

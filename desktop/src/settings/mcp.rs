@@ -1,4 +1,4 @@
-use super::Settings;
+use super::{Settings, providers::ProviderSection};
 use crate::ui::{hint, label, section_title};
 use anyhow::{Result, ensure};
 use gpui::{prelude::*, *};
@@ -7,6 +7,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
+    switch::Switch,
     v_flex,
 };
 use huggler::{
@@ -267,18 +268,40 @@ impl Settings {
 
     pub(super) fn render_mcp_settings(&self, cx: &Context<Self>) -> Div {
         let panel = &self.providers.mcp;
+        let summary = if panel.error.is_some() {
+            Some("Needs attention".into())
+        } else if panel.pending.is_some() {
+            Some("Updating…".into())
+        } else if panel.unavailable {
+            Some("Unavailable".into())
+        } else {
+            panel
+                .settings
+                .as_ref()
+                .map(|settings| match settings.servers.len() {
+                    1 => "1 server".into(),
+                    count => format!("{count} servers"),
+                })
+        };
+        self.provider_section(
+            ProviderSection::Mcp,
+            summary,
+            || self.mcp_settings_body(cx),
+            cx,
+        )
+    }
+
+    fn mcp_settings_body(&self, cx: &Context<Self>) -> Div {
+        let panel = &self.providers.mcp;
         let busy = panel.pending.is_some();
         v_flex()
             .gap_2()
-            .pt_4()
-            .border_t_1()
-            .border_color(cx.theme().border)
             .child(
                 h_flex()
                     .justify_between()
                     .flex_wrap()
                     .gap_2()
-                    .child(control!("MCP servers", section_title("MCP servers")))
+                    .child(hint("Servers in this Codex instance’s user configuration.", cx))
                     .child(
                         h_flex()
                             .gap_1()
@@ -310,10 +333,6 @@ impl Settings {
                             )),
                     ),
             )
-            .child(hint(
-                "Servers in this Codex instance’s user configuration.",
-                cx,
-            ))
             .when(busy, |section| {
                 section.child(control!(
                     "Updating MCP settings",
@@ -379,21 +398,15 @@ impl Settings {
         } else {
             "Disabled"
         };
-        let button = |action: &str| {
-            Button::new(SharedString::from(format!("mcp-{action}/{name}")))
-                .ghost()
-                .small()
-                .label(action.to_owned())
-                .disabled(locked)
-        };
         let toggle_name = name.clone();
         let edit_name = name.clone();
         let remove_name = name.clone();
         let confirm_name = name.clone();
         v_flex()
             .gap_2()
-            .py_2()
-            .border_b_1()
+            .py_1p5()
+            .px_2()
+            .border_t_1()
             .border_color(cx.theme().border)
             .child(
                 h_flex()
@@ -402,17 +415,26 @@ impl Settings {
                     .flex_wrap()
                     .child(
                         v_flex()
+                            .flex_1()
                             .min_w_0()
-                            .gap_1()
                             .child(control!(
                                 format!("MCP settings/{name}/{state}"),
-                                label(name.clone()).truncate()
+                                label(name.clone())
+                                    .truncate()
+                                    .id(SharedString::from(format!("mcp-name/{name}")))
+                                    .tooltip({
+                                        let name = name.clone();
+                                        move |window, cx| {
+                                            gpui_component::tooltip::Tooltip::new(name.clone())
+                                                .build(window, cx)
+                                        }
+                                    })
                             ))
                             .child(hint(
                                 if reserved {
-                                    "Reserved for Huggler’s built-in tools".into()
+                                    "Reserved for Huggler’s built-in tools"
                                 } else {
-                                    format!("{transport} · {state}")
+                                    transport
                                 },
                                 cx,
                             )),
@@ -421,8 +443,45 @@ impl Settings {
                         h_flex()
                             .gap_1()
                             .child(control!(
+                                format!("Edit MCP/{name}"),
+                                Button::new(SharedString::from(format!("mcp-Edit/{name}")))
+                                    .ghost()
+                                    .small()
+                                    .compact()
+                                    .label("Edit")
+                                    .disabled(locked || reserved || server.connection.is_none())
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.open_mcp_editor(Some(&edit_name), window, cx)
+                                    }))
+                            ))
+                            .child(control!(
+                                format!("Remove MCP/{name}"),
+                                Button::new(SharedString::from(format!("mcp-remove/{name}")))
+                                    .ghost()
+                                    .small()
+                                    .compact()
+                                    .label("Remove")
+                                    .tooltip(format!("Remove {name}"))
+                                    .disabled(locked || removing)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.providers.mcp.removing = Some(remove_name.clone());
+                                        cx.notify();
+                                    }))
+                            ))
+                            .child(control!(
                                 format!("{toggle} MCP/{name}"),
-                                button(toggle)
+                                Button::new(SharedString::from(format!("mcp-toggle/{name}")))
+                                    .ghost()
+                                    .small()
+                                    .w(px(48.))
+                                    .tooltip(format!("{toggle} {name}"))
+                                    .child(
+                                        Switch::new(SharedString::from(format!(
+                                            "mcp-switch/{name}"
+                                        )))
+                                        .small()
+                                        .checked(server.enabled)
+                                    )
                                     .disabled(locked || reserved)
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.update_mcp_settings(
@@ -433,23 +492,6 @@ impl Settings {
                                             cx,
                                         );
                                     }))
-                            ))
-                            .child(control!(
-                                format!("Edit MCP/{name}"),
-                                button("Edit")
-                                    .disabled(locked || reserved || server.connection.is_none())
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.open_mcp_editor(Some(&edit_name), window, cx)
-                                    }))
-                            ))
-                            .child(control!(
-                                format!("Remove MCP/{name}"),
-                                button("Remove").disabled(locked || removing).on_click(
-                                    cx.listener(move |view, _, _, cx| {
-                                        view.providers.mcp.removing = Some(remove_name.clone());
-                                        cx.notify();
-                                    })
-                                )
                             )),
                     ),
             )

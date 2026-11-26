@@ -277,6 +277,7 @@ exec "$MODEL_FIXTURE" "$@"
         {"click": "model-option-automatic"},
         *open_provider,
         {"absent": "Launch arguments"}, {"absent": "CLI executable"},
+        {"click": "Models"}, {"absent": "model-enabled/fixture-fast"}, {"click": "Models"},
         {"above": ["model-enabled/fixture-fast", "model-enabled/fixture-deep"]},
         {"click": "model-up/fixture-deep"},
         {"above": ["model-enabled/fixture-deep", "model-enabled/fixture-fast"]},
@@ -293,7 +294,7 @@ exec "$MODEL_FIXTURE" "$@"
         {"click": "Advanced settings"}, {"click": "Codex config directory"}, {"type": str(home)},
         {"click": "Launch arguments"}, {"type": "--profile 'fixture profile'"},
         {"click": "Save runtime settings"}, {"click": "Advanced settings"},
-        {"see": "Environment"}, {"click": "Add variable"},
+        {"click": "Environment"}, {"click": "Add variable"},
         {"click": "variable-value/0"}, {"type": "value with spaces=1"},
         {"click": "Back to Settings"},
         {"see": "settings-error/Start variable names with a letter or underscore and use only letters, numbers, and underscores."},
@@ -311,7 +312,7 @@ exec "$MODEL_FIXTURE" "$@"
     assert stat.S_IMODE(prefs.stat().st_mode) == 0o600
     assert not (home / "received-environment").exists()
     run_window(executable, state, [
-        *open_provider, {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"},
+        *open_provider, {"click": "Environment"}, {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"},
         {"click": "Edit variables"}, {"click": "remove-variable/0"}, {"click": "Cancel variable changes"},
         {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"}, {"click": "Back to Settings"},
     ], env)
@@ -319,6 +320,7 @@ exec "$MODEL_FIXTURE" "$@"
     assert (home / "received-environment").is_file()
     run_window(executable, state, [
         *open_provider, {"above": ["model-enabled/fixture-deep", "model-enabled/fixture-fast"]},
+        {"click": "Environment"}, {"see": "environment-variable/FIXTURE_PROVIDER_VARIABLE"},
         {"click": "Reset to defaults"}, {"click": "Cancel reset"},
         {"above": ["model-enabled/fixture-deep", "model-enabled/fixture-fast"]},
         {"click": "Reset to defaults"}, {"click": "Restore defaults"},
@@ -327,6 +329,7 @@ exec "$MODEL_FIXTURE" "$@"
     ], env)
     assert json.loads((state / "preferences.json").read_text()) == {
         "appearance": "system", "codexExecutable": None, "automaticWorktreeCleanup": False,
+        "autoSettleMergedPrs": True,
     }
 
 

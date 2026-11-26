@@ -211,7 +211,7 @@ def check_mcp_settings(executable, tmp, env):
     env = dict(env, HUGGLER_CODEX=str(ROOT / "tests/fixtures/context-provider.py"))
     settings = [
         {"resize": [960, 860]}, {"key": "cmd-,"}, {"click": "Providers"},
-        {"see": "MCP servers"},
+        {"see": "MCP servers"}, {"absent": "Add MCP server"}, {"click": "MCP servers"},
     ]
     run_window(executable, state, [
         *settings,
@@ -219,7 +219,9 @@ def check_mcp_settings(executable, tmp, env):
         {"click": "Disable MCP/notes.v2"}, {"see": "MCP settings/notes.v2/Disabled"},
         {"see": "MCP setting overridden"},
         {"click": "Edit MCP/notes.v2"}, {"click": "Server URL"}, {"key": "cmd-a"},
-        {"type": "https://example.org/updated"}, {"click": "Save MCP server"},
+        {"type": "https://example.org/updated"},
+        {"click": "MCP servers"}, {"absent": "Server URL"},
+        {"click": "MCP servers"}, {"click": "Save MCP server"},
         {"absent": "Server URL"}, {"click": "Enable MCP/notes.v2"},
         {"see": "MCP settings/notes.v2/Enabled"},
         {"click": "Add MCP server"}, {"type": "test-tools"}, {"click": "Stdio"},

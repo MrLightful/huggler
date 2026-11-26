@@ -1,7 +1,7 @@
-use super::{Settings, SettingsEvent};
+use super::{Settings, SettingsEvent, providers::ProviderSection};
 use crate::{
     conversation::ProviderCatalog,
-    ui::{hint, label, section_title},
+    ui::{hint, label},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -126,23 +126,31 @@ impl Settings {
 
     pub(super) fn render_models(&self, cx: &Context<Self>) -> Div {
         let catalog = self.model_catalog.as_ref().map(|catalog| catalog.read(cx));
-        let content = match catalog.map(|catalog| &catalog.result) {
-            None => hint("Use Refresh to load models.", cx),
-            Some(None) => hint("Loading models…", cx),
-            Some(Some(Err(error))) => hint(error.to_string(), cx),
-            Some(Some(Ok(report))) if report.models.is_empty() => {
-                control!("No models", hint("This provider listed no models.", cx))
+        let result = catalog.map(|catalog| &catalog.result);
+        let summary = match result {
+            Some(Some(Ok(report))) => {
+                let prefs = self.model_preferences(&self.providers.selected);
+                let visible = report.models.iter().filter(|id| prefs.enabled(id)).count();
+                Some(format!("{visible} of {} shown", report.models.len()))
             }
-            Some(Some(Ok(report))) => self.model_list(&report.models, cx),
+            Some(None) => Some("Loading…".into()),
+            Some(Some(Err(_))) => Some("Unavailable".into()),
+            None => None,
         };
-
-        v_flex()
-            .gap_2()
-            .pt_4()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(control!("Models", section_title("Models")))
-            .child(content)
+        self.provider_section(
+            ProviderSection::Models,
+            summary,
+            || match result {
+                None => hint("Use Refresh to load models.", cx),
+                Some(None) => hint("Loading models…", cx),
+                Some(Some(Err(error))) => hint(error.to_string(), cx),
+                Some(Some(Ok(report))) if report.models.is_empty() => {
+                    control!("No models", hint("This provider listed no models.", cx))
+                }
+                Some(Some(Ok(report))) => self.model_list(&report.models, cx),
+            },
+            cx,
+        )
     }
 
     fn model_list(&self, models: &[String], cx: &Context<Self>) -> Div {
@@ -163,12 +171,20 @@ impl Settings {
                 cx,
             ))
             .child(
+                h_flex()
+                    .gap_2()
+                    .px_2()
+                    .child(hint("Model", cx).flex_1())
+                    .child(hint("Order", cx).w(px(56.)).text_center())
+                    .child(hint("Show", cx).w(px(48.)).text_center()),
+            )
+            .child(
                 div()
                     .id("provider-models")
-                    .max_h(px(240.))
+                    .max_h(px(168.))
                     .overflow_y_scroll()
                     .child(v_flex().children(rows).when(!hidden.is_empty(), |list| {
-                        list.child(hint("Hidden from picker", cx).pt_3().pb_1())
+                        list.child(hint("Hidden from picker", cx).pt_3().pb_1().px_2())
                             .children(
                                 hidden
                                     .iter()
@@ -208,19 +224,25 @@ impl Settings {
         h_flex()
             .min_h(px(36.))
             .gap_2()
-            .pr_1()
-            .border_b_1()
+            .px_2()
+            .border_t_1()
             .border_color(cx.theme().border)
             .child(label(name.clone()).flex_1().min_w_0().truncate())
             .when(enabled, |row| {
-                row.child(move_button("up", IconName::ArrowUp, above))
-                    .child(move_button("down", IconName::ArrowDown, below))
+                row.child(
+                    h_flex()
+                        .w(px(56.))
+                        .justify_center()
+                        .child(move_button("up", IconName::ArrowUp, above))
+                        .child(move_button("down", IconName::ArrowDown, below)),
+                )
             })
             .child(control!(
                 format!("model-enabled/{id}"),
                 Button::new(SharedString::from(format!("toggle-model/{id}")))
                     .ghost()
                     .small()
+                    .w(px(48.))
                     .tooltip(format!(
                         "{} {id} in the model picker",
                         if enabled { "Hide" } else { "Show" }
