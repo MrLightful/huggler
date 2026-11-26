@@ -1,0 +1,5 @@
+accepted = ["MIT", "Apache-2.0", "Unicode-3.0", "BSD-3-Clause", "BSD-2-Clause", "0BSD", "ISC", "Apache-2.0 WITH LLVM-exception", "CC0-1.0", "MPL-2.0", "Zlib"]
+ignore-dev-dependencies = true
+
+[webpki-roots]
+accepted = ["CDLA-Permissive-2.0"]
