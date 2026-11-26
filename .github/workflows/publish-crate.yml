@@ -18,7 +18,7 @@ env:
 jobs:
   verify:
     name: Verify release
-    if: github.repository == 'MrLightful/huggler' && github.ref == 'refs/heads/master'
+    if: github.repository == 'MrLightful/huggler' && github.ref == 'refs/heads/main'
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     runs-on: ubuntu-24.04
