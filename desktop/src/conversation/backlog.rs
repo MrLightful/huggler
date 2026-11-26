@@ -119,7 +119,8 @@ impl SavedDraft {
                 bytes,
             });
         }
-        Ok((draft.launch, Attachments::from_files(files)))
+        let attachments = Attachments::from_files(&draft.launch.message, files);
+        Ok((draft.launch, attachments))
     }
 }
 
@@ -236,7 +237,8 @@ impl Desktop {
                 .displayed_branch(launch.workspace_mode)
                 .cloned();
         }
-        let files = self.starter_attachments.files();
+        let (message, files) = self.starter_attachments.content(&launch.message);
+        launch.message = message;
         ensure!(
             !launch.message.trim().is_empty() || !files.is_empty(),
             "Add a message or attachment first"
@@ -244,11 +246,11 @@ impl Desktop {
         SavedDraft::write(
             &self.backlog_path(Uuid::new_v4()),
             launch,
-            files,
+            &files,
             chrono::Utc::now(),
             false,
         )?;
-        self.starter_attachments = Attachments::default();
+        self.starter_attachments.take();
         self.starter
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.name
@@ -361,17 +363,19 @@ impl Desktop {
             .context("Draft is no longer available")?;
         let path = self.backlog_path(id);
         let (mut launch, attachments) = SavedDraft::read(&path)?;
+        let message = attachments.restore_references(message);
         ensure!(
-            !message.trim().is_empty() || !attachments.is_empty(),
+            !message.trim().is_empty() || !attachments.is_empty(&message),
             "Add a message or keep an attachment"
         );
         launch.name = if name.is_empty() {
-            launch_workspace::conversation_title(&message, attachments.first_name())
+            attachments.title(&message)
         } else {
             name
         };
+        let (message, files) = attachments.content(&message);
         launch.message = message;
-        SavedDraft::write(&path, launch, attachments.files(), draft.created, true)?;
+        SavedDraft::write(&path, launch, &files, draft.created, true)?;
         self.backlog.edit = None;
         self.open_backlog(window, cx);
         Ok(())

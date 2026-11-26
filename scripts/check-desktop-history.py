@@ -145,22 +145,39 @@ def main():
         other.write_text("second file")
         attachment_state = checkout / "attachment-state"
         select_file = [{"next_file_selection": [str(attachment)]}, {"click": "Attach files"}]
+        copy_field = [{"key": "cmd-a"}, {"key": "cmd-c"}, {"key": "right"}]
+        first_marker = "⟦Attachment 1: notes.txt⟧"
+        second_marker = "⟦Attachment 2: notes.txt⟧"
         run_window(executable, attachment_state, [
-            *select_file, {"click": "Remove notes.txt"}, {"absent": "Remove notes.txt"},
-            *select_file, {"see": "Remove notes.txt"}, {"click": "Send first message"},
-            {"see": "Ready/notes.txt/Completed"}, {"absent": "Remove notes.txt"},
-            *select_file, {"see": "Remove notes.txt"}, {"click": "Create"},
-            {"absent": "Remove notes.txt"}, {"click": "thread/notes.txt"}, {"see": "Remove notes.txt"},
-            {"next_file_selection": [str(other)]}, {"click": "Attach files"},
-            *send_message("Review"), {"absent": "Remove notes.txt"},
+            {"key": "cmd-shift-n"}, *select_file, {"see": "Remove notes.txt"},
+            {"click": "Back to message"}, {"see": "Remove notes.txt"},
+            *copy_field, {"clipboard_text": first_marker},
+            {"key": "shift-left"}, {"clipboard_write": "sentinel"}, {"key": "cmd-x"},
+            {"clipboard_text": first_marker}, {"key": "cmd-v"},
+            {"key": "left"}, {"type": "Before "}, {"key": "right"},
+            {"key": "shift-left"}, {"type": "Removed"},
+            *copy_field, {"clipboard_text": "Before Removed"},
+            {"key": "cmd-a"}, {"key": "backspace"},
+            *select_file, *copy_field, {"clipboard_text": second_marker},
+            {"click": "Send first message"}, {"see": "Ready/notes.txt/Completed"},
+            *select_file, *copy_field, {"clipboard_text": first_marker}, {"click": "Create"},
+            {"click": "thread/notes.txt"}, {"click": "Message"}, *copy_field,
+            {"clipboard_text": first_marker},
+            {"next_file_selection": [str(other)]}, {"click": "Attach files"}, *copy_field,
+            {"clipboard_text": first_marker + second_marker},
+            {"key": "cmd-left"}, {"type": "Review "}, {"click": "Send"},
             {"see": "Ready/notes.txt/Completed"},
         ], env)
         with sqlite3.connect(attachment_state / "huggler.sqlite3") as db:
-            messages = db.execute("SELECT id,text FROM message WHERE role='user' ORDER BY rowid").fetchall()
-            expected = 'Text attachment "notes.txt"\nattachment fixture'
-            assert [text.strip() for _, text in messages] == [
-                expected, "Review\n\n" + expected + '\n\nText attachment "notes.txt"\nsecond file',
+            messages = db.execute("SELECT id,attachment_caption FROM message WHERE role='user' ORDER BY rowid").fetchall()
+            assert [caption for _, caption in messages] == [
+                first_marker, "Review " + first_marker + second_marker,
             ]
+            prompts = [text for text, in db.execute("SELECT text FROM message WHERE role='user' ORDER BY rowid")]
+            assert 'Text attachment "notes.txt"\nattachment fixture' in prompts[0]
+            assert 'Text attachment "notes.txt"\nattachment fixture' in prompts[1]
+            assert 'Text attachment "notes.txt"\nsecond file' in prompts[1]
+            assert db.execute("SELECT count(*) FROM message_attachment").fetchone() == (3,)
         attachment.unlink()
         other.unlink()
         first_file = f"attachment/{messages[0][0]}/0/notes.txt"
@@ -169,10 +186,10 @@ def main():
         plain = 'Text attachment "ordinary.txt"'
         run_window(executable, attachment_state, [
             {"resize": [1080, 640]},
-            {"see": first_file}, {"see": "You/Review"}, {"absent": "You/"},
-            {"right_of": [first_note, "You/Review"]},
-            {"same_line": [first_note, "You/Review"]},
-            {"same_line": [second_note, "You/Review"]},
+            {"see": first_file}, {"see": "You/Review "}, {"absent": "You/"},
+            {"right_of": [first_note, "You/Review "]},
+            {"same_line": [first_note, "You/Review "]},
+            {"same_line": [second_note, "You/Review "]},
             {"absent": "file preview/attachment fixture"}, {"click": first_file},
             {"see": "file preview/attachment fixture"}, {"click": first_file},
             {"absent": "file preview/attachment fixture"},
@@ -190,28 +207,60 @@ def main():
         pdf.write_bytes((fixtures / pdf.name).read_bytes())
         binary = checkout / "payload.bin"
         binary.write_bytes(b"\x00\xff")
-        caption = "Request 🖼️\n\n" + "Ｗ" * 48 + "\nFiles:"
-        caption_control = "You/" + caption
+        caption = "Request 🖼️\n\n" + "Ｗ" * 48 + "\nBefore "
+        tail = " after"
+        markers = "⟦Attachment 1: diagram.png⟧ ⟦Attachment 2: report.pdf⟧ ⟦Attachment 3: payload.bin⟧"
         run_window(executable, mixed_state, [
-            {"click": "First message"}, {"type": caption},
+            {"click": "First message"}, {"type": caption + tail},
+            *[{"key": "left"} for _ in tail],
             {"next_file_selection": [str(image), str(pdf), str(binary)]},
             {"click": "Attach files"}, {"see": "Remove diagram.png"}, {"see": "Remove report.pdf"},
-            {"see": "Remove payload.bin"}, {"click": "Send first message"},
+            {"click": "Remove payload.bin"}, {"absent": "Remove payload.bin"},
+            {"key": "cmd-z"}, {"see": "Remove payload.bin"}, *copy_field, {"clipboard_text": caption + markers + tail}, {"click": "Send first message"},
             {"see": "Ready/Request 🖼️/Completed"},
+        ], env)
+        pasted = "⟦Attachment 1: Pasted image.png⟧"
+        run_window(executable, mixed_state, [
+            {"resize": [1080, 640]}, {"click": "Message"}, {"type": "Look 😀" + tail},
+            *[{"key": "left"} for _ in tail],
+            {"clipboard_image": str(image)}, {"key": "cmd-v"},
+            *copy_field, {"clipboard_text": "Look 😀" + pasted + tail},
+            {"click": "Send"}, {"see": "Ready/Request 🖼️/Completed"}, {"see": "You/Look 😀"},
         ], env)
         image.unlink()
         pdf.unlink()
         binary.unlink()
         with sqlite3.connect(mixed_state / "huggler.sqlite3") as db:
-            message, = db.execute("SELECT id FROM message WHERE role='user'").fetchone()
+            (message, first_caption), (followup, followup_caption) = db.execute(
+                "SELECT id, attachment_caption FROM message WHERE role='user' ORDER BY rowid"
+            ).fetchall()
+            root, = db.execute("SELECT root FROM project").fetchone()
+        assert first_caption == caption + markers + tail
+        assert followup_caption == "Look 😀" + pasted + tail
+        turns = [
+            frame["params"]["input"]
+            for line in (Path(root) / "frames.ndjson").read_text().splitlines()
+            if (frame := json.loads(line)).get("method") == "turn/start"
+        ]
+        for inputs, expected in zip(turns, (first_caption, followup_caption), strict=True):
+            assert expected in inputs[0]["text"]
+            assert [part["type"] for part in inputs] == ["text", "localImage"]
         prefix = f"attachment/{message}"
+        pasted_chip = f"attachment/{followup}/0/Pasted image.png"
         saved_pdf = checkout / "saved.pdf"
         saved_pdf.write_bytes(b"replace me")
         pdf_bytes = (fixtures / "report.pdf").read_bytes()
         saved_binary = checkout / "saved.bin"
         run_window(executable, mixed_state, [
-            {"resize": [640, 640]}, {"same_line": [prefix + "/0/diagram.png", caption_control]},
-            {"right_of": [prefix + "/0/diagram.png", caption_control]},
+            {"resize": [1080, 640]},
+            {"same_line": [pasted_chip, "You/Look 😀"]},
+            {"right_of": [pasted_chip, "You/Look 😀"]},
+            {"right_of": ["You/ after", pasted_chip]},
+            {"click": pasted_chip}, {"see": "image preview/Pasted image.png"},
+            {"above": [pasted_chip, "image preview/Pasted image.png"]},
+            {"above": ["image preview/Pasted image.png", "You/ after"]},
+            {"click": pasted_chip},
+            {"resize": [640, 640]},
             {"click": prefix + "/0/diagram.png"}, {"see": "image preview/diagram.png"},
             {"see": "Save diagram.png"}, {"click": prefix + "/0/diagram.png"},
             {"click": prefix + "/1/report.pdf"}, {"see": "pdf preview/report.pdf"},
