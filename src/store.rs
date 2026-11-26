@@ -45,26 +45,32 @@ fn checkout_path(
     state_dir: &Path,
     project: &Path,
 ) -> Result<PathBuf> {
-    for word in crate::worktree::checkout_names() {
-        let path = match storage.checkout(state_dir, project, word) {
+    let mut words = storage.worktree_words.clone();
+    words.sort_by_cached_key(|_| uuid::Uuid::new_v4());
+    for word in words {
+        let path = match storage.checkout(state_dir, project, &word) {
             Ok(path) => path,
             // Existing filesystem entries are never reused, including dangling symlinks.
             Err(Error::Invalid(_)) => continue,
             Err(error) => return Err(error),
         };
-        let reserved: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM worktree WHERE path=?1
-             UNION ALL SELECT 1 FROM project WHERE root=?1)",
-            [path
-                .to_str()
-                .ok_or_else(|| Error::Invalid("expected UTF-8 workspace".into()))?],
-            |row| row.get(0),
-        )?;
+        let reserved = checkout_reserved(db, &path)?;
         if !reserved {
             return Ok(path);
         }
     }
     Err(Error::Invalid("all short worktree names are in use".into()))
+}
+
+fn checkout_reserved(db: &Connection, path: &Path) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM worktree WHERE path=?1
+         UNION ALL SELECT 1 FROM project WHERE root=?1)",
+        [path
+            .to_str()
+            .ok_or_else(|| Error::Invalid("expected UTF-8 workspace".into()))?],
+        |row| row.get(0),
+    )?)
 }
 
 #[test]
@@ -80,8 +86,8 @@ fn dictionary_checkout_names_skip_existing_and_reserved_paths() -> Result<()> {
         assert!((4..=8).contains(&word.len()));
         assert!(word.bytes().all(|b| b.is_ascii_lowercase()));
     }
-    let available = storage.checkout(dir.path(), dir.path(), words[0])?;
-    let reserved = storage.checkout(dir.path(), dir.path(), words[1])?;
+    let available = storage.checkout(dir.path(), dir.path(), &words[0])?;
+    let reserved = storage.checkout(dir.path(), dir.path(), &words[1])?;
     db.execute("INSERT INTO worktree VALUES(?)", [reserved.to_str()])?;
     for word in &words[2..] {
         let path = storage.checkout(dir.path(), dir.path(), word)?;

@@ -76,8 +76,8 @@ fn slug(title: &str, max_bytes: usize) -> String {
 }
 
 /// A bundled dictionary keeps naming independent of host dictionaries and runtimes.
-pub(crate) fn checkout_names() -> Vec<&'static str> {
-    let mut words = vec![
+pub(crate) fn checkout_names() -> Vec<String> {
+    vec![
         "acorn", "alder", "amber", "apple", "aspen", "aster", "atlas", "badger", "bamboo",
         "barley", "basil", "beacon", "beaver", "berry", "birch", "bison", "bloom", "boulder",
         "breeze", "brook", "cactus", "canyon", "cedar", "cherry", "clover", "cobalt", "comet",
@@ -94,9 +94,10 @@ pub(crate) fn checkout_names() -> Vec<&'static str> {
         "sorrel", "sparrow", "spruce", "stone", "summit", "sunrise", "swift", "thistle", "tiger",
         "timber", "topaz", "tulip", "tundra", "valley", "velvet", "violet", "walnut", "willow",
         "winter", "wren", "yarrow", "zephyr", "zinnia",
-    ];
-    words.sort_by_cached_key(|_| uuid::Uuid::new_v4());
-    words
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 #[cfg(feature = "application")]

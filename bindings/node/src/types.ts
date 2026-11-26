@@ -56,6 +56,8 @@ export interface OpenOptions {
     databasePath?: string
     worktreeRoot?: { kind: "shared" | "projectRelative"; path: string }
     worktreeName?: string
+    /** Unique lowercase words of 4–8 letters for automatic worktree names. */
+    worktreeWords?: string[]
   }
   /** Controls how Huggler and its tools appear to providers and agents. */
   output?: {

@@ -27,6 +27,8 @@ pub struct StorageLayout {
     /// One directory name containing `{id}`, replaced by a generated identifier.
     /// The identifier is a random dictionary word of 4–8 lowercase letters.
     pub worktree_name: String,
+    /// Candidate words for automatic names. Nonempty, unique, lowercase ASCII, 4–8 letters.
+    pub worktree_words: Vec<String>,
 }
 
 const DEFAULT_DATABASE: &str = "huggler.sqlite3";
@@ -37,6 +39,7 @@ impl Default for StorageLayout {
             database_path: DEFAULT_DATABASE.into(),
             worktree_root: WorktreeRoot::Shared("worktrees".into()),
             worktree_name: "{id}".into(),
+            worktree_words: crate::worktree::checkout_names(),
         }
     }
 }
@@ -49,6 +52,18 @@ impl StorageLayout {
         {
             return Err(Error::Invalid(
                 "worktree_name must be one directory name containing {id}".into(),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        if self.worktree_words.is_empty()
+            || self.worktree_words.iter().any(|word| {
+                !(4..=8).contains(&word.len())
+                    || !word.bytes().all(|b| b.is_ascii_lowercase())
+                    || !seen.insert(word)
+            })
+        {
+            return Err(Error::Invalid(
+                "worktree_words must contain unique words of 4–8 lowercase ASCII letters".into(),
             ));
         }
         if let WorktreeRoot::ProjectRelative(path) = &self.worktree_root
@@ -113,11 +128,30 @@ impl StorageLayout {
     }
 
     pub(crate) fn checkout(&self, state_dir: &Path, project: &Path, id: &str) -> Result<PathBuf> {
+        self.checkout_named(state_dir, project, &self.worktree_name.replace("{id}", id))
+    }
+
+    pub(crate) fn checkout_named(
+        &self,
+        state_dir: &Path,
+        project: &Path,
+        name: &str,
+    ) -> Result<PathBuf> {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains(['/', '\\', '\0'])
+            || Path::new(name).file_name() != Some(name.as_ref())
+        {
+            return Err(Error::Invalid(
+                "expected a single worktree directory name".into(),
+            ));
+        }
         let directory = match &self.worktree_root {
             WorktreeRoot::Shared(path) => state_dir.join(path),
             WorktreeRoot::ProjectRelative(path) => project.join(path),
         };
-        let path = private_dir(&directory)?.join(self.worktree_name.replace("{id}", id));
+        let path = private_dir(&directory)?.join(name);
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path),
             Err(error) => Err(error.into()),
@@ -138,4 +172,33 @@ pub(crate) fn private_dir(path: &Path) -> Result<PathBuf> {
     }
     builder.recursive(true).create(path)?;
     Ok(path.canonicalize()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_worktree_word_lists() {
+        for words in [
+            vec![],
+            vec!["oak"],
+            vec!["blueberry"],
+            vec!["Cedar"],
+            vec!["../cedar"],
+            vec!["cedar", "cedar"],
+            vec!["café"],
+        ] {
+            let layout = StorageLayout {
+                worktree_words: words.into_iter().map(str::to_owned).collect(),
+                ..Default::default()
+            };
+            assert!(layout.validate().is_err());
+        }
+        let layout = StorageLayout {
+            worktree_words: vec!["cedar".into(), "maple".into()],
+            ..Default::default()
+        };
+        assert!(layout.validate().is_ok());
+    }
 }

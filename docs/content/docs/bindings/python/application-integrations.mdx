@@ -31,3 +31,7 @@ Have the host timer call `tick_schedule(schedule_id, int(time()))` when the sche
 Use `bind_repository` and `repository_client` to connect a repository and supply the authorization header. To update a GitHub pull request, pass the original `PullRequest` snapshot to `update_github_pull_request` so Huggler can check whether its revision and eligible actions still match.
 
 Use `install_terminal_host()` for the native terminal or `set_service_host(kind, host)` to provide a preview, device, or HTML host. Call `open_service` for a thread, use the returned handle with `service_call`, and release it with `close_service`. [Application API and callback contracts](/bindings/python/api/#application-integrations)
+
+Set `config={"storage": {"worktree_words": ["cedar", "meadow", "sparrow"]}}` when opening the runtime to customize automatic worktree names. Occupied names are skipped; exhausting the list returns an error.
+
+Use `rt.allocate_workspace_named(project_id, "HEAD", "cedar")` to select an exact directory name. Add `branch={"exact": "feature/parser"}` to create a branch too. Manual names bypass the naming template and must be a single path component; occupied or reserved names are errors.

@@ -21,7 +21,7 @@ runtime = await Huggler.open(
 ```
 
 - `name` and optional `slug` set the display name and default state directory. An explicit state directory defaults to `huggler.sqlite3`. Naming without a state directory uses `~/.<slug>/userdata/huggler.sqlite3`.
-- `storage` accepts `database_path`, `worktree_root` (a mapping with `shared` or `project_relative`), and `worktree_name`, which contains the literal `{id}` placeholder.
+- `storage` accepts `database_path`, `worktree_root` (a mapping with `shared` or `project_relative`), `worktree_name`, which contains the literal `{id}` placeholder, and `worktree_words`, a nonempty list of unique words of 4–8 lowercase ASCII letters that replaces the bundled dictionary.
 - `output` accepts `name`, `title`, `version`, `instructions`, `tools`, and `provider_labels`. Tool entries can override `name`, `title`, and `description`. Use `output()` and `provider_label(id)` to inspect the presentation.
 - `agent_tools` enables the scoped agent MCP tools. `agent_policy` accepts `allowed_tools`, `defer_tools`, and `secret_ttl_seconds`. The host can also set `auto_resume_usage_limits` and `prompt_suggestions`.
 - Configure built-in executables with `codex` and `claude_agent`, or use `instances` for named installations. An instance accepts `id`, `driver`, `executable`, `args`, `home`, `pi_extension`, `server_url`, `request_approvals`, `workspace_write`, `password_env`, and `environment`. Read configured values with `provider_instances()` and read environment overrides explicitly with `provider_environment(id)`.
@@ -58,7 +58,7 @@ Runtime failures raise `HugglerError` with `code` and `detail`. For `cursor_expi
 
 | Workflow | Python methods |
 | --- | --- |
-| Workspaces | `clone_project`, `create_scratch`, `promote_scratch`, `allocate_workspace`, `allocate_workspace_at`, `allocate_workspace_on_branch`, `allocated_workspaces`, `setup_workspace`, `workspace_setup_status`, `release_workspace`, `inspect_orphaned_worktrees`, `cleanup_orphaned_worktrees`, `delete_thread` |
+| Workspaces | `clone_project`, `create_scratch`, `promote_scratch`, `allocate_workspace`, `allocate_workspace_at`, `allocate_workspace_on_branch`, `allocate_workspace_named`, `allocated_workspaces`, `setup_workspace`, `workspace_setup_status`, `release_workspace`, `inspect_orphaned_worktrees`, `cleanup_orphaned_worktrees`, `delete_thread` |
 | Schedules | `create_schedule`, `schedules`, `tick_schedule`, `deliver_webhook`, `schedule_history`, `delete_schedule` |
 | Repository integration | `bind_repository`, `bind_thread_repository`, `repository_client`, `link_repository_item`, `repository_links`, `unlink_repository_item`, `watch_repository_item`, `unwatch_repository_item`, `sync_repository_watch` |
 | Services | `set_service_host`, `install_terminal_host`, `install_mcp_app_host`, `thread_checkout`, `devices`, `open_service`, `service_handles`, `service_call`, `approve_app_context`, `close_service` |

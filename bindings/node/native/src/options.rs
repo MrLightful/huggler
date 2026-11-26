@@ -22,6 +22,7 @@ struct Storage {
     database_path: Option<PathBuf>,
     worktree_root: Option<Root>,
     worktree_name: Option<String>,
+    worktree_words: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +86,9 @@ impl Options {
                 Root::Shared(path) => WorktreeRoot::Shared(path),
                 Root::ProjectRelative(path) => WorktreeRoot::ProjectRelative(path),
             };
+        }
+        if let Some(words) = self.storage.worktree_words {
+            core.storage.worktree_words = words;
         }
         if let Some(name) = self.storage.worktree_name {
             core.storage.worktree_name = name;

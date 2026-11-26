@@ -329,13 +329,23 @@ impl Database {
         source: &ProjectId,
         revision: &str,
         branch: Option<WorktreeBranch<'_>>,
+        name: Option<&str>,
     ) -> Result<Project> {
         let root = self.project_root(source)?;
         let (repository, commit) = worktree::base_at(&root, revision)?;
         let named_branch = branch
             .map(|naming| worktree::resolve_new_branch(&root, naming).map(|name| (naming, name)))
             .transpose()?;
-        let path = checkout_path(&self.db, &self.storage, &self.state_dir, &root)?;
+        let path = match name {
+            Some(name) => {
+                let path = self.storage.checkout_named(&self.state_dir, &root, name)?;
+                if checkout_reserved(&self.db, &path)? {
+                    return Err(Error::Invalid("worktree name is already reserved".into()));
+                }
+                path
+            }
+            None => checkout_path(&self.db, &self.storage, &self.state_dir, &root)?,
+        };
         let checkout = Worktree {
             path: path
                 .to_str()

@@ -11,6 +11,15 @@ Use `clone_project` to create a local clone, or `create_scratch` to register a n
 
 Use `allocate_workspace_on_branch(source, revision, branch)` to create a managed worktree on a new local branch at a selected revision. Pass `WorktreeBranch::FromTitle(title)` for a generated branch with a numeric suffix when needed, or `WorktreeBranch::Exact(name)` to require a specific branch. The checkout folder uses a random dictionary word of 4–8 letters. The host supplies the title and can use it when launching the conversation.
 
+Set `options.storage.worktree_words` to customize automatic names. To choose a directory name for one checkout, call `allocate_workspace_named(source, revision, name, branch)`. For example:
+
+```rust
+let workspace = huggler.allocate_workspace_named(&project.id, "HEAD", "cedar", None)?;
+```
+
+Pass `Some(WorktreeBranch::Exact("feature/parser"))` to also create a branch. The exact directory name bypasses `storage.worktree_name`; it must be a single path component. Existing filesystem entries and database reservations are rejected without choosing another name. Manual names need not belong to the word list. Existing checkouts keep their paths when configuration changes.
+
+
 Call `setup_workspace(project, program, args)` with a host-selected program and arguments. Huggler runs it in the project directory. An active run in that checkout blocks setup. A failed setup blocks new runs there until a successful retry. Register an isolated thread’s `worktree_path` with `open_project` to address setup to that checkout.
 
 Use `allocated_workspaces` to enumerate managed checkouts. `release_workspace` requires the checkout to be clean and its threads to be removed. Run blocking Git and registration calls off the host’s UI or async executor thread when responsiveness matters.

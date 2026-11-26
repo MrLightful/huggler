@@ -33,6 +33,7 @@ struct StorageConfig {
     database_path: Option<PathBuf>,
     worktree_root: Option<RootConfig>,
     worktree_name: Option<String>,
+    worktree_words: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -129,6 +130,9 @@ pub(crate) fn build(
             RootConfig::Shared(path) => WorktreeRoot::Shared(path),
             RootConfig::ProjectRelative(path) => WorktreeRoot::ProjectRelative(path),
         };
+    }
+    if let Some(words) = config.storage.worktree_words {
+        options.storage.worktree_words = words;
     }
     if let Some(name) = config.storage.worktree_name {
         options.storage.worktree_name = name;

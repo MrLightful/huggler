@@ -628,6 +628,92 @@ async fn named_workspace_respects_git_case_and_existing_storage_templates() -> R
 
 #[cfg(feature = "application")]
 #[tokio::test]
+async fn custom_worktree_words_and_manual_workspace_names() -> Result<()> {
+    use workspace::WorktreeBranch;
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().join("repo");
+    checkout(&root);
+    run_git(
+        &root,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "Fixture",
+        ],
+    )?;
+    let mut opts = options(&dir.path().join("state"));
+    opts.storage.worktree_words = vec!["cedar".into()];
+    opts.storage.worktree_name = "checkout-{id}".into();
+    let rt = Huggler::open(opts.clone()).await?;
+    let project = rt.open_project(&root)?;
+    let auto = rt.allocate_workspace(&project.id)?;
+    assert_eq!(auto.root.file_name().unwrap(), "checkout-cedar");
+    assert!(matches!(
+        rt.allocate_workspace(&project.id),
+        Err(Error::Invalid(_))
+    ));
+    for name in [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "/tmp/escape",
+        "nested/name",
+        "nested\\name",
+        "bad\0name",
+    ] {
+        assert!(matches!(
+            rt.allocate_workspace_named(&project.id, "HEAD", name, None),
+            Err(Error::Invalid(_))
+        ));
+    }
+    let manual = rt.allocate_workspace_named(
+        &project.id,
+        "HEAD",
+        "orchid",
+        Some(WorktreeBranch::Exact("manual-branch")),
+    )?;
+    assert_eq!(manual.root.file_name().unwrap(), "orchid");
+    assert_eq!(
+        run_git(&manual.root, &["branch", "--show-current"])?,
+        "manual-branch"
+    );
+    assert!(matches!(
+        rt.allocate_workspace_named(&project.id, "HEAD", "orchid", None),
+        Err(Error::Invalid(_))
+    ));
+    // A reservation without a directory still owns its name across restarts.
+    run_git(
+        &root,
+        &["worktree", "remove", manual.root.to_str().unwrap()],
+    )?;
+    rt.close().await?;
+    opts.storage.worktree_words = vec!["maple".into()];
+    let rt = Huggler::open(opts).await?;
+    assert!(matches!(
+        rt.allocate_workspace_named(&project.id, "HEAD", "orchid", None),
+        Err(Error::Invalid(_))
+    ));
+    let next = rt.allocate_workspace(&project.id)?;
+    assert_eq!(next.root.file_name().unwrap(), "checkout-maple");
+    rt.release_workspace(&next.id)?;
+    rt.release_workspace(&auto.id)?;
+    let detached = rt.allocate_workspace_named(&project.id, "HEAD", "willow", None)?;
+    assert_eq!(detached.root.file_name().unwrap(), "willow");
+    assert_eq!(run_git(&detached.root, &["branch", "--show-current"])?, "");
+    rt.release_workspace(&detached.id)?;
+    rt.close().await
+}
+
+#[cfg(feature = "application")]
+#[tokio::test]
 async fn prepare_promote_clone_and_release_workspaces() -> Result<()> {
     use workspace::{SetupStatus, WorktreeBranch};
     let dir = tempfile::tempdir()?;
