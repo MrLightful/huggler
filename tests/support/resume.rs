@@ -21,7 +21,7 @@ fn case(dir: &Path, source: &Path, start: usize, sibling: bool) {
         substitutions[NATIVE] = json!("another-native-thread");
     }
     fs::write(dir.join("case.json"), json!({
-        "start":start, "fixture":source.join("docs/reference/codex-resume/codex_transcript.ndjson"),
+        "start":start, "fixture":source.join("knowledge/reference/codex-resume/codex_transcript.ndjson"),
         "version":env!("CARGO_PKG_VERSION"), "substitutions":substitutions
     }).to_string()).unwrap();
 }

@@ -1,6 +1,6 @@
 # TypeScript SDK packaging and qualification
 
-The `@huggler/sdk` preview embeds the Rust runtime in Node.js through a Node-API addon. See the documentation site for [installation and first run](../docs-app/content/docs/bindings/typescript/quickstart.mdx) and the [TypeScript API](../docs-app/content/docs/bindings/typescript/api.mdx).
+The `@huggler/sdk` preview embeds the Rust runtime in Node.js through a Node-API addon. See the documentation site for [installation and first run](../docs/content/docs/bindings/typescript/quickstart.mdx) and the [TypeScript API](../docs/content/docs/bindings/typescript/api.mdx).
 
 ## Build and test from a checkout
 

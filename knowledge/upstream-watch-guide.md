@@ -53,7 +53,7 @@ Start at [builtInDrivers.ts][apps/server/src/provider/builtInDrivers.ts]. Its tw
 | `cursor`, `muse` | [Cursor][packages/provider-cursor] and [Muse][packages/provider-muse]. Inspect the upstream [SDK patches][patches] alongside the adapter versions. | Verify equivalent live requests, event translation and cancellation through Huggler’s selected transport. Inspect upstream patches when behavior differs. |
 | `opencode`, `pi` | [OpenCode][packages/provider-opencode] contains both `src/server/adapter.ts` and [the 2.x adapter][packages/provider-opencode/src/server/v2/adapter.ts]. [Pi][packages/provider-pi] ships a [generated MCP extension][packages/provider-pi/src/server/mcpExtensionSource.ts]. | Test the selected OpenCode runtime generation and server lifetime. For Pi, verify any chosen extension from an installed host and call a scoped tool in a resumed session. |
 
-A new driver registration calls for an inventory entry, install/status check and replay scenario. A change in a shared transport can affect several drivers. Check which operations each affected driver advertises. [Huggler provider reference](../docs-app/content/docs/reference/providers.mdx)
+A new driver registration calls for an inventory entry, install/status check and replay scenario. A change in a shared transport can affect several drivers. Check which operations each affected driver advertises. [Huggler provider reference](../docs/content/docs/reference/providers.mdx)
 
 ## Follow a change beyond the engine
 
