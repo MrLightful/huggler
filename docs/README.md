@@ -9,7 +9,7 @@ The [documentation site](../docs-app/content/docs/index.mdx) covers how to use t
 | Review or port a T3 Code change | [Review workflow and upstream component map](upstream-watch-guide.md), [review cursor and deferred work](upstream-review.json) |
 | Check coverage for an upstream workflow | [T3 Code capability inventory](parity-inventory.md) |
 | Set up a remote machine | [Remote machines over SSH](remote-machines.md) |
-| Reproduce the desktop coding workflow | [Planning through pull request](desktop-coding.md) |
+| Reproduce the desktop coding workflow | [Planning through pull request](https://github.com/MrLightful/bear/blob/main/docs/desktop-coding.md) |
 | Run regression checks or qualify a release | [Verification and release checks](verification.md) |
 | Build and verify TypeScript packages | [Local packaging and consumer checks](typescript-sdk.md#build-and-test-from-a-checkout) |
 | Build and verify Python wheels | [Local packaging and consumer checks](python-sdk.md#build-and-test-from-a-checkout) |
@@ -20,7 +20,7 @@ Start by trying to implement the workflow in the consumer using Huggler’s exis
 
 Before extending the crate, name a concrete failure a consumer cannot prevent or a piece of execution state only Huggler can report. For example, a host can choose when to request an operation, but only the orchestrator can validate it against work arriving concurrently from another host. Expose the smallest fact or operation that closes that gap. When porting from T3 Code, apply this test even if upstream puts the whole workflow in its server.
 
-**Conversation settlement** illustrates the split. A queued turn can arrive after the desktop renders an enabled Settle button. Huggler checks eligibility when it applies the command, clears pending usage-limit recovery on settlement, and reopens the conversation when it accepts a new turn. The consumer decides when to request settlement, how to group settled conversations, and whether to remember a collapsed sidebar section. A host that only wants to hide a row can save that preference locally and let recovery proceed. [Settlement and message intake](../src/store.rs) · [Desktop sidebar](../desktop/src/conversation/sidebar.rs)
+**Conversation settlement** illustrates the split. A queued turn can arrive after the desktop renders an enabled Settle button. Huggler checks eligibility when it applies the command, clears pending usage-limit recovery on settlement, and reopens the conversation when it accepts a new turn. The consumer decides when to request settlement, how to group settled conversations, and whether to remember a collapsed sidebar section. A host that only wants to hide a row can save that preference locally and let recovery proceed. [Settlement and message intake](../src/store.rs) · [Desktop sidebar](https://github.com/MrLightful/bear/blob/main/desktop/src/conversation/sidebar.rs)
 
 ## Naming
 
