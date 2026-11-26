@@ -30,6 +30,57 @@ cargo test --locked --features application --test host_services chromium_capture
 
 Run the installed consumer for the binding you changed. The packaging guides cover prerequisites, distribution artifacts, and fixture coverage. [Python release wheels](python-sdk.md#build-and-test-from-a-checkout) · [TypeScript tarballs](typescript-sdk.md#build-and-test-from-a-checkout)
 
+## Publish the Rust crate
+
+The [Publish crate workflow](../.github/workflows/publish-crate.yml) runs on pushed
+`v*` tags in `MrLightful/huggler`. It requires the tag to equal `v` followed by the
+root Cargo.toml version, runs formatting, Clippy, default and all-feature tests,
+and checks the packaged independent consumer before publishing to crates.io.
+The existing Release candidates workflow only uploads artifacts.
+
+### One-time setup
+
+Create a GitHub Actions environment named `crates-io` in the repository settings.
+Restrict its deployment tags to `v*` and configure any desired required reviewers.
+
+For a new crate, crates.io requires an API token for the initial publication.
+Sign in to crates.io, verify your email and create a short-lived token allowing
+publication of the new `huggler` crate. Save it as the environment secret
+`CRATES_IO_BOOTSTRAP_TOKEN`. The workflow uses this secret when present.
+
+After the first successful publication, open the crate's Settings → Trusted
+Publishing on crates.io and add this GitHub publisher:
+
+| Field | Value |
+| --- | --- |
+| Repository owner | `MrLightful` |
+| Repository name | `huggler` |
+| Workflow filename | `publish-crate.yml` |
+| Environment | `crates-io` |
+
+Remove the bootstrap secret and revoke its API token after configuring the
+publisher. Subsequent releases use a temporary OIDC token, obtained only after
+verification. See the [crates.io Trusted Publishing documentation](https://crates.io/docs/trusted-publishing).
+For an already published crate you own, configure this publisher directly and
+omit the bootstrap secret.
+
+### Release a version
+
+Update the root Cargo.toml version and Cargo.lock, commit the release changes,
+and merge them into `master`. From the reviewed release commit, push a matching
+tag, replacing `0.0.1` with the intended version:
+
+```sh
+git tag -a v0.0.1 -m "Huggler 0.0.1"
+git push origin v0.0.1
+```
+
+Monitor **Actions → Publish crate**, then confirm the version on crates.io.
+For a transient failure before publication, rerun the failed workflow jobs.
+Published versions cannot be overwritten; fixes require a new version and tag.
+The workflow does not create a GitHub Release or publish the desktop or language
+bindings.
+
 ## macOS desktop checks
 
 Use Xcode and a macOS GUI session. Build the qualification binary once for the [desktop coding checks](desktop-coding.md#reproduce-the-desktop-check) and the history check.
