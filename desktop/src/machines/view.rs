@@ -1,7 +1,7 @@
 use super::ssh::{Connection, SavedMachine};
 use crate::{
     conversation::{
-        markdown_view::{ResponseImages, prose},
+        markdown_view::{ResponseImages, contains_mermaid_fence, prose},
         permission_card,
     },
     ui::{field, heading, hint, label},
@@ -462,7 +462,7 @@ impl RemoteProject {
         window: &mut Window,
         cx: &mut App,
     ) -> Div {
-        if !text.contains("![") {
+        if !text.contains("![") && !contains_mermaid_fence(text) {
             return div().child(text.to_owned());
         }
         prose(

@@ -1,3 +1,4 @@
+mod mermaid;
 mod response_image;
 
 use super::transcript::transcript_muted;
@@ -17,10 +18,23 @@ pub(crate) fn prose(
     window: &mut Window,
     cx: &mut App,
 ) -> Div {
-    if !source.contains("![") {
+    if !source.contains("![") && !contains_mermaid_fence(source) {
         return Markdown::new(source).render(id, source, false, window, cx);
     }
     Markdown::parse(source.to_owned()).render_blocks(id, source, false, Some(images), window, cx)
+}
+
+pub(crate) fn contains_mermaid_fence(source: &str) -> bool {
+    source.lines().any(|line| {
+        ["```", "~~~"].iter().any(|marker| {
+            line.split_once(marker).is_some_and(|(_, info)| {
+                info.trim_start_matches(['`', '~'])
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(mermaid::is_language)
+            })
+        })
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -179,19 +193,37 @@ impl MarkdownBlock<'_> {
                     ),
             ),
             Node::Definition(_) => None,
+            Node::Code(code)
+                if code.lang.as_deref().is_some_and(mermaid::is_language)
+                    && node_source(node, self.source).is_some_and(mermaid::is_closed) =>
+            {
+                let Some(images) = self.images else {
+                    return self.text_block(node, id, window, cx);
+                };
+                Some(mermaid::render(
+                    id,
+                    &code.value,
+                    |window, cx| self.text_block(node, id, window, cx),
+                    images.scroll,
+                    window,
+                    cx,
+                ))
+            }
             Node::Paragraph(paragraph) if self.images.is_some() => self
                 .response_paragraph(node, &paragraph.children, id, window, cx)
                 .or_else(|| self.text_block(node, id, window, cx)),
-            Node::Blockquote(quote) if self.images.is_some() && contains_image(node) => Some(
-                Self {
-                    quote_depth: self.quote_depth + 1,
-                    ..*self
-                }
-                .children(&quote.children, id, window, cx)
-                .pl_3()
-                .border_l_2()
-                .border_color(cx.theme().border),
-            ),
+            Node::Blockquote(quote) if self.images.is_some() && contains_custom_block(node) => {
+                Some(
+                    Self {
+                        quote_depth: self.quote_depth + 1,
+                        ..*self
+                    }
+                    .children(&quote.children, id, window, cx)
+                    .pl_3()
+                    .border_l_2()
+                    .border_color(cx.theme().border),
+                )
+            }
             _ => self.text_block(node, id, window, cx),
         }
     }
@@ -363,11 +395,12 @@ fn inline_image<'a>(node: &'a Node, root: &'a markdown::mdast::Root) -> Option<I
     }
 }
 
-fn contains_image(node: &Node) -> bool {
+fn contains_custom_block(node: &Node) -> bool {
     matches!(node, Node::Image(_) | Node::ImageReference(_))
+        || matches!(node, Node::Code(code) if code.lang.as_deref().is_some_and(mermaid::is_language))
         || node
             .children()
-            .is_some_and(|children| children.iter().any(contains_image))
+            .is_some_and(|children| children.iter().any(contains_custom_block))
 }
 
 fn standalone_source(

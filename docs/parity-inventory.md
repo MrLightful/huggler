@@ -103,6 +103,12 @@ Remote machine transcripts can display embedded and web images. T3 Code's remote
 
 T3 Code resolves Markdown image paths on the environment host and renders direct URLs in its web client. Huggler Desktop opens checkout files through its scoped workspace reader and renders them with GPUI. The unversioned Codex app-server stdio fixture checks native text delta and final-message delivery, reopening saved images, and the desktop's opt-in web fetch against a local HTTP server. [T3 Code Markdown image renderer](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/ChatMarkdown.tsx#L1570) · [T3 Code path regression](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/client-runtime/src/markdownImages.test.ts) · [Native desktop check](../scripts/check-desktop-images.py)
 
+## Desktop Mermaid diagrams
+
+Desktop renders closed `mermaid` code fences inline in local and remote conversations. While a fence is open, the transcript shows its source. The preview follows the app's light or dark appearance and keeps **Show source** and **Copy source** available. Invalid diagrams and syntax unsupported by the native renderer fall back to the original code block.
+
+T3 Code uses its web Mermaid viewer. Huggler Desktop uses `mermaid-rs-renderer` 0.3.1 and GPUI raster previews. Layout and rasterization run on a background thread. SVG resources are disabled, and preview rendering has no Node.js or browser dependency. The native check replays text deltas and a final message over an unversioned Codex app-server stdio fixture. [T3 Code Mermaid block](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/web/src/components/chat/MarkdownMermaidCodeBlock.tsx) · [Native desktop check](../scripts/check-desktop-mermaid.py)
+
 ## Desktop tool traces
 
 **Traces** lists a conversation's recorded tool calls across runs, including calls outside the loaded chat history. Desktop owns the **All**, **MCP**, and **Std** filters and opens each call in a read-only main-area tab next to **Chat**. Huggler supplies recorded status and available input and result excerpts. Command traces use the existing live command tail. Older generic records with no source metadata are visible under **All**. T3 Code surfaces tool activity and details in its conversation work log. [Native desktop check](../scripts/check-desktop-coding.py) · [Runtime fixture check](../tests/context.rs)
