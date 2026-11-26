@@ -1,5 +1,7 @@
+mod activity_title;
 mod turn_rail;
 
+use self::activity_title::ActivityTitle;
 use super::attachments::{MESSAGE_LINE_HEIGHT, caption_with_attachments};
 use super::markdown_view::prose;
 use super::*;
@@ -853,6 +855,7 @@ impl Desktop {
                 h_flex()
                     .gap_1()
                     .min_w_0()
+                    .overflow_hidden()
                     .child(control!(
                         qualification_label,
                         Button::new(row_id.clone())
@@ -861,15 +864,15 @@ impl Desktop {
                             .compact()
                             .max_w_full()
                             .min_w_0()
+                            .flex_shrink()
                             .justify_start()
                             .icon(disclosure(log.is_some()))
-                            .child(Icon::new(IconName::SquareTerminal).xsmall())
+                            .child(Icon::new(IconName::SquareTerminal).xsmall().flex_shrink_0())
                             .child(
                                 div()
                                     .min_w_0()
-                                    .truncate()
                                     .font_family(cx.theme().mono_font_family.clone())
-                                    .child(title)
+                                    .child(ActivityTitle(title.into()))
                             )
                             .tooltip(if log.is_some() {
                                 "Hide output"
@@ -887,7 +890,7 @@ impl Desktop {
                     ))
                     .children(
                         item_status(item.status, run_status)
-                            .map(|status| hint(status, cx).flex_shrink_0()),
+                            .map(|status| hint(status, cx).whitespace_nowrap().flex_shrink_0()),
                     ),
             )
             .when_some(log, |row, log| {
@@ -1049,7 +1052,7 @@ fn activity_row(icon: IconName, title: &str, status: Option<&str>, cx: &App) -> 
         .child(
             control!(
                 format!("activity-label/{title}"),
-                div().truncate().child(title.to_owned())
+                div().child(ActivityTitle(title.replace(['\r', '\n'], " ").into()))
             )
             .min_w_0(),
         )
