@@ -46,6 +46,7 @@ pub(super) struct Backlog {
     entries: Vec<(Uuid, SavedDraft)>,
     pub errors: HashMap<Uuid, String>,
     edit: Option<DraftEdit>,
+    expanded_details: HashSet<Uuid>,
 }
 
 struct DraftEdit {
@@ -196,6 +197,9 @@ impl Desktop {
         {
             self.remote_project = None;
         }
+        if !self.backlog.open {
+            self.backlog.expanded_details.clear();
+        }
         self.backlog.open = true;
         self.error = self
             .load_backlog()
@@ -295,6 +299,7 @@ impl Desktop {
         }
         self.backlog.entries.retain(|(entry, _)| *entry != id);
         self.backlog.errors.remove(&id);
+        self.backlog.expanded_details.remove(&id);
         Ok(())
     }
 
@@ -491,8 +496,9 @@ impl Desktop {
                     .overflow_y_scroll()
                     .child(
                         v_flex()
-                            .w_full()
-                            .max_w(px(736.))
+                            // Give wrapped text its final width during scroll extent calculation.
+                            .w(width.min(px(736.)))
+                            .max_w_full()
                             .flex_shrink_0()
                             .px_4()
                             .pt_5()
@@ -532,23 +538,13 @@ impl Desktop {
                                 self.backlog
                                     .entries
                                     .iter()
-                                    .map(|(id, draft)| self.backlog_row(*id, draft, width < px(490.), cx)),
+                                    .map(|(id, draft)| self.backlog_row(*id, draft, cx)),
                             ),
                     ),
             )
     }
 
-    fn backlog_row(&self, id: Uuid, draft: &SavedDraft, compact: bool, cx: &Context<Self>) -> Div {
-        let launch = &draft.launch;
-        let sending = self.backlog.sending == Some(id);
-        let error = self.backlog.errors.get(&id);
-        let action = if sending {
-            "Sending…"
-        } else if error.is_some() {
-            "Retry"
-        } else {
-            "Send"
-        };
+    fn draft_details(&self, launch: &LaunchDraft, cx: &Context<Self>) -> Div {
         let scratch = launch.checkout.as_os_str().is_empty();
         let workspace = if scratch {
             "Scratch workspace".into()
@@ -599,11 +595,38 @@ impl Desktop {
                 _ => format!("Service tier {tier}"),
             });
         }
+        v_flex()
+            .gap_1()
+            .py_2()
+            .when(launch.name != launch.message.trim(), |details| {
+                details.child(draft_option("Title", launch.name.clone(), cx))
+            })
+            .child(draft_option("Workspace", workspace, cx))
+            .when_some(branch, |details, branch| {
+                details.child(draft_option("Branch", branch, cx))
+            })
+            .child(draft_option("Model", format!("{provider} · {model}"), cx))
+            .when(!model_options.is_empty(), |details| {
+                details.child(draft_option("Options", model_options.join(" · "), cx))
+            })
+    }
+
+    fn backlog_row(&self, id: Uuid, draft: &SavedDraft, cx: &Context<Self>) -> Div {
+        let launch = &draft.launch;
+        let sending = self.backlog.sending == Some(id);
+        let error = self.backlog.errors.get(&id);
+        let action = if sending {
+            "Sending…"
+        } else if error.is_some() {
+            "Retry"
+        } else {
+            "Send"
+        };
+        let expanded = self.backlog.expanded_details.contains(&id);
         let group = SharedString::from(format!("draft-{id}"));
         let edit = self.backlog.edit.as_ref().filter(|edit| edit.id == id);
         let menu_view = cx.weak_entity();
         let can_edit = self.backlog.edit.is_none();
-        let reveal = sending;
         let controls = h_flex()
             .gap_1()
             .flex_shrink_0()
@@ -614,7 +637,7 @@ impl Desktop {
                     .primary()
                     .icon(IconName::ArrowUp)
                     .label(action)
-                    .opacity(if reveal { 1. } else { 0. })
+                    .opacity(if sending { 1. } else { 0. })
                     .group_hover(group.clone(), |style| style.opacity(1.))
                     .focus(|style| style.opacity(1.))
                     .disabled(self.backlog.sending.is_some() || self.launching.is_some())
@@ -700,36 +723,38 @@ impl Desktop {
                 })
                 .child(
                     h_flex()
-                        .items_end()
-                        .when(compact, |footer| footer.flex_col())
+                        .justify_between()
                         .gap_2()
                         .border_t_1()
                         .border_color(cx.theme().border)
                         .pt_2()
-                        .child(
-                            v_flex()
-                                .when(compact, |details| details.w_full())
-                                .when(!compact, |details| details.flex_1())
-                                .min_w_0()
-                                .gap_1()
-                                .when(launch.name != launch.message.trim(), |details| {
-                                    details.child(draft_option("Title", launch.name.clone(), cx))
+                        .child(control!(
+                            format!("Draft details/{}", launch.name),
+                            Button::new((ElementId::from(id), "details"))
+                                .small()
+                                .compact()
+                                .ghost()
+                                .icon(if expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
                                 })
-                                .child(draft_option("Workspace", workspace, cx))
-                                .when_some(branch, |details, branch| {
-                                    details.child(draft_option("Branch", branch, cx))
-                                })
-                                .child(draft_option("Model", format!("{provider} · {model}"), cx))
-                                .when(!model_options.is_empty(), |details| {
-                                    details.child(draft_option(
-                                        "Options",
-                                        model_options.join(" · "),
-                                        cx,
-                                    ))
-                                }),
-                        )
+                                .child(hint("Draft details", cx))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    if !view.backlog.expanded_details.remove(&id) {
+                                        view.backlog.expanded_details.insert(id);
+                                    }
+                                    cx.notify();
+                                }))
+                        ))
                         .when(edit.is_none(), |footer| footer.child(controls)),
                 )
+                .when(expanded, |card| {
+                    card.child(control!(
+                        format!("Draft details panel/{}", launch.name),
+                        self.draft_details(launch, cx)
+                    ))
+                })
                 .when_some(error, |row, error| {
                     row.child(control!(
                         format!("error/{error}"),
